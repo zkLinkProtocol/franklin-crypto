@@ -1625,6 +1625,15 @@ impl<E: Engine> Sha256Gadget<E> {
         let mut g = self.convert_into_sparse_chooser_form(cs, regs.g.clone())?;
         let mut h = self.convert_into_sparse_chooser_form(cs, regs.h.clone())?;
 
+        let reduced_old_a = a.normal.clone();
+        let reduced_old_b = b.normal.clone();
+        let reduced_old_c = c.normal.clone();
+        let reduced_old_d = d.normal.clone();
+        let reduced_old_e = e.normal.clone();
+        let reduced_old_f = f.normal.clone();
+        let reduced_old_g = g.normal.clone();
+        let reduced_old_h = h.normal.clone();
+
         for i in 0..64 {
             let ch = self.choose(cs, e.clone(), f.clone(), g.clone())?;
             let maj = self.majority(cs, a.clone(), b.clone(), c.clone())?;
@@ -1648,14 +1657,14 @@ impl<E: Engine> Sha256Gadget<E> {
         }
 
         let regs = Sha256Registers {
-            a: self.tracked_positioned_sum2_mod32(cs, regs.a, a.normal)?,
-            b: self.tracked_positioned_sum2_mod32(cs, regs.b, b.normal)?,
-            c: self.tracked_positioned_sum2_mod32(cs, regs.c, c.normal)?,
-            d: self.tracked_positioned_sum2_mod32(cs, regs.d, d.normal)?,
-            e: self.tracked_positioned_sum2_mod32(cs, regs.e, e.normal)?,
-            f: self.tracked_positioned_sum2_mod32(cs, regs.f, f.normal)?,
-            g: self.tracked_positioned_sum2_mod32(cs, regs.g, g.normal)?,
-            h: self.tracked_positioned_sum2_mod32(cs, regs.h, h.normal)?,
+            a: self.tracked_positioned_sum2_mod32(cs, reduced_old_a, a.normal)?,
+            b: self.tracked_positioned_sum2_mod32(cs, reduced_old_b, b.normal)?,
+            c: self.tracked_positioned_sum2_mod32(cs, reduced_old_c, c.normal)?,
+            d: self.tracked_positioned_sum2_mod32(cs, reduced_old_d, d.normal)?,
+            e: self.tracked_positioned_sum2_mod32(cs, reduced_old_e, e.normal)?,
+            f: self.tracked_positioned_sum2_mod32(cs, reduced_old_f, f.normal)?,
+            g: self.tracked_positioned_sum2_mod32(cs, reduced_old_g, g.normal)?,
+            h: self.tracked_positioned_sum2_mod32(cs, reduced_old_h, h.normal)?,
         };
         
         Ok(regs)

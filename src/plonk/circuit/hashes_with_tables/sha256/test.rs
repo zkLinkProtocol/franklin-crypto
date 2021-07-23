@@ -265,7 +265,7 @@ mod test {
     #[test]
     fn polished_sha256_gadget_bytes_test() 
     {
-        const NUM_OF_BYTES: usize = 341;
+        const NUM_OF_BYTES: usize = 22560;
         const IS_CONST_TEST: bool = false;
 
         let mut rng = rand::thread_rng();

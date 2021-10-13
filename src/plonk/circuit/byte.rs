@@ -167,9 +167,23 @@ impl<E: Engine> Byte<E> {
     }
 }
 
-pub trait IntoBytes<E: Engine>: Send + Sync {
-    fn into_le_bytes<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Vec<Byte<E>>, SynthesisError>;
-    fn into_be_bytes<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Vec<Byte<E>>, SynthesisError>;
+// NOTE: there are default infinitely recursive implementations here, so implementor should override at least one of them!
+pub trait IntoBytes<E: Engine> {
+    fn encoding_len() -> usize {
+        unimplemented!("Usually there is an outside known constant for it. Later on we should move to const generics here");
+    }
+    fn into_le_bytes<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Vec<Byte<E>>, SynthesisError> {
+        let mut tmp = self.into_be_bytes(cs)?;
+        tmp.reverse();
+
+        Ok(tmp)
+    }
+    fn into_be_bytes<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Vec<Byte<E>>, SynthesisError> {
+        let mut tmp = self.into_le_bytes(cs)?;
+        tmp.reverse();
+
+        Ok(tmp)
+    }
 }
 
 pub fn uniquely_encode_le_bytes_into_num<E: Engine, CS: ConstraintSystem<E>>(

@@ -92,7 +92,7 @@ enum KeccakBase {
     KeccakSecondSparseBase,
 }
 
-
+#[derive(Clone, Debug)]
 pub struct Keccak256Gadget<E: Engine> {
     // table used to convert binary register into first_sparse_base and second sparse base
     from_binary_converter_table: Arc<LookupTableApplication<E>>,

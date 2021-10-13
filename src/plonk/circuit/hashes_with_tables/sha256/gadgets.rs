@@ -200,7 +200,7 @@ pub struct Sha256Registers<E: Engine> {
     h : NumWithTracker<E>,
 }
 
-
+#[derive(Clone, Debug)]
 pub struct Sha256Gadget<E: Engine> {
     // is is possible to reduce the number of constraints even more by exploiting not only d_next,
     // but also c_prev

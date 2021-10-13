@@ -273,7 +273,6 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized<E: Engin
 
     // now check if we can further shift the variable to make it multiple or if it's already a multiple
 
-    let mut num_gates_for_coarse_constraint = num_bits / width_per_gate;
     let remainder_bits = num_bits % width_per_gate;
     if remainder_bits == 0 {
         return enforce_using_single_column_table_for_shifted_variable_optimized_for_multiple_of_table(cs, to_constraint, shift, num_bits);
@@ -281,7 +280,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized<E: Engin
         if num_bits - remainder_bits + width_per_gate <= E::Fr::CAPACITY as usize {
             // we can shift the variable further to the left
             let mut new_shift = shift;
-            for _ in width_per_gate - remainder_bits {
+            for _ in 0..(width_per_gate - remainder_bits) {
                 new_shift.double();
             }
             let new_num_bits = num_bits - remainder_bits + width_per_gate;
@@ -332,9 +331,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized<E: Engin
     let mut it = slices.into_iter();
 
     let mut next_step_variable_from_previous_gate: Option<AllocatedNum<E>> = None;
-    let mut next_step_value = value_to_constraint;
-    next_step_value.negate();
-    let mut next_step_value = Some(next_step_value);
+    let mut next_step_value = value_to_constraint.mul(&Some(minus_one));
     let mut last_allocated_var = None;
 
     let table = cs.get_table(RANGE_CHECK_SINGLE_APPLICATION_TABLE_NAME)?;
@@ -475,7 +472,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized_for_mult
 
     let mut current_term_coeff = E::Fr::one();
 
-    let mut num_gates_for_coarse_constraint = num_bits / width_per_gate;
+    let num_gates_for_coarse_constraint = num_bits / width_per_gate;
     let remainder_bits = num_bits % width_per_gate;
     assert_eq!(remainder_bits, 0);
 
@@ -489,25 +486,19 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized_for_mult
     let mut it = slices.into_iter();
 
     let mut next_step_variable_from_previous_gate: Option<AllocatedNum<E>> = None;
-    let mut next_step_value = value_to_constraint;
-    next_step_value.negate();
-    let mut next_step_value = Some(next_step_value);
-    let mut last_allocated_var = None;
+
+    let mut next_step_value = value_to_constraint.mul(&Some(minus_one));
 
     let table = cs.get_table(RANGE_CHECK_SINGLE_APPLICATION_TABLE_NAME)?;
 
     for full_gate_idx in 0..num_gates_for_coarse_constraint {
         let is_last = full_gate_idx == num_gates_for_coarse_constraint - 1;
-        if next_step_value.is_none() {
-            next_step_value = Some(E::Fr::zero());
-        }
 
         let mut term = MainGateTerm::<E>::new();
         let value = it.next().unwrap();
         let chunk_allocated = AllocatedNum::alloc(cs, || {
             Ok(*value.get()?)
         })?;
-        last_allocated_var = Some(chunk_allocated.clone());
         let scaled = value.mul(&Some(current_term_coeff));
         next_step_value = next_step_value.add(&scaled);
 

@@ -1759,15 +1759,15 @@ impl<E: Engine> Sha256Gadget<E> {
     /// take bytes as input and return bytes as output
     pub fn sha256_from_bytes_to_bytes<CS: ConstraintSystem<E>>(&self, cs: &mut CS, bytes: &[Byte<E>]) -> Result<[Byte<E>; 32]>
     {
-        use plonk::circuit::byte::IntoBytes;
+        use plonk::circuit::byte::num_into_bytes_be;
 
         let as_nums = self.sha256_from_bytes(cs, bytes)?;
         let mut gadget_output = [Byte::empty(); 32];
         for (bytes, num) in gadget_output.chunks_exact_mut(4).zip(as_nums.iter()) {
-            let as_vec = num.into_be_bytes(cs)?;
-            let len = as_vec.len();
             // we are ok here cause it's initially uint32 extraction
-            bytes.copy_from_slice(&as_vec[(len - 4)..]);
+            let as_vec = num_into_bytes_be(cs, *num, 32)?;
+            assert_eq!(as_vec.len(), 4);
+            bytes.copy_from_slice(&as_vec);
         }
 
         Ok(gadget_output)

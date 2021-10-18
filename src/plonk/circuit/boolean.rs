@@ -626,6 +626,17 @@ impl Boolean {
         }
     }
 
+    pub fn get_constant_value(&self) -> bool {
+        match self {
+            &Boolean::Constant(c) => {
+                c
+            }
+            _ => {
+                panic!("value is not constant");
+            }
+        }
+    }
+
     pub fn get_value(&self) -> Option<bool> {
         match self {
             &Boolean::Constant(c) => Some(c),

@@ -86,7 +86,7 @@ impl<E: Engine> IndexMut<(usize, usize)> for KeccakState<E> {
 
 
 #[derive(Copy, Clone)]
-enum KeccakBase {
+pub enum KeccakBase {
     Binary,
     KeccakFirstSparseBase,
     KeccakSecondSparseBase,
@@ -446,7 +446,7 @@ impl<E: Engine> Keccak256Gadget<E> {
         return base_num_of_chunks;
     }
 
-    fn convert_binary_to_sparse_repr<CS>(&self, cs: &mut CS, input: &Num<E>, sparse_base: KeccakBase) -> Result<Num<E>> 
+    pub fn convert_binary_to_sparse_repr<CS>(&self, cs: &mut CS, input: &Num<E>, sparse_base: KeccakBase) -> Result<Num<E>>
     where CS: ConstraintSystem<E>
     {
         let output_base = match sparse_base {
@@ -964,7 +964,7 @@ impl<E: Engine> Keccak256Gadget<E> {
     // Keccak single sponge evaluation 
     // -------------------------------------------------------------------------------------------------------------------------
 
-    fn keccak_f<CS: ConstraintSystem<E>>(
+    pub fn keccak_f<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, input_state: KeccakState<E>, elems_to_squeeze: usize, elems_to_mix: Option<&[Num<E>]>, is_final: bool,
     ) -> Result<(KeccakState<E>, Option<Vec<Num<E>>>)>
     {
@@ -1061,7 +1061,7 @@ impl<E: Engine> Keccak256Gadget<E> {
         assert_eq!(padded.len() % block_size, 0);
 
         // now convert the byte array to array of 64-bit words
-        let mut words64 = Vec::with_capacity(padded.len() % 8);
+        let mut words64 = Vec::with_capacity(padded.len() / 8);
         for chunk in padded.chunks(8) {
             let elems = [
                 chunk[0].into_num(), chunk[1].into_num(), chunk[2].into_num(), chunk[3].into_num(),
@@ -1073,4 +1073,4 @@ impl<E: Engine> Keccak256Gadget<E> {
 
         self.digest(cs, &words64[..])           
     }
-} 
+}

@@ -10,6 +10,7 @@ use crate::plonk::circuit::allocated_num::{
     AllocatedNum,
     Num,
 };
+use crate::plonk::circuit::boolean::Boolean;
 use crate::plonk::circuit::byte::{
     Byte,
 };
@@ -1030,6 +1031,43 @@ impl<E: Engine> Keccak256Gadget<E> {
         }
 
         Ok(res)
+    }
+
+    pub fn keccak_round_function<CS: ConstraintSystem<E>>(
+        &self, 
+        cs: &mut CS, 
+        mut state: KeccakState<E>, 
+        elems_to_mix: [Num<E>; KECCAK_RATE_WORDS_SIZE],
+        is_first_block: Boolean,
+    ) -> Result<(KeccakState<E>, Vec<Num<E>>)> 
+    {
+        let mut elems_to_absorb = [Num::<E>::zero(); KECCAK_RATE_WORDS_SIZE];
+        for (elem_in, elem_out) in elems_to_mix.iter().zip(elems_to_absorb.iter_mut()) {
+             // returns 0 if condition == `false` and `a` if condition == `true`
+            let tmp = Num::mask(cs, elem_in, &is_first_block.not())?;
+            *elem_out = self.convert_binary_to_sparse_repr(cs, &tmp, KeccakBase::KeccakSecondSparseBase)?;
+        }
+      
+        let (rolled_state, squeezed) = self.keccak_f(
+            cs, state, KECCAK_RATE_WORDS_SIZE, Some(&elems_to_absorb[..]), false
+        )?;
+
+        let mut new_state = KeccakState::<E>::default();
+        for idx in 0..KECCAK_STATE_WIDTH * KECCAK_STATE_WIDTH {
+            let rolled_state_elem = rolled_state[(idx % KECCAK_STATE_WIDTH, idx / KECCAK_STATE_WIDTH)].clone();
+            let tmp = if idx < KECCAK_RATE_WORDS_SIZE {
+                let converted_input = self.convert_binary_to_sparse_repr(
+                    cs, &elems_to_mix[idx], KeccakBase::KeccakFirstSparseBase
+                )?;
+                Num::conditionally_select(cs, &is_first_block, &converted_input, &rolled_state_elem)?
+            } else {
+                Num::mask(cs, &rolled_state_elem, &is_first_block.not())?
+            };
+
+            new_state[(idx % KECCAK_STATE_WIDTH, idx / KECCAK_STATE_WIDTH)] = tmp;        
+        }
+
+        Ok((new_state, squeezed.unwrap()))
     }
 
     pub fn digest_from_bytes<CS: ConstraintSystem<E>>(&self, cs: &mut CS, bytes: &[Byte<E>]) -> Result<Vec<Num<E>>>

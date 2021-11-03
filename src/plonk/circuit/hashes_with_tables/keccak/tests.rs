@@ -9,6 +9,7 @@ mod test {
         AllocatedNum,
         Num,
     };
+    use crate::plonk::circuit::boolean::Boolean;
     use crate::plonk::circuit::byte::{
         Byte,
     };
@@ -190,6 +191,91 @@ mod test {
             is_byte_test: true,
         };
 
+        let mut assembly = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
+
+        circuit.synthesize(&mut assembly).expect("must work");
+        println!("Assembly contains {} gates", assembly.n());
+        println!("Total length of all tables: {}", assembly.total_length_of_all_tables);
+        assert!(assembly.is_satisfied());
+    }
+
+
+    struct TestKeccakRoundFunctionCircuit<E:Engine>{
+        input: Vec<E::Fr>,
+        output: [E::Fr; DEFAULT_KECCAK_DIGEST_WORDS_SIZE],
+    }
+
+    impl<E: Engine> Circuit<E> for TestKeccakRoundFunctionCircuit<E> {
+        type MainGate = Width4MainGateWithDNext;
+
+        fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
+            Ok(
+                vec![
+                    Width4MainGateWithDNext::default().into_internal(),
+                ]
+            )
+        }
+
+        fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> 
+        {
+            let mut actual_output_vars = Vec::with_capacity(DEFAULT_KECCAK_DIGEST_WORDS_SIZE);
+            for value in self.output.iter() {
+                let new_var = AllocatedNum::alloc_input(cs, || Ok(value.clone()))?;
+                actual_output_vars.push(Num::Variable(new_var));
+            }
+            
+            let keccak_gadget = Keccak256Gadget::new(cs, None, None, None, None, false, "")?;
+             
+            let mut input_vars = Vec::with_capacity(self.input.len());
+            for value in self.input.iter() {
+                let new_var = AllocatedNum::alloc(cs, || Ok(value.clone()))?;
+                input_vars.push(Num::Variable(new_var));
+            }
+                    
+            let mut state = keccak_gadget.keccak_round_function_init(cs, input_vars)?;
+            let elems_to_mix = [Num::<E>::zero(); KECCAK_RATE_WORDS_SIZE];
+            let (new_state, supposed_output_vars) = keccak_gadget.keccak_round_function(
+                cs, state, elems_to_mix, Boolean::constant(true)
+            )?;
+       
+            for (a, b) in supposed_output_vars.iter().zip(actual_output_vars.into_iter()) {
+                a.enforce_equal(cs, &b)?;
+            }
+            
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn keccak_round_function_test()
+    {
+        let mut rng = rand::thread_rng();
+
+        let mut input = [0u8; 8 * KECCAK_RATE_WORDS_SIZE];
+        for i in 0..(input.len() - 1) {
+            input[i] = rng.gen();
+        }
+        *(input.last_mut().unwrap()) = 0b10000001 as u8;
+        let mut output: [u8; DEFAULT_KECCAK_DIGEST_WORDS_SIZE * 8] = [0; DEFAULT_KECCAK_DIGEST_WORDS_SIZE * 8];
+
+        Keccak::keccak256(&input[0..(input.len() - 1)], &mut output);
+    
+        let mut input_fr_arr = Vec::with_capacity(KECCAK_RATE_WORDS_SIZE);
+        let mut output_fr_arr = [Fr::zero(); DEFAULT_KECCAK_DIGEST_WORDS_SIZE];
+
+        for (_i, block) in input.chunks(8).enumerate() {
+            input_fr_arr.push(slice_to_ff::<Fr>(block));
+        }
+
+        for (i, block) in output.chunks(8).enumerate() {
+            output_fr_arr[i] = slice_to_ff::<Fr>(block);
+        }
+        
+        let circuit = TestKeccakRoundFunctionCircuit::<Bn256>{
+            input: input_fr_arr,
+            output: output_fr_arr,
+        };
+             
         let mut assembly = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
 
         circuit.synthesize(&mut assembly).expect("must work");

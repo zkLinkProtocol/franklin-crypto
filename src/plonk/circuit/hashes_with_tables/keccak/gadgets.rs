@@ -819,9 +819,10 @@ impl<E: Engine> Keccak256Gadget<E> {
     ) -> Result<(KeccakState<E>, Vec<Num<E>>)> 
     {
         // we cant's squeeze and mix simultantously:
-        if elems_to_squeeze > 0 && elems_to_mix.is_some() {
-            unreachable!();
-        }
+        // if elems_to_squeeze > 0 && elems_to_mix.is_some() {
+        //     unreachable!();
+        // }
+
         // check, that elems to mix contains the righit number of elements
         if let Some(input_to_mix) = elems_to_mix {
             assert_eq!(input_to_mix.len(), KECCAK_RATE_WORDS_SIZE);
@@ -966,7 +967,8 @@ impl<E: Engine> Keccak256Gadget<E> {
     // -------------------------------------------------------------------------------------------------------------------------
 
     pub fn keccak_f<CS: ConstraintSystem<E>>(
-        &self, cs: &mut CS, input_state: KeccakState<E>, elems_to_squeeze: usize, elems_to_mix: Option<&[Num<E>]>, is_final: bool,
+        &self, cs: &mut CS, input_state: KeccakState<E>, elems_to_squeeze: usize, 
+        elems_to_mix: Option<&[Num<E>]>, is_final: bool, is_fixed_length: bool
     ) -> Result<(KeccakState<E>, Option<Vec<Num<E>>>)>
     {
         let mut state = input_state;
@@ -986,7 +988,7 @@ impl<E: Engine> Keccak256Gadget<E> {
         state = self.pi(cs, state)?;
 
         let (mut new_state, out) = self.xi_i(cs, state, KECCAK_NUM_ROUNDS-1, elems_to_squeeze, elems_to_mix, is_final)?;
-        if elems_to_mix.is_some() {
+        if elems_to_mix.is_some() && is_fixed_length {
             new_state[(0, 0)] = new_state[(0, 0)].add(cs, &Num::Constant(self.round_cnsts_in_first_base[KECCAK_NUM_ROUNDS-1]))?;
         }
 
@@ -1016,7 +1018,7 @@ impl<E: Engine> Keccak256Gadget<E> {
                 let converted : Vec<Num<E>> =  data_block.iter().map(|elem| {
                     self.convert_binary_to_sparse_repr(cs, elem, KeccakBase::KeccakSecondSparseBase)
                 }).collect::<Result<Vec<_>>>()?;
-                let (new_state, _) = self.keccak_f(cs, state, 0, Some(&converted[..]), false)?;
+                let (new_state, _) = self.keccak_f(cs, state, 0, Some(&converted[..]), false, true)?;
                 state = new_state;
             }            
         }
@@ -1025,12 +1027,26 @@ impl<E: Engine> Keccak256Gadget<E> {
             let elems_to_squeeze = std::cmp::min(self.digest_size - res.len(), KECCAK_RATE_WORDS_SIZE);
             let is_final = res.len() + KECCAK_RATE_WORDS_SIZE >= self.digest_size;
 
-            let (new_state, squeezed) = self.keccak_f(cs, state, elems_to_squeeze, None, is_final)?;
+            let (new_state, squeezed) = self.keccak_f(cs, state, elems_to_squeeze, None, is_final, true)?;
             state = new_state;
             res.extend(squeezed.unwrap().into_iter());
         }
 
         Ok(res)
+    }
+
+    pub fn keccak_round_function_init<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, initial_absorbed_values: Vec<Num<E>>
+    ) -> Result<KeccakState<E>> {
+        assert!(initial_absorbed_values.len() <= KECCAK_RATE_WORDS_SIZE);
+
+        let mut state : KeccakState<E> = KeccakState::default();
+        for (idx, elem) in initial_absorbed_values.iter().enumerate() {
+            let out = self.convert_binary_to_sparse_repr(cs, elem, KeccakBase::KeccakFirstSparseBase)?;
+            state[(idx % KECCAK_STATE_WIDTH, idx / KECCAK_STATE_WIDTH)] = out;
+        }
+
+        Ok(state)
     }
 
     pub fn keccak_round_function<CS: ConstraintSystem<E>>(
@@ -1042,15 +1058,29 @@ impl<E: Engine> Keccak256Gadget<E> {
     ) -> Result<(KeccakState<E>, Vec<Num<E>>)> 
     {
         let mut elems_to_absorb = [Num::<E>::zero(); KECCAK_RATE_WORDS_SIZE];
+        let mut is_first = true;
         for (elem_in, elem_out) in elems_to_mix.iter().zip(elems_to_absorb.iter_mut()) {
-             // returns 0 if condition == `false` and `a` if condition == `true`
-            let tmp = Num::mask(cs, elem_in, &is_first_block.not())?;
-            *elem_out = self.convert_binary_to_sparse_repr(cs, &tmp, KeccakBase::KeccakSecondSparseBase)?;
+            let tmp = if is_first {
+                is_first = false;
+                let tmp = self.convert_binary_to_sparse_repr(cs, &elem_in, KeccakBase::KeccakSecondSparseBase)?;
+                Num::conditionally_select(
+                    cs, &is_first_block, 
+                    &Num::Constant(self.round_cnsts_in_second_base[KECCAK_NUM_ROUNDS-1]), &tmp
+                )?
+            } else {
+                // returns 0 if condition == `false` and `a` if condition == `true` 
+                let tmp = Num::mask(cs, elem_in, &is_first_block.not())?;
+                let tmp = self.convert_binary_to_sparse_repr(cs, &tmp, KeccakBase::KeccakSecondSparseBase)?;
+                tmp
+            };
+            *elem_out = tmp;
         }
-      
-        let (rolled_state, squeezed) = self.keccak_f(
-            cs, state, KECCAK_RATE_WORDS_SIZE, Some(&elems_to_absorb[..]), false
+        
+        let (rolled_state, squeezed_wrapped) = self.keccak_f(
+            cs, state, DEFAULT_KECCAK_DIGEST_WORDS_SIZE, Some(&elems_to_absorb[..]), false, false
         )?;
+        let mut squeezed = squeezed_wrapped.unwrap();
+
 
         let mut new_state = KeccakState::<E>::default();
         for idx in 0..KECCAK_STATE_WIDTH * KECCAK_STATE_WIDTH {
@@ -1067,7 +1097,7 @@ impl<E: Engine> Keccak256Gadget<E> {
             new_state[(idx % KECCAK_STATE_WIDTH, idx / KECCAK_STATE_WIDTH)] = tmp;        
         }
 
-        Ok((new_state, squeezed.unwrap()))
+        Ok((new_state, squeezed))
     }
 
     pub fn digest_from_bytes<CS: ConstraintSystem<E>>(&self, cs: &mut CS, bytes: &[Byte<E>]) -> Result<Vec<Num<E>>>

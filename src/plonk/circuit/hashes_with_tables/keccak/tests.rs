@@ -4,6 +4,7 @@ mod test {
     use crate::bellman::pairing::ff::*;
     use crate::bellman::SynthesisError;
     use crate::bellman::Engine;
+    use crate::plonk::circuit::boolean::AllocatedBit;
     use crate::tiny_keccak::Keccak;
      use crate::plonk::circuit::allocated_num::{
         AllocatedNum,
@@ -201,8 +202,8 @@ mod test {
 
 
     struct TestKeccakRoundFunctionCircuit<E:Engine>{
-        input: Vec<E::Fr>,
-        output: [E::Fr; DEFAULT_KECCAK_DIGEST_WORDS_SIZE],
+        inputs: Vec<Vec<E::Fr>>,
+        outputs: Vec<[E::Fr; DEFAULT_KECCAK_DIGEST_WORDS_SIZE]>,
     }
 
     impl<E: Engine> Circuit<E> for TestKeccakRoundFunctionCircuit<E> {
@@ -218,29 +219,70 @@ mod test {
 
         fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> 
         {
+            let keccak_gadget = Keccak256Gadget::new(cs, None, None, None, None, false, "")?;
+            let mut keccak_state = KeccakState::default();
+
+            let input_chunks = self.inputs.iter().flat_map(|inner_vec| {
+                inner_vec.chunks(KECCAK_RATE_WORDS_SIZE).identify_first_last() 
+            });
+
+            let mut is_initialized = false;
+            let mut output_block_idx = 0;
+
+            for (is_start_of_block, _is_end_of_block, in_chunk) in input_chunks
+            {
+                let mut elems_to_absorb = [Num::<E>::zero(); KECCAK_RATE_WORDS_SIZE];
+                for (i, value) in in_chunk.iter().enumerate() {
+                    let new_var = AllocatedNum::alloc(cs, || Ok(value.clone()))?;
+                    elems_to_absorb[i] = Num::Variable(new_var);
+                }
+                
+                if !is_initialized {
+                    is_initialized = true;
+                    keccak_state = keccak_gadget.keccak_round_function_init(cs, &elems_to_absorb[..])?;
+                }
+                else {
+                    let flag = Boolean::Is(AllocatedBit::alloc(cs, Some(is_start_of_block))?);
+                    let (new_state, supposed_output_vars) = keccak_gadget.keccak_round_function(
+                        cs, keccak_state, elems_to_absorb, flag
+                    )?;
+                    keccak_state = new_state;
+
+                    if is_start_of_block {
+                        let mut actual_output_vars = Vec::with_capacity(DEFAULT_KECCAK_DIGEST_WORDS_SIZE);
+                        for value in self.outputs[output_block_idx].iter() {
+                            let new_var = AllocatedNum::alloc_input(cs, || Ok(value.clone()))?;
+                            actual_output_vars.push(Num::Variable(new_var));
+                        }
+
+                        for (a, b) in supposed_output_vars.iter().zip(actual_output_vars.into_iter()) {
+                            a.enforce_equal(cs, &b)?;
+                        }
+
+                        output_block_idx += 1;
+                    }
+                }
+            }
+
+            // there is one output remaining_to_be_checked
+            let elems_to_absorb = [Num::<E>::zero(); KECCAK_RATE_WORDS_SIZE];
+            let flag = Boolean::constant(true);
+            let (_new_state, supposed_output_vars) = keccak_gadget.keccak_round_function(
+                cs, keccak_state, elems_to_absorb, flag
+            )?;
+
             let mut actual_output_vars = Vec::with_capacity(DEFAULT_KECCAK_DIGEST_WORDS_SIZE);
-            for value in self.output.iter() {
+            for value in self.outputs[output_block_idx].iter() {
                 let new_var = AllocatedNum::alloc_input(cs, || Ok(value.clone()))?;
                 actual_output_vars.push(Num::Variable(new_var));
             }
-            
-            let keccak_gadget = Keccak256Gadget::new(cs, None, None, None, None, false, "")?;
-             
-            let mut input_vars = Vec::with_capacity(self.input.len());
-            for value in self.input.iter() {
-                let new_var = AllocatedNum::alloc(cs, || Ok(value.clone()))?;
-                input_vars.push(Num::Variable(new_var));
-            }
-                    
-            let mut state = keccak_gadget.keccak_round_function_init(cs, input_vars)?;
-            let elems_to_mix = [Num::<E>::zero(); KECCAK_RATE_WORDS_SIZE];
-            let (new_state, supposed_output_vars) = keccak_gadget.keccak_round_function(
-                cs, state, elems_to_mix, Boolean::constant(true)
-            )?;
-       
+
             for (a, b) in supposed_output_vars.iter().zip(actual_output_vars.into_iter()) {
                 a.enforce_equal(cs, &b)?;
             }
+
+            output_block_idx += 1;
+            assert_eq!(output_block_idx, self.outputs.len());
             
             Ok(())
         }
@@ -251,29 +293,40 @@ mod test {
     {
         let mut rng = rand::thread_rng();
 
-        let mut input = [0u8; 8 * KECCAK_RATE_WORDS_SIZE];
-        for i in 0..(input.len() - 1) {
-            input[i] = rng.gen();
-        }
-        *(input.last_mut().unwrap()) = 0b10000001 as u8;
-        let mut output: [u8; DEFAULT_KECCAK_DIGEST_WORDS_SIZE * 8] = [0; DEFAULT_KECCAK_DIGEST_WORDS_SIZE * 8];
+        // we test the following pattern:
+        // 2 blocks || 1 block || 1 block || 3 blocks
+        const BLOCK_SIZES: [usize; 4] = [2, 1, 1, 3];
+        let mut inputs = vec![];
+        let mut outputs = vec![];
 
-        Keccak::keccak256(&input[0..(input.len() - 1)], &mut output);
+        for block_size in BLOCK_SIZES.iter() { 
+            let mut input: Vec<u8> = Vec::with_capacity(KECCAK_RATE_WORDS_SIZE * block_size * 8);
+            for _i in 0..(KECCAK_RATE_WORDS_SIZE * block_size * 8) {
+                input.push(rng.gen());
+            }
+            *(input.last_mut().unwrap()) = 0b10000001 as u8;
+            let mut output: [u8; DEFAULT_KECCAK_DIGEST_WORDS_SIZE * 8] = [0; DEFAULT_KECCAK_DIGEST_WORDS_SIZE * 8];
+            
+            Keccak::keccak256(&input[0..(input.len() - 1)], &mut output);
     
-        let mut input_fr_arr = Vec::with_capacity(KECCAK_RATE_WORDS_SIZE);
-        let mut output_fr_arr = [Fr::zero(); DEFAULT_KECCAK_DIGEST_WORDS_SIZE];
+            let mut input_fr_arr = Vec::with_capacity(KECCAK_RATE_WORDS_SIZE * block_size);
+            let mut output_fr_arr = [Fr::zero(); DEFAULT_KECCAK_DIGEST_WORDS_SIZE];
 
-        for (_i, block) in input.chunks(8).enumerate() {
-            input_fr_arr.push(slice_to_ff::<Fr>(block));
-        }
+            for (_i, block) in input.chunks(8).enumerate() {
+                input_fr_arr.push(slice_to_ff::<Fr>(block));
+            }
 
-        for (i, block) in output.chunks(8).enumerate() {
-            output_fr_arr[i] = slice_to_ff::<Fr>(block);
+            for (i, block) in output.chunks(8).enumerate() {
+                output_fr_arr[i] = slice_to_ff::<Fr>(block);
+            }
+
+            inputs.push(input_fr_arr);
+            outputs.push(output_fr_arr);
         }
         
         let circuit = TestKeccakRoundFunctionCircuit::<Bn256>{
-            input: input_fr_arr,
-            output: output_fr_arr,
+            inputs,
+            outputs,
         };
              
         let mut assembly = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();

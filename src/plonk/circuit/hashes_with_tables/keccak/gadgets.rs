@@ -1036,7 +1036,7 @@ impl<E: Engine> Keccak256Gadget<E> {
     }
 
     pub fn keccak_round_function_init<CS: ConstraintSystem<E>>(
-        &self, cs: &mut CS, initial_absorbed_values: Vec<Num<E>>
+        &self, cs: &mut CS, initial_absorbed_values: &[Num<E>]
     ) -> Result<KeccakState<E>> {
         assert!(initial_absorbed_values.len() <= KECCAK_RATE_WORDS_SIZE);
 
@@ -1097,6 +1097,11 @@ impl<E: Engine> Keccak256Gadget<E> {
             new_state[(idx % KECCAK_STATE_WIDTH, idx / KECCAK_STATE_WIDTH)] = tmp;        
         }
 
+        let round_cnst = Num::Constant(self.round_cnsts_in_first_base[KECCAK_NUM_ROUNDS-1]);
+        new_state[(0, 0)] = round_cnst.mask_by_boolean_into_accumulator(
+            cs, &is_first_block.not(), &new_state[(0, 0)]
+        )?;
+       
         Ok((new_state, squeezed))
     }
 

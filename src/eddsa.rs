@@ -14,7 +14,7 @@ use jubjub::{
     Unknown,
     edwards::Point,
     ToUniform};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, Mac, NewMac};
 use crate::rescue::{RescueEngine};
 
 use util::{hash_to_scalar, hash_to_scalar_s, sha256_hash_to_scalar, rescue_hash_to_scalar};
@@ -119,15 +119,15 @@ impl<E: JubjubEngine> Seed<E> {
         use std::slice;
 
         let mut hasher = Sha256::new();
-        hasher.input(msg);
-        let h1 = hasher.result(); // h1 = sha256(msg)
+        hasher.update(msg);
+        let h1 = hasher.finalize(); // h1 = sha256(msg)
 
         let zero = [0x00];
         let one = [0x01];
         let mut v = [1u8; 32];  // v = 0x01 0x01 0x01 ... 0x01
         let mut key = [0u8; 32]; //  key = 0x00 0x00 0x00 ... 0x00
 
-        let mut mac = HmacSha256::new_varkey(&key).expect("HMAC can take key of any size");
+        let mut mac = HmacSha256::new_from_slice(&key).expect("HMAC can take key of any size");
         
         let mut priv_key = [0u8; 32];
         pk.0.into_repr().write_be(&mut priv_key[..]).expect("PK must be representable as bytes slice");
@@ -138,12 +138,12 @@ impl<E: JubjubEngine> Seed<E> {
         concatenated.extend_from_slice(&priv_key[..]);
         concatenated.extend_from_slice(h1.as_slice());
    
-        mac.input(&concatenated[..]);
-        key.copy_from_slice(mac.clone().result().code().as_mut_slice()); // key = HMAC(key, concatenated)
+        mac.update(&concatenated[..]);
+        key.copy_from_slice(mac.clone().finalize().into_bytes().as_slice()); // key = HMAC(key, concatenated)
 
-        mac = HmacSha256::new_varkey(&key).expect("HMAC can take key of any size");
-        mac.input(&v);
-        v.copy_from_slice(mac.clone().result().code().as_mut_slice()); // v = HMAC(key, v)
+        mac = HmacSha256::new_from_slice(&key).expect("HMAC can take key of any size");
+        mac.update(&v);
+        v.copy_from_slice(mac.clone().finalize().into_bytes().as_slice()); // v = HMAC(key, v)
 
         // concatenated = v || 0x01 || priv_key || h1
         concatenated = v.as_ref().to_vec();
@@ -151,19 +151,19 @@ impl<E: JubjubEngine> Seed<E> {
         concatenated.extend_from_slice(&priv_key[..]);
         concatenated.extend_from_slice(h1.as_slice());
         
-        mac = HmacSha256::new_varkey(&key).expect("HMAC can take key of any size");
-        mac.input(&concatenated[..]);
-        key.copy_from_slice(mac.clone().result().code().as_mut_slice()); // key = HMAC(key, concatenated)
+        mac = HmacSha256::new_from_slice(&key).expect("HMAC can take key of any size");
+        mac.update(&concatenated[..]);
+        key.copy_from_slice(mac.clone().finalize().into_bytes().as_slice()); // key = HMAC(key, concatenated)
 
-        mac = HmacSha256::new_varkey(&key).expect("HMAC can take key of any size");
-        mac.input(&v);
-        v.copy_from_slice(mac.clone().result().code().as_mut_slice()); // v = HMAC(key, v)
+        mac = HmacSha256::new_from_slice(&key).expect("HMAC can take key of any size");
+        mac.update(&v);
+        v.copy_from_slice(mac.clone().finalize().into_bytes().as_slice()); // v = HMAC(key, v)
 
         loop {
             let mut k_slice = [0u8; 32];
-            mac = HmacSha256::new_varkey(&key).expect("HMAC can take key of any size");
-            mac.input(&v);
-            k_slice.copy_from_slice(mac.clone().result().code().as_mut_slice()); // k = HMAC(key, v)
+            mac = HmacSha256::new_from_slice(&key).expect("HMAC can take key of any size");
+            mac.update(&v);
+            k_slice.copy_from_slice(mac.clone().finalize().into_bytes().as_slice()); // k = HMAC(key, v)
 
             // k E [1; MODULUS-1]
             let mut s_repr = <E::Fs as PrimeField>::Repr::default();
@@ -174,8 +174,8 @@ impl<E: JubjubEngine> Seed<E> {
                 // concatenated = v || 0x00
                 concatenated = v.as_ref().to_vec();
                 concatenated.extend_from_slice(&zero[..]);
-                mac.input(&concatenated[..]);
-                key.copy_from_slice(mac.clone().result().code().as_mut_slice()); // key = HMAC(key, concatenated)
+                mac.update(&concatenated[..]);
+                key.copy_from_slice(mac.clone().finalize().into_bytes().as_slice()); // key = HMAC(key, concatenated)
             }
         }
     }

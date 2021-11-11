@@ -1052,7 +1052,7 @@ impl<E: Engine> Keccak256Gadget<E> {
     pub fn keccak_round_function<CS: ConstraintSystem<E>>(
         &self, 
         cs: &mut CS, 
-        mut state: KeccakState<E>, 
+        state: KeccakState<E>, 
         elems_to_mix: [Num<E>; KECCAK_RATE_WORDS_SIZE],
         is_first_block: Boolean,
     ) -> Result<(KeccakState<E>, Vec<Num<E>>)> 
@@ -1079,8 +1079,7 @@ impl<E: Engine> Keccak256Gadget<E> {
         let (rolled_state, squeezed_wrapped) = self.keccak_f(
             cs, state, DEFAULT_KECCAK_DIGEST_WORDS_SIZE, Some(&elems_to_absorb[..]), false, false
         )?;
-        let mut squeezed = squeezed_wrapped.unwrap();
-
+        let squeezed = squeezed_wrapped.unwrap();
 
         let mut new_state = KeccakState::<E>::default();
         for idx in 0..KECCAK_STATE_WIDTH * KECCAK_STATE_WIDTH {

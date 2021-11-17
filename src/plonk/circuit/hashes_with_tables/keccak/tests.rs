@@ -295,7 +295,7 @@ mod test {
 
         // we test the following pattern:
         // 2 blocks || 1 block || 1 block || 3 blocks
-        const BLOCK_SIZES: [usize; 4] = [2, 1, 1, 3];
+        const BLOCK_SIZES: [usize; 3] = [1, 3, 1];
         let mut inputs = vec![];
         let mut outputs = vec![];
 

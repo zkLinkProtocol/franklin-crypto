@@ -33,6 +33,7 @@ use crate::bellman::plonk::better_better_cs::cs::{
 };
 
 use crate::plonk::circuit::Assignment;
+use crate::plonk::circuit::utils::u64_to_fe;
 
 use super::allocated_num::*;
 
@@ -91,18 +92,24 @@ pub fn split_into_slices<F: PrimeField>(
     let mut repr = el.into_repr();
     assert!(repr.num_bits() as usize <= slice_width * num_slices, "limit is {} bits, got {}", slice_width * num_slices, repr.num_bits());
     let mut slices = Vec::with_capacity(num_slices);
-    let mask = (1u64 << slice_width) - 1u64;
-    for _ in 0..num_slices {
-        let slice = repr.as_ref()[0] & mask;
+    if slice_width < 64 {    
+        let mask = (1u64 << slice_width) - 1u64;
+        for _ in 0..num_slices {
+            let slice = repr.as_ref()[0] & mask;
 
-        let mut r = F::Repr::default();
-        r.as_mut()[0] = slice;
+            let mut r = F::Repr::default();
+            r.as_mut()[0] = slice;
 
-        let slice = F::from_repr(r).unwrap();
-        slices.push(slice);
+            let slice = F::from_repr(r).unwrap();
+            slices.push(slice);
 
-        repr.shr(slice_width as u32);
+            repr.shr(slice_width as u32);
+        }
     }
+    else {
+        let it = repr.as_ref().iter().map(|x| u64_to_fe::<F>(*x)).take(num_slices);
+        slices.extend(it);
+    };
 
     slices
 }
@@ -169,6 +176,7 @@ fn split_into_bit_constraint_slices<F: PrimeField>(
     slices
 }
 
+use std::iter::FromIterator;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) static RANGE_GATES_COUNTER: AtomicUsize = AtomicUsize::new(0);

@@ -84,13 +84,12 @@ impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
     pub fn max_representable_value(&self) -> BigUint {
         let mut tmp = self.base_field_modulus.clone() * &self.binary_representation_max_value;
         tmp = tmp.sqrt();
-        debug_assert!(&tmp >= &self.represented_field_modulus, 
-            "not sufficient capacity to represent modulus: can represent up to {} bits, modulus is {} bits", 
-            tmp.bits() - 1, 
-            self.represented_field_modulus.bits()
-        );
 
         tmp
+    }
+
+    pub fn rns_system_max_value(&self) -> BigUint {
+        self.base_field_modulus.clone() * &self.binary_representation_max_value
     }
 
     pub fn new_for_field(limb_size: usize, intermediate_limb_capacity: usize, num_binary_limbs:usize) -> Self {
@@ -226,6 +225,11 @@ impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
             &freshly_allocated_max_value, freshly_allocated_max_value.bits(), new.max_representable_value(), new.max_representable_value().bits());
         }
 
+        assert!(
+            &new.max_representable_value() >= &new.represented_field_modulus, 
+            "not sufficient capacity to represent modulus: RNS max value < p^2", 
+        );
+
         if new.can_allocate_from_double_limb_witness() {
             assert!(E::Fr::CAPACITY as usize >= limb_size * 2, "double limb size must not overflow the capacity");
         }
@@ -339,34 +343,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         result
     }
-
-    // pub fn constant(
-    //     value: F,
-    //     params: &'a RnsParameters<E, F>
-    // ) -> Self {
-    //     let (binary_limb_values, base_limb_value) = split_into_limbs(value, params);
-
-    //     let mut binary_limbs = Vec::with_capacity(params.num_binary_limbs);
-
-    //     for (l, &width) in binary_limb_values.into_iter()
-    //         .zip(params.binary_limbs_bit_widths.iter())
-    //     {
-    //         if width == 0 {
-    //             assert!(l.is_zero());
-    //         }
-    //         let limb = Limb::new_constant_from_field_value(l);
-    //         binary_limbs.push(limb);
-    //     }
-
-    //     let base_limb = Term::from_constant(base_limb_value);
-
-    //     Self {
-    //         binary_limbs,
-    //         base_field_limb: base_limb,
-    //         representation_params: params,
-    //         value: Some(value),
-    //     }
-    // }
 
     pub fn new_allocated<CS: ConstraintSystem<E>>(
         cs: &mut CS,
@@ -810,6 +786,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         assert!(width > 0);
         assert!(params.binary_limbs_params.limb_size_bits % params.range_check_info.minimal_multiple == 0, 
             "limb size must be divisible by range constraint strategy granularity");
+
+        if let Some(v) = value.as_ref() {
+            assert!(v.bits() as usize <= width);
+        }
 
         let mut binary_limbs_allocated = Vec::with_capacity(params.num_binary_limbs);
 
@@ -1877,8 +1857,12 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             _ => (None, None)
         };
 
-        let q_elem = Self::coarsely_allocate_for_unknown_width(cs, q, params)?;
+        // estimate q bit width
+        let q_max_value = this.get_max_value() * other.get_max_value() / &params.represented_field_modulus;
+        let q_max_bits = q_max_value.bits();
+        let q_elem = Self::coarsely_allocate_for_known_bit_width(cs, q, q_max_bits as usize, params)?;
 
+        // let q_elem = Self::coarsely_allocate_for_unknown_width(cs, q, params)?;
 
         let r_elem = Self::new_allocated(
             cs, 
@@ -1925,15 +1909,20 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             _ => (None, None)
         };
 
-        let q_elem = Self::coarsely_allocate_for_unknown_width(cs, q, params)?;
-
         let r_elem = Self::new_allocated(
             cs, 
             some_biguint_to_fe(&r), 
             params
         )?;
 
-        // we constraint a * b = q*p + rem
+        // we constraint a * a = q*p + rem
+
+        // estimate q bit width
+        let q_max_value = this.get_max_value() * this.get_max_value() / &params.represented_field_modulus;
+        let q_max_bits = q_max_value.bits();
+        let q_elem = Self::coarsely_allocate_for_known_bit_width(cs, q, q_max_bits as usize, params)?;
+
+        // let q_elem = Self::coarsely_allocate_for_unknown_width(cs, q, params)?;
 
         Self::constraint_square_with_multiple_additions(
             cs, 
@@ -1997,7 +1986,18 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             (Some(q), Some(r))
         };
 
-        let q_elem = Self::coarsely_allocate_for_unknown_width(cs, q, params)?;
+        // so we constraint self * to_mul + [to_add] = q * p + r
+        // we we estimate q width
+
+        let mut lhs_max_value = this.get_max_value() * to_mul.get_max_value();
+        for el in to_add.iter() {
+            lhs_max_value += el.get_max_value();
+        }
+        let q_max_value = lhs_max_value / &params.represented_field_modulus;
+        let q_max_bits = q_max_value.bits();
+        let q_elem = Self::coarsely_allocate_for_known_bit_width(cs, q, q_max_bits as usize, params)?;
+
+        // let q_elem = Self::coarsely_allocate_for_unknown_width(cs, q, params)?;
 
         let r_elem = Self::new_allocated(
             cs, 
@@ -2065,13 +2065,18 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             (Some(q), Some(r))
         };
 
-        let q_elem = Self::coarsely_allocate_for_unknown_width(cs, q, params)?;
-
         let r_elem = Self::new_allocated(
             cs, 
             some_biguint_to_fe(&r), 
             params
         )?;
+
+        // estimate q bit width
+        let q_max_value = this.get_max_value() * this.get_max_value() / &params.represented_field_modulus;
+        let q_max_bits = q_max_value.bits();
+        let q_elem = Self::coarsely_allocate_for_known_bit_width(cs, q, q_max_bits as usize, params)?;
+
+        // let q_elem = Self::coarsely_allocate_for_unknown_width(cs, q, params)?;
 
         Self::constraint_square_with_multiple_additions(
             cs, 
@@ -2132,22 +2137,20 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             }
         };
 
-        let q_elem = Self::coarsely_allocate_for_unknown_width(cs, q, params)?;
-
-        // let q_wit = Self::slice_into_double_limb_witnesses(q, cs, params, true)?;
-
-        // let q_elem = Self::from_double_size_limb_witnesses(
-        //     cs, 
-        //     &q_wit, 
-        //     true, 
-        //     params
-        // )?;
-
         let inv_wit = Self::new_allocated(
             cs, 
             some_biguint_to_fe::<F>(&result),
             params
         )?;
+
+        // estimate q bit width
+        // result * den = q * p + self, so we say that self min value == 0 (as it goes into LHS with - sign) and worst case for q is
+
+        let q_max_value = inv_wit.get_max_value() * den.get_max_value() / &params.represented_field_modulus;
+        let q_max_bits = q_max_value.bits();
+        let q_elem = Self::coarsely_allocate_for_known_bit_width(cs, q, q_max_bits as usize, params)?;
+
+        // let q_elem = Self::coarsely_allocate_for_unknown_width(cs, q, params)?;
 
         Self::constraint_fma_with_multiple_additions(
             cs, 
@@ -2243,13 +2246,19 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             return Ok((new, (reduced_nums, den)));
         }
 
-        let q_elem = Self::coarsely_allocate_for_unknown_width(cs, q, params)?;
-
         let result_wit = Self::new_allocated(
             cs, 
             some_biguint_to_fe::<F>(&result),
             params
         )?;
+
+        // result*den = q*p + (a1 + a2 + ... + an), but since we have to subtract (a1 + a2 + ... + an) we do not use them
+        // in this estimation
+        let q_max_value = result_wit.get_max_value() * den.get_max_value() / &params.represented_field_modulus;
+        let q_max_bits = q_max_value.bits();
+        let q_elem = Self::coarsely_allocate_for_known_bit_width(cs, q, q_max_bits as usize, params)?;
+
+        // let q_elem = Self::coarsely_allocate_for_unknown_width(cs, q, params)?;
 
         Self::constraint_fma_with_multiple_additions(
             cs, 
@@ -2348,6 +2357,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok((selected, (this, negated)))
     }
 
+    #[track_caller]
     fn constraint_fma_with_multiple_additions<CS: ConstraintSystem<E>>(
         cs: &mut CS,
         mul_a: &Self,
@@ -2356,6 +2366,30 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         result_quotient: &Self,
         result_remainder_decomposition: &[Self],
     ) -> Result<(), SynthesisError> {
+        // we perform an exhaustive check here: 
+        // a * b + [addition_elements] < RNS modulus
+        // result_quotient * p + [result_remainder_decomposition] < RNS modulus
+
+        let mut lhs_max_value = BigUint::zero();
+        lhs_max_value += mul_a.get_max_value() * mul_b.get_max_value();
+        for el in addition_elements.iter() {
+            lhs_max_value += el.get_max_value();
+        }
+
+        if lhs_max_value >= mul_a.representation_params.rns_system_max_value() {
+            panic!("hit overflow over RNS modulus in LHS");
+        }
+
+        let mut rhs_max_value = BigUint::zero();
+        rhs_max_value += result_quotient.get_max_value() * &mul_a.representation_params.represented_field_modulus;
+        for el in result_remainder_decomposition.iter() {
+            rhs_max_value += el.get_max_value();
+        }
+
+        if rhs_max_value >= mul_a.representation_params.rns_system_max_value() {
+            panic!("hit overflow over RNS modulus in RHS");
+        }
+
         // remember the schoolbook multiplication
 
         //  0       0       a1      a0
@@ -2439,7 +2473,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             Self::propagate_carries_using_double_limb_approach(
                 cs,
                 (result_limbs, collapsed_max_values),
-                addition_elements,
+                &addition_elements,
                 result_remainder_decomposition,
                 params
             )?;
@@ -2447,7 +2481,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             Self::propagate_carries_using_single_limb_approach(
                 cs,
                 (result_limbs, collapsed_max_values),
-                addition_elements,
+                &addition_elements,
                 result_remainder_decomposition,
                 params
             )?;
@@ -2493,6 +2527,27 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         result_quotient: &Self,
         result_remainder_decomposition: &[Self],
     ) -> Result<(), SynthesisError> {
+        // we check that LHS and RHS do not overflow RNS modulus
+
+        let mut lhs_max_value = BigUint::zero();
+        lhs_max_value += this.get_max_value() * this.get_max_value();
+        for el in addition_elements.iter() {
+            lhs_max_value += el.get_max_value();
+        }
+
+        if lhs_max_value >= this.representation_params.rns_system_max_value() {
+            panic!("hit overflow over RNS modulus in LHS");
+        }
+
+        let mut rhs_max_value = BigUint::zero();
+        rhs_max_value += result_quotient.get_max_value() * &this.representation_params.represented_field_modulus;
+        for el in result_remainder_decomposition.iter() {
+            rhs_max_value += el.get_max_value();
+        }
+
+        if rhs_max_value >= this.representation_params.rns_system_max_value() {
+            panic!("hit overflow over RNS modulus in RHS");
+        }
         let params = this.representation_params;
 
         let mut result_limbs = vec![vec![]; params.num_binary_limbs];

@@ -195,7 +195,6 @@ impl<E: Engine> Keccak256Gadget<E> {
             }
             pow
         };
-        println!("range table bitlen: {}", range_table_bitlen);
         
         let g = |x| { of_transformed[x as usize] };
         
@@ -879,6 +878,7 @@ impl<E: Engine> Keccak256Gadget<E> {
                 if iter_count < elems_to_squeeze {
                     squeezed.push(Num::Constant(keccak_ff_second_converter(fr, BINARY_BASE)));
                 }
+                iter_count += 1;
                 continue;
             }
 

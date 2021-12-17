@@ -157,6 +157,8 @@ impl<E: Engine> OverflowCognizantConverterTable<E> {
         base_b: u64, base_c: u64, offset:u64, transform_f: F, name: &'static str
     ) -> Self 
     {
+        let base_b = 91u64;
+        println!("BASE B: {}", base_b);
         let table_size = (base_b * (base_b+1)/2) as usize;
         let mut keys_vec = Vec::with_capacity(table_size);
         let zero_vec = vec![E::Fr::zero(); table_size];
@@ -165,27 +167,35 @@ impl<E: Engine> OverflowCognizantConverterTable<E> {
 
         let offset_fr = u64_exp_to_ff::<E::Fr>(base_b, offset);
         let zero_fr = E::Fr::zero();
+        println!("VEC SIZE: {}", keys_vec.len());
 
         for i in 0..base_b {
-            for j in 0..(base_b-i) {
-                let low = i;
-                let high = j;
+            // for j in 0..(base_b-i) {
+            //     let low = i;
+            //     let high = j;
 
-                let mut key = u64_to_ff::<E::Fr>(low);
-                let mut high_fr = u64_to_ff::<E::Fr>(high);
-                high_fr.mul_assign(&offset_fr);
-                key.add_assign(&high_fr);
+            //     let mut key = u64_to_ff::<E::Fr>(low);
+            //     let mut high_fr = u64_to_ff::<E::Fr>(high);
+            //     high_fr.mul_assign(&offset_fr);
+            //     key.add_assign(&high_fr);
 
-                let value = u64_to_ff(transform_f(low + high));
-
-                keys_vec.push(key);
-                values_vec.push(value);
-                map.insert(key, (zero_fr.clone(), value));
-            }
+            //     let value = u64_to_ff::<E::Fr>(transform_f(low + high));
+            //     keys_vec.push(key);
+            //     values_vec.push(value);
+            //     map.insert(key, (value.clone(), value));
+            // }
+            let key = u64_to_ff::<E::Fr>(200 - i);
+            keys_vec.push(key.clone());
+            values_vec.push(key.clone());
+            map.insert(key.clone(), (key.clone(), key));
         }
 
+        println!("TABLE SIZE: {}", table_size);
+        println!("VEC SIZE: {}", keys_vec.len());
+        println!("MAP SIZE: {}", map.len());
+
         Self {
-            table_entries: [keys_vec, zero_vec, values_vec],
+            table_entries: [keys_vec, values_vec.clone(), values_vec],
             table_lookup_map: map,
             base_b,
             base_c,
@@ -197,7 +207,7 @@ impl<E: Engine> OverflowCognizantConverterTable<E> {
 
 impl<E: Engine> std::fmt::Debug for OverflowCognizantConverterTable<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ExtendedBaseConverterTable")
+        f.debug_struct("OverflowCognizantConverterTable")
             .field("base_b", &self.base_b)
             .field("base_c", &self.base_c)
             .field("high_chunk_offset", &self.high_chunk_offset)
@@ -211,6 +221,7 @@ impl<E: Engine> LookupTableInternal<E> for OverflowCognizantConverterTable<E> {
     }
     fn table_size(&self) -> usize {
         let table_size = (self.base_b * (self.base_b+1)/2) as usize;
+        println!("SELF TABLE SIZE: {}", table_size);
         table_size
     }
     fn num_keys(&self) -> usize {

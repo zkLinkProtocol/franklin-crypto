@@ -30,7 +30,8 @@ mod test {
         is_byte_test: bool,
     }
 
-    impl<E: Engine> Circuit<E> for TestSha256Circuit<E> {
+    impl<E: Engine> Circuit<E> for TestSha256Circuit<E>
+    {
         type MainGate = Width4MainGateWithDNext;
 
         fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
@@ -306,5 +307,73 @@ mod test {
         println!("Assembly contains {} gates", assembly.n());
         println!("Total length of all tables: {}", assembly.total_length_of_all_tables);
         assert!(assembly.is_satisfied());
+    }
+
+    #[test]
+    fn test_sha256_on_real_prover() {
+        const NUM_OF_BLOCKS: usize = 2;
+        let mut rng = rand::thread_rng();
+
+        let mut input = [0u8; 64 * NUM_OF_BLOCKS];
+        for i in 0..(64 * (NUM_OF_BLOCKS-1) + 55) {
+            input[i] = rng.gen();
+        }
+        input[64 * (NUM_OF_BLOCKS-1) + 55] = 0b10000000;
+        
+        let total_number_of_bits = (64 * (NUM_OF_BLOCKS-1) + 55) * 8;
+        input[64 * (NUM_OF_BLOCKS-1) + 60] = (total_number_of_bits >> 24) as u8;
+        input[64 * (NUM_OF_BLOCKS-1) + 61] = (total_number_of_bits >> 16) as u8;
+        input[64 * (NUM_OF_BLOCKS-1) + 62] = (total_number_of_bits >> 8) as u8;
+        input[64 * (NUM_OF_BLOCKS-1) + 63] = total_number_of_bits as u8;
+
+        // create a Sha256 object
+        let mut hasher = Sha256::new();
+        // write input message
+        hasher.update(&input[0..(64 * (NUM_OF_BLOCKS-1) + 55)]);
+        // read hash digest and consume hasher
+        let output = hasher.finalize();
+
+        let mut input_fr_arr = Vec::with_capacity(16 * NUM_OF_BLOCKS);
+        let mut output_fr_arr = [Fr::zero(); 8];
+
+        for block in input.chunks(4) {
+            input_fr_arr.push(slice_to_ff::<Fr>(block));
+        }
+
+        for (i, block) in output.chunks(4).enumerate() {
+            output_fr_arr[i] = slice_to_ff::<Fr>(block);
+        }
+        
+        let circuit = TestSha256Circuit::<Bn256>{
+            input: input_fr_arr,
+            output: output_fr_arr,
+            ch_base_num_of_chunks: None,
+            maj_sheduler_base_num_of_chunks: None,
+            is_const_test: false,
+            is_byte_test: false,
+        };
+
+        let mut assembly = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
+        circuit.synthesize(&mut assembly).expect("must work");
+        assembly.finalize();
+        assert!(assembly.is_satisfied());
+
+        use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
+        use crate::bellman::worker::Worker;
+        use crate::bellman::plonk::commitments::transcript::keccak_transcript::RollingKeccakTranscript;
+        use crate::bellman::plonk::better_better_cs::setup::VerificationKey;
+        use crate::bellman::plonk::better_better_cs::verifier::verify;
+
+        let worker = Worker::new();
+        let setup_size = assembly.n().next_power_of_two();
+        let crs = Crs::<Bn256, CrsForMonomialForm>::dummy_crs(setup_size);
+        let setup = assembly.create_setup::<TestSha256Circuit::<Bn256>>(&worker).unwrap();
+        let vk = VerificationKey::from_setup(&setup, &worker, &crs).unwrap();
+
+        let proof = assembly
+            .create_proof::<_, RollingKeccakTranscript<Fr>>(&worker, &setup, &crs, None)
+            .unwrap();
+        // let valid = verify::<_, _, RollingKeccakTranscript<Fr>>(&vk, &proof, None).unwrap();
+        // assert!(valid);
     }
 }

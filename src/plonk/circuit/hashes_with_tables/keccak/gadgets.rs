@@ -197,7 +197,6 @@ impl<E: Engine> Keccak256Gadget<E> {
         };
         
         let g = |x| { of_transformed[x as usize] };
-        
         let first_to_second_base_converter_table = LookupTableApplication::new(
             name2,
             ExtendedBaseConverterTable::new(
@@ -368,7 +367,7 @@ impl<E: Engine> Keccak256Gadget<E> {
 
         cs.begin_gates_batch_for_step()?;
 
-        cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
+        //cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
     
         let gate_term = MainGateTerm::new();
         let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;
@@ -1006,7 +1005,7 @@ impl<E: Engine> Keccak256Gadget<E> {
         
         let mut state : KeccakState<E> = KeccakState::default();
         let mut res = Vec::with_capacity(self.digest_size);
-        
+
         for (is_first, _is_last, data_block) in data.chunks(KECCAK_RATE_WORDS_SIZE).identify_first_last() {
             if is_first {
                 for (idx, elem) in data_block.iter().enumerate() {

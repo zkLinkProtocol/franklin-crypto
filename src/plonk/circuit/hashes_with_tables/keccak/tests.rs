@@ -336,6 +336,66 @@ mod test {
         println!("Total length of all tables: {}", assembly.total_length_of_all_tables);
         assert!(assembly.is_satisfied());
     }
+
+    #[test]
+    fn test_keccak_on_real_prover() {
+        const NUM_OF_BLOCKS: usize = 2;
+        let mut rng = rand::thread_rng();
+
+        let mut input = [0u8; 8 * KECCAK_RATE_WORDS_SIZE * NUM_OF_BLOCKS];
+        for i in 0..(input.len() - 1) {
+            input[i] = rng.gen();
+        }
+        *(input.last_mut().unwrap()) = 0b10000001 as u8;
+        let mut output: [u8; DEFAULT_KECCAK_DIGEST_WORDS_SIZE * 8] = [0; DEFAULT_KECCAK_DIGEST_WORDS_SIZE * 8];
+
+        Keccak::keccak256(&input[0..(input.len() - 1)], &mut output);
+    
+        let mut input_fr_arr = Vec::with_capacity(KECCAK_RATE_WORDS_SIZE * NUM_OF_BLOCKS);
+        let mut output_fr_arr = [Fr::zero(); DEFAULT_KECCAK_DIGEST_WORDS_SIZE];
+
+        for (_i, block) in input.chunks(8).enumerate() {
+            input_fr_arr.push(slice_to_ff::<Fr>(block));
+        }
+
+        for (i, block) in output.chunks(8).enumerate() {
+            output_fr_arr[i] = slice_to_ff::<Fr>(block);
+        }
+        
+        let circuit = TestKeccakCircuit::<Bn256>{
+            input: input_fr_arr,
+            output: output_fr_arr,
+            is_const_test: false,
+            is_byte_test: false,
+        };
+
+        let mut assembly = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
+
+        circuit.synthesize(&mut assembly).expect("must work");
+        assembly.finalize();
+        println!("Assembly contains {} gates", assembly.n());
+        println!("Total length of all tables: {}", assembly.total_length_of_all_tables);
+        assert!(assembly.is_satisfied());
+
+        use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
+        use crate::bellman::worker::Worker;
+        use crate::bellman::plonk::commitments::transcript::keccak_transcript::RollingKeccakTranscript;
+        use crate::bellman::plonk::better_better_cs::setup::VerificationKey;
+        use crate::bellman::plonk::better_better_cs::verifier::verify;
+
+        let worker = Worker::new();
+        let required_size = assembly.n().next_power_of_two();
+        let crs = Crs::<Bn256, CrsForMonomialForm>::dummy_crs(1 << 20);
+        let setup = assembly.create_setup::<TestKeccakCircuit::<Bn256>>(&worker).unwrap();
+        let vk = VerificationKey::from_setup(&setup, &worker, &crs).unwrap();
+
+        let proof = assembly
+            .create_proof::<_, RollingKeccakTranscript<Fr>>(&worker, &setup, &crs, None)
+            .unwrap();
+
+        // let valid = verify::<_, _, RollingKeccakTranscript<Fr>>(&vk, &proof, None).unwrap();
+        // assert!(valid);
+    }
 }
 
 

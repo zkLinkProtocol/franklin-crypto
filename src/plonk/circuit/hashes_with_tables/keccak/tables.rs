@@ -4,6 +4,7 @@ use crate::bellman::plonk::better_better_cs::utils;
 use crate::bellman::pairing::ff::*;
 use crate::bellman::SynthesisError;
 use crate::bellman::Engine;
+use crate::plonk::circuit::bigint::fe_to_biguint;
 
 use itertools::Itertools;
 
@@ -158,13 +159,10 @@ impl<E: Engine> OverflowCognizantConverterTable<E> {
     ) -> Self 
     {
         let table_size = (base_b * (base_b+1)/2) as usize;
-        let mut keys_vec = Vec::with_capacity(table_size);
-        let zero_vec = vec![E::Fr::zero(); table_size];
-        let mut values_vec = Vec::with_capacity(table_size);
         let mut map = std::collections::HashMap::with_capacity(table_size);
-
         let offset_fr = u64_exp_to_ff::<E::Fr>(base_b, offset);
         let zero_fr = E::Fr::zero();
+        let mut unsorted_table = Vec::with_capacity(table_size);
 
         for i in 0..base_b {
             for j in 0..(base_b-i) {
@@ -176,12 +174,19 @@ impl<E: Engine> OverflowCognizantConverterTable<E> {
                 high_fr.mul_assign(&offset_fr);
                 key.add_assign(&high_fr);
 
-                let value = u64_to_ff(transform_f(low + high));
-
-                keys_vec.push(key);
-                values_vec.push(value);
+                let value = u64_to_ff::<E::Fr>(transform_f(low + high));
+                unsorted_table.push((key.clone(), value.clone()));
                 map.insert(key, (zero_fr.clone(), value));
             }
+        }
+        unsorted_table.sort_by(|a, b| fe_to_biguint(&a.0).cmp(&fe_to_biguint(&b.0)));
+
+        let mut keys_vec = Vec::with_capacity(table_size);
+        let zero_vec = vec![E::Fr::zero(); table_size];
+        let mut values_vec = Vec::with_capacity(table_size);
+        for (key, val) in unsorted_table.into_iter() {
+            keys_vec.push(key);
+            values_vec.push(val);
         }
 
         Self {
@@ -197,7 +202,7 @@ impl<E: Engine> OverflowCognizantConverterTable<E> {
 
 impl<E: Engine> std::fmt::Debug for OverflowCognizantConverterTable<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ExtendedBaseConverterTable")
+        f.debug_struct("OverflowCognizantConverterTable")
             .field("base_b", &self.base_b)
             .field("base_c", &self.base_c)
             .field("high_chunk_offset", &self.high_chunk_offset)
@@ -211,6 +216,7 @@ impl<E: Engine> LookupTableInternal<E> for OverflowCognizantConverterTable<E> {
     }
     fn table_size(&self) -> usize {
         let table_size = (self.base_b * (self.base_b+1)/2) as usize;
+        println!("SELF TABLE SIZE: {}", table_size);
         table_size
     }
     fn num_keys(&self) -> usize {
@@ -236,7 +242,7 @@ impl<E: Engine> LookupTableInternal<E> for OverflowCognizantConverterTable<E> {
     }
     fn column_is_trivial(&self, column_num: usize) -> bool {
         assert!(column_num < 3);
-        false
+        column_num == 1
     }
 
     fn is_valid_entry(&self, keys: &[E::Fr], values: &[E::Fr]) -> bool {

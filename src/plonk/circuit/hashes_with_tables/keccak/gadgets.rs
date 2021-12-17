@@ -367,7 +367,7 @@ impl<E: Engine> Keccak256Gadget<E> {
 
         cs.begin_gates_batch_for_step()?;
 
-        //cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
+        cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
     
         let gate_term = MainGateTerm::new();
         let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;

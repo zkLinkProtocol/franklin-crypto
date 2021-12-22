@@ -458,6 +458,17 @@ impl<E: Engine> Default for TwistedEdwardsPoint<E> {
 }
 
 impl<E: Engine> TwistedEdwardsPoint<E> {
+    pub fn from_xy(x: E::Fr, y: E::Fr) -> Self {
+        let mut t = x;
+        t.mul_assign(&y);
+        
+        Self {
+            x,
+            y,
+            z: E::Fr::one(),
+            t,
+        }
+    }
     pub fn into_xy(&self) -> (E::Fr, E::Fr) {
         let zinv = self.z.inverse().unwrap();
 

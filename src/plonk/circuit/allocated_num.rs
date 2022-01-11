@@ -1447,9 +1447,32 @@ impl<E: Engine> AllocatedNum<E> {
     ) -> Result<Boolean, SynthesisError>
         where CS: ConstraintSystem<E> 
     {
+        // two constraints
+
+        //  inv * X = (1 - flag)
+        //  flag * X = 0
+
+        // if X != 0 then flag == 0 from second
+        // if X == 0 then flag == 1 from first
+
+        // so we do not need to constraint flag as boolean additionally
+
+        //  inv * X = (1 - flag) => inv * X + flag - 1 = 0
+        //  flag * X = 0
 
         let flag_value = self.get_value().map(|x| x.is_zero());
-        let flag = AllocatedBit::alloc(cs, flag_value)?;
+        let flag_value_as_field_element = flag_value.map(|el| {
+            if el {
+                E::Fr::one()
+            } else {
+                E::Fr::zero()
+            }
+        });
+        let raw_flag = AllocatedNum::alloc(cs, || flag_value_as_field_element.grab())?;
+        let flag = AllocatedBit {
+            variable: raw_flag.get_variable(),
+            value: flag_value
+        };
 
         let inv_value = if let Some(value) = self.get_value() {
             let inv = value.inverse();

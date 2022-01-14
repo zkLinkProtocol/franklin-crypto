@@ -396,3 +396,89 @@ impl<E: Engine> LookupTableInternal<E> for XorRotateTable<E> {
         Err(SynthesisError::Unsatisfiable)
     }
 }
+
+
+// The following tables check booleanity of three elemets at once:
+// it contains all possible triples [a0, a1, a2] where each a_i \in {0, 1}
+#[derive(Clone)]
+pub struct BooleanityTable<E: Engine> {
+    table_entries: [Vec<E::Fr>; 3],
+    name: &'static str,
+}
+
+
+impl<E: Engine> BooleanityTable<E> {
+    pub fn new(name: &'static str) -> Self {
+        let column0 = vec![
+            E::Fr::zero(),  E::Fr::zero(),  E::Fr::zero(),  E::Fr::zero(),
+            E::Fr::one(), E::Fr::one(), E::Fr::one(), E::Fr::one()
+        ];
+        let column1 = vec![
+            E::Fr::zero(),  E::Fr::zero(),  E::Fr::one(),  E::Fr::one(),
+            E::Fr::zero(), E::Fr::zero(), E::Fr::one(), E::Fr::one()
+        ];
+        let column2 = vec![
+            E::Fr::zero(),  E::Fr::one(),  E::Fr::zero(),  E::Fr::one(),
+            E::Fr::zero(), E::Fr::one(), E::Fr::zero(), E::Fr::one()
+        ];
+
+        Self {
+            table_entries: [column0, column1, column2],
+            name,
+        }
+    }
+}
+
+
+impl<E: Engine> std::fmt::Debug for BooleanityTable<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BooleanityTable").finish()
+    }
+}
+
+
+impl<E: Engine> LookupTableInternal<E> for BooleanityTable<E> {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn table_size(&self) -> usize {
+        1 << 8
+    }
+    fn num_keys(&self) -> usize {
+        3
+    }
+    fn num_values(&self) -> usize {
+        0
+    }
+    fn allows_combining(&self) -> bool {
+        true
+    }
+    fn get_table_values_for_polys(&self) -> Vec<Vec<E::Fr>> {
+        vec![self.table_entries[0].clone(), self.table_entries[1].clone(), self.table_entries[2].clone()]
+    }
+    fn table_id(&self) -> E::Fr {
+        table_id_from_string(self.name)
+    }
+    fn sort(&self, _values: &[E::Fr], _column: usize) -> Result<Vec<E::Fr>, SynthesisError> {
+        unimplemented!()
+    }
+    fn box_clone(&self) -> Box<dyn LookupTableInternal<E>> {
+        Box::from(self.clone())
+    }
+    fn column_is_trivial(&self, _column_num: usize) -> bool {
+        false
+    }
+
+    fn is_valid_entry(&self, keys: &[E::Fr], values: &[E::Fr]) -> bool {
+        assert!(keys.len() == self.num_keys());
+        assert!(values.len() == self.num_values());
+
+        let check_booleanity = |fr: &E::Fr| -> bool { (*fr == E::Fr::zero()) || (*fr == E::Fr::one()) };
+        values.iter().all(|x| check_booleanity(x))
+    }
+
+    fn query(&self, _keys: &[E::Fr]) -> Result<Vec<E::Fr>, SynthesisError> {
+        Err(SynthesisError::Unsatisfiable)
+    }
+}
+

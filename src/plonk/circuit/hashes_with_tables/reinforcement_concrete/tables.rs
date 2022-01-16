@@ -30,7 +30,7 @@ pub struct ReinforcementConcreterHelperTable0<E: Engine> {
 }
 
 impl<E: Engine> ReinforcementConcreterHelperTable0<E> {
-    pub fn new<F>(name: &'static str) -> Self {
+    pub fn new(name: &'static str) -> Self {
         let valid_state_transitions = std::collections::HashSet::<_>::from_iter(std::array::IntoIter::new(
             [(0, 0), (0, 1), (1, 1), (1, 2), (2, 1), (2, 2)]).map(
                 |(x, y)| (u64_to_ff::<E::Fr>(x), u64_to_ff::<E::Fr>(y))

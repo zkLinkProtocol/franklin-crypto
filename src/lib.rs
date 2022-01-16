@@ -16,6 +16,9 @@ extern crate itertools;
 extern crate splitmut;
 extern crate blake2;
 
+#[macro_use]
+extern crate lazy_static;
+
 #[cfg(test)]
 #[macro_use]
 extern crate hex_literal;

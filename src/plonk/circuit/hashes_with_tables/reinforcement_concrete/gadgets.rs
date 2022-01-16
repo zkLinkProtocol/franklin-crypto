@@ -18,6 +18,7 @@ use crate::plonk::circuit::assignment::{
 use crate::plonk::circuit::custom_5th_degree_gate_optimized::Nonlinearity5CustomGate;
 use crate::plonk::circuit::custom_rescue_gate::Rescue5CustomGate;
 use crate::plonk::circuit::bigint::repr_to_biguint;
+use crate::plonk::circuit::linear_combination::*;
 
 use super::tables::*;
 use super::super::utils::*;
@@ -28,14 +29,16 @@ use crate::num_bigint::BigUint;
 use crate::num_traits::cast::ToPrimitive;
 use crate::num_traits::{ Zero, One };
 use std::convert::TryInto;
+use std::ops::{Index, IndexMut};
 
 type Result<T> = std::result::Result<T, SynthesisError>;
 
 pub const RC_STATE_WIDTH : usize = 3;
-pub const PRE_ROUNDS_COUNT: usize = 3;
-pub const POST_ROUNDS_COUNT: usize = 3;
-pub const TOTAL_ROUNDS_COUNT: usize = PRE_ROUNDS_COUNT + POST_ROUNDS_COUNT;
-pub const INIT_SHAKE: &'static str = "ReinforcedConcrete";
+pub const RC_RATE: usize = 2;
+pub const RC_PRE_ROUNDS_COUNT: usize = 3;
+pub const RC_POST_ROUNDS_COUNT: usize = 3;
+pub const RC_TOTAL_ROUNDS_COUNT: usize = RC_PRE_ROUNDS_COUNT + RC_POST_ROUNDS_COUNT;
+pub const RC_INIT_SHAKE: &'static str = "ReinforcedConcrete";
 
 
 #[derive(Clone)]
@@ -47,19 +50,38 @@ impl<E: Engine> Default for RCState<E> {
     }
 }
 
+impl<E: Engine> Index<usize> for RCState<E> {
+    type Output = Num<E>;
 
-#[derive(Clone, Debug)]
+    fn index(&self, index: usize) -> &Self::Output {
+        assert!(index < RC_STATE_WIDTH);
+        &self.0[index]
+    }
+}
+
+impl<E: Engine> IndexMut<usize> for RCState<E> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        assert!(index < RC_STATE_WIDTH);
+        &mut self.0[index]
+    }
+}
+
+
+#[derive(Clone)]
 pub struct ReinforcementConcreteGadget<E: Engine>{
     // constants 
-    pub alphas: [E::Fr; 2],
-    pub betas: [E::Fr; 2],
-    pub p_prime: u16,
-    pub s_arr: Vec<u16>,
-    pub u_arr: Vec<u16>,
+    alphas: [E::Fr; 2],
+    betas: [E::Fr; 2],
+    p_prime: u16,
+    s_arr: Vec<u16>,
+    u_arr: Vec<u16>,
 
     pub use_optimized_fifth_power: bool,
     mds_matrix: [[E::Fr; RC_STATE_WIDTH]; RC_STATE_WIDTH],
-    round_constants: [E::Fr; TOTAL_ROUNDS_COUNT * RC_STATE_WIDTH]
+    round_constants: [E::Fr; RC_TOTAL_ROUNDS_COUNT * RC_STATE_WIDTH],
+
+    state: RCState<E>,
+    num_squeezed: usize,
 }
 
 impl<E: Engine> ReinforcementConcreteGadget<E> {
@@ -86,7 +108,7 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
 
         // we are going to check that \prod s_i >= E::Fr::modulus
         // we compute the sequence of u_i and check that p <= u_i
-        let modulus = repr_to_biguint(&<E::Fr as PrimeField>::char());
+        let modulus = repr_to_biguint::<E::Fr>(&<E::Fr as PrimeField>::char());
         let mut x = modulus - 1u64;
         let mut u_arr = Vec::with_capacity(s_arr.len());
         let mut s_prod = BigUint::one();
@@ -105,7 +127,7 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         let name1: &'static str = "rc_helper_table1";
         let rc_helper_table1 = LookupTableApplication::new(
             name1,
-            ReinforcementConcreterHelperTable1::new(name1),
+            ReinforcementConcreterHelperTable1::new(p_prime, perm_f, &s_arr, &u_arr, name1),
             columns3.clone(),
             None,
             true
@@ -128,7 +150,7 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
 
         // initialize round constants
         let mut shake = Shake128::default();
-        shake.update(INIT_SHAKE);
+        shake.update(RC_INIT_SHAKE);
         for i in <E::Fr as PrimeField>::char().as_ref() {
             shake.update(u64::to_le_bytes(*i));
         }
@@ -139,8 +161,8 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         let mod_ = E::Fr::NUM_BITS % 8;
         let mask = if mod_ == 0 { 0xFF } else { (1u8 << mod_) - 1 };
 
-        let round_constants : [E::Fr; TOTAL_ROUNDS_COUNT * RC_STATE_WIDTH] = (
-            0..TOTAL_ROUNDS_COUNT * RC_STATE_WIDTH
+        let round_constants : [E::Fr; RC_TOTAL_ROUNDS_COUNT * RC_STATE_WIDTH] = (
+            0..RC_TOTAL_ROUNDS_COUNT * RC_STATE_WIDTH
         ).map(|_| {   
             let mut buf = vec![0u8; bytes];
             let mut word_buf = vec![0u64; words];
@@ -160,7 +182,7 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
                 let mut tmp = <E::Fr as PrimeField>::Repr::default();
                 tmp.as_mut().copy_from_slice(&word_buf);
                 let res = E::Fr::from_repr(tmp);
-                
+
                 if let Ok(el) = res {
                     break el
                 }
@@ -175,7 +197,9 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
             u_arr,
             use_optimized_fifth_power,
             mds_matrix,
-            round_constants
+            round_constants,
+            state: RCState::default(),
+            num_squeezed: 0
         })
     }
 
@@ -276,7 +300,54 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         Ok(res)
     }
 
-    fn bricks<CS>(&self, cs: &mut CS, state: RCState<E>) -> Result<RCState<E>>
+    // compute y = x^2 + a x + b
+    fn compute_quadratic_term<CS>(cs: &mut CS, x: &Num<E>, alpha: &E::Fr, beta: &E::Fr) -> Result<Num<E>>
+    where CS: ConstraintSystem<E>
+    {
+        let res = match x {
+            Num::Constant(constant) => {
+                let mut x_squared = constant.clone();
+                x_squared.square();
+                let mut res = *constant;
+                res.mul_assign(alpha);
+                res.add_assign(beta);
+                res.add_assign(&x_squared);
+                Num::Constant(res)
+            },
+            Num::Variable(var) => {
+                let quadratic_term = {
+                    ArithmeticTerm::from_variable(var.variable).mul_by_variable(var.variable)
+                };
+                let linear_term = ArithmeticTerm::from_variable_and_coeff(var.variable, alpha.clone());
+                let cnst_term = ArithmeticTerm::constant(beta.clone());
+
+                let res_var = AllocatedNum::alloc(cs, || {
+                    let x = var.get_value().grab()?;
+                    let mut x_squared = x.clone();
+                    x_squared.square();
+                    let mut res = x;
+                    res.mul_assign(alpha);
+                    res.add_assign(beta);
+                    res.add_assign(&x_squared);
+                    Ok(res)
+                })?;
+                let res_term = ArithmeticTerm::from_variable(res_var.variable);
+                
+                let mut gate = MainGateTerm::new();
+                gate.add_assign(quadratic_term);
+                gate.add_assign(linear_term);
+                gate.add_assign(cnst_term);
+                gate.sub_assign(res_term);
+                cs.allocate_main_gate(gate)?;
+
+                Num::Variable(res_var)
+            },
+        };
+
+        Ok(res)
+    }
+
+    fn bricks<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<()>
     {
         // Bricks(x_1, x_2, x_3) = (x_1^5, x_2 * (x_1^2 + a1 * x1 + b1), x_3 * (x_2^2 + a2 * x2 + b2))
         // Bricks is encoded as the following set of constraints:
@@ -287,85 +358,132 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         // y_3 = x_3 * tmp_2
         // 4 constraints in total
         let mut new_state = RCState::default();
-        new_state[0] = self.apply_5th_power(cs, &state[0])?;
 
-        let tmp1 = match new_state[1] {
-            Num::Constant(constant) => {
-                let mut x_squared = *constant;
-                x_squared.square();
-                let mut res = *constant;
-                res.mul_assign(&self.alphas[0]);
-                res.add_assign(&self.betas[0]);
-                res.add_assign(&x_squared);
-                Num::Constant(res)
-            },
-            Num::Variable(var) => {
-                let self_term = ArithmeticTerm::from_variable(var.variable);
-                let mut constant = *cnst1;
-                constant.add_assign(cnst2);
-                let other_term = ArithmeticTerm::constant(constant);
-                let result_term = ArithmeticTerm::from_variable(addition_result);
-                let mut term = MainGateTerm::new();
-                term.add_assign(self_term);
-                term.add_assign(other_term);
-                term.sub_assign(result_term);
+        // y_1 = x_1 ^ 5 (using custom gate)
+        new_state[0] = self.apply_5th_power(cs, &self.state[0])?;
+        // tmp_1 = x_1^2 + a1 * x1 + b1
+        let tmp_1 = Self::compute_quadratic_term(cs, &self.state[1], &self.alphas[0], &self.betas[0])?;
+        // y_2 = tmp_1 * x_2
+        new_state[1] = tmp_1.mul(cs, &self.state[1])?;
+        // tmp_2 = x_2^2 + a2 * x2 + b2
+        let tmp_2 = Self::compute_quadratic_term(cs, &self.state[2], &self.alphas[1], &self.betas[1])?;
+        // y_3 = x_3 * tmp_2
+        new_state[2] = tmp_2.mul(cs, &self.state[2])?;
 
-                cs.allocate_main_gate(term)?;
-
-                Num::Variable(AllocatedNum {
-                    value: value,
-                    variable: addition_result
-                })
-            },
-        };
-        
-        Ok(new_state)
+        self.state = new_state;
+        Ok(())
     }
 
-    fn concrete<CS>(&self, cs: &mut CS, state: RCState<E>, round: usize) -> Result<RCState<E>>
-    where CS: ConstraintSystem<E> 
+    fn concrete<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, round: usize) -> Result<()>
     {
         let mut new_state = RCState::default();
-        let coefs = 
-        for (coefs, round_constant) in 
-    }
-
-
-   
-    // we expect input to be well formed and padded
-    pub fn digest<CS: ConstraintSystem<E>>(&self, cs: &mut CS, message: &[Num<E>]) -> Result<[Num<E>; 8]>
-    {    
-        // we assume that input is already well-padded
-        assert!(message.len() % 16 == 0);
-        
-        let mut regs = Sha256Registers {
-            a: Num::Constant(self.iv[0].clone()).into(),
-            b: Num::Constant(self.iv[1].clone()).into(),
-            c: Num::Constant(self.iv[2].clone()).into(),
-            d: Num::Constant(self.iv[3].clone()).into(),
-            e: Num::Constant(self.iv[4].clone()).into(),
-            f: Num::Constant(self.iv[5].clone()).into(),
-            g: Num::Constant(self.iv[6].clone()).into(),
-            h: Num::Constant(self.iv[7].clone()).into(),
-        };
-
-
-        for block in message.chunks(16) {
-            let expanded_block = self.message_expansion(cs, block)?;
-            regs = self.sha256_inner_block(cs, regs, &expanded_block[..], &self.round_constants)?;
+        let mut iter = self.mds_matrix.iter().zip(
+            self.round_constants[3 * round..3*(round+1)].iter()).zip(new_state.0.iter_mut()
+        );
+        for ((row, cnst), out) in iter {
+            let mut lc = LinearCombination::zero();
+            for (coef, num) in row.iter().zip(self.state.0.iter()) {
+                lc.add_assign_number_with_coeff(num, coef.clone());
+            }
+            lc.add_assign_constant(cnst.clone());
+            *out = lc.into_num(cs)?;
         }
 
-        let res = [
-            self.extact_32_bits_from_tracked_num(cs, regs.a)?,
-            self.extact_32_bits_from_tracked_num(cs, regs.b)?,
-            self.extact_32_bits_from_tracked_num(cs, regs.c)?,
-            self.extact_32_bits_from_tracked_num(cs, regs.d)?,
-            self.extact_32_bits_from_tracked_num(cs, regs.e)?,
-            self.extact_32_bits_from_tracked_num(cs, regs.f)?,
-            self.extact_32_bits_from_tracked_num(cs, regs.g)?,
-            self.extact_32_bits_from_tracked_num(cs, regs.h)?,
-        ];
+        self.state = new_state;
+        Ok(())
+    }
+
+    // fn decompose(&self, val: &Option<E::Fr) -> Vec<u16> {
+    //     let len = self.params.si.len();
+    //     let mut res = vec![0; len];
+    //     let mut repr = val.into_repr();
+
+    //     for i in (1..self.params.si.len()).rev() {
+    //         let (r, m) = utils::divide_long_using_recip::<F>(
+    //             &repr,
+    //             self.params.divisor_i[i],
+    //             self.params.reciprokal_i[i],
+    //             self.params.norm_shift_i[i],
+    //         );
+    //         repr = r;
+    //         res[i] = m;
+    //     }
+
+    //     res[0] = repr.as_ref()[0] as u16;
+
+    //     // just debugging
+    //     if cfg!(debug_assertions) {
+    //         let repr_ref = repr.as_ref();
+    //         debug_assert!(repr_ref[0] < self.params.si[0] as u64);
+    //         repr_ref
+    //             .iter()
+    //             .skip(1)
+    //             .for_each(|el| debug_assert!(*el == 0));
+    //     }
+
+    //     res
+    // }
+
+
+    // fn bars<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<()> {
+    //     for elem in self.state.0.iter_mut() {
+    //         let res = match in_elem {
+    //             Num::Constant(cnst) => {
+
+    //         }
+    //     }
+
+    //     Ok(())
+    // }
+
+    fn sponge_permutation<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<()> {
+        self.num_squeezed = 0;
+
+        // first concrete
+        self.concrete(cs, 0)?;
+        // first rounds
+        for i in 1..=RC_PRE_ROUNDS_COUNT {
+            self.bricks(cs)?;
+            self.concrete(cs, i)?;
+        }
+        // bar round
+        self.bars(cs)?;
+        self.concrete(cs, RC_PRE_ROUNDS_COUNT + 1)?;
+        // final rounds
+        for i in RC_PRE_ROUNDS_COUNT + 2..=RC_TOTAL_ROUNDS_COUNT
+        {
+            self.bricks(cs)?;
+            self.concrete(cs, i)?;
+        }
+        
+        Ok(())
+    }
+
+    pub fn reset(&mut self) {
+        self.state = RCState::default();
+        self.num_squeezed = 0;
+    }
+
+    pub fn squeeze<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Num<E>> {
+        if self.num_squeezed >= RC_RATE {
+            self.sponge_permutation(cs)?;
+        }
+        let res = self.state[self.num_squeezed].clone();
+        self.num_squeezed += 1;
 
         Ok(res)
+    }
+
+    pub fn absorb<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, elems_to_absorb: &[Num<E>]) -> Result<()>
+    {
+        assert!(elems_to_absorb.len() <= RC_RATE);
+        for (state, elem_to_absorb) in self.state.0.iter_mut().zip(elems_to_absorb.iter()) {
+            *state = state.add(cs, elem_to_absorb)?;
+        }
+        self.sponge_permutation(cs)
+    }
+
+    pub fn get_cur_state(&self) -> [Num<E>; RC_STATE_WIDTH] {
+        self.state.0.clone()
     }
 }

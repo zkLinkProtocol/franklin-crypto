@@ -359,3 +359,20 @@ lazy_static! {
         Arc::new(ReinforcedConcreteParams::new(5, &BN256_SI, &BN256_SBOX, BN256_AB.as_ref()));
 }
 
+
+trait DefaultRcParams : Engine {
+    fn get_default_rc_params() -> Arc<ReinforcedConcreteParams<<Self as ScalarEngine>::Fr>>;
+}
+
+impl DefaultRcParams for Bn256 {
+    fn get_default_rc_params() -> Arc<ReinforcedConcreteParams<<Bn256 as ScalarEngine>::Fr>> {
+        RC_BN_PARAMS.clone()
+    }
+}
+
+impl DefaultRcParams for Bls12 {
+    fn get_default_rc_params() -> Arc<ReinforcedConcreteParams<<Bls12 as ScalarEngine>::Fr>> {
+        RC_BLS_PARAMS.clone()
+    }
+}
+

@@ -9,6 +9,7 @@ use crate::plonk::circuit::allocated_num::{
     AllocatedNum,
     Num,
 };
+use crate::plonk::circuit::boolean::{Boolean, AllocatedBit};
 use crate::plonk::circuit::byte::{
     Byte,
 };
@@ -30,6 +31,7 @@ use crate::num_traits::cast::ToPrimitive;
 use crate::num_traits::{ Zero, One };
 use std::convert::TryInto;
 use std::ops::{Index, IndexMut};
+use std::cmp::Ordering;
 
 type Result<T> = std::result::Result<T, SynthesisError>;
 
@@ -65,6 +67,13 @@ impl<E: Engine> IndexMut<usize> for RCState<E> {
         &mut self.0[index]
     }
 }
+
+
+pub struct DecomposedNum<E: Engine> {
+    pub chunks: Vec<Num<E>>,
+    pub state_trns: Vec<Num<E>>,
+    pub ge_p_flags: Vec<Boolean>
+} 
 
 
 #[derive(Clone)]
@@ -393,37 +402,97 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         Ok(())
     }
 
-    // fn decompose(&self, val: &Option<E::Fr) -> Vec<u16> {
-    //     let len = self.params.si.len();
-    //     let mut res = vec![0; len];
-    //     let mut repr = val.into_repr();
+    fn wrap_fr_by_num<CS>(cs: &mut CS, val: E::Fr, is_const: bool, has_value: bool) -> Result<Num<E>>
+    where CS: ConstraintSystem<E>
+    {
+        let res = if is_const {
+            Num::Constant(val)
+        }
+        else {
+            let var = AllocatedNum::alloc(cs, || {
+                if has_value {
+                    Ok(val)
+                }
+                else {
+                    Err(SynthesisError::AssignmentMissing)
+                }
+            })?;
+            Num::Variable(var)
+        };
 
-    //     for i in (1..self.params.si.len()).rev() {
-    //         let (r, m) = utils::divide_long_using_recip::<F>(
-    //             &repr,
-    //             self.params.divisor_i[i],
-    //             self.params.reciprokal_i[i],
-    //             self.params.norm_shift_i[i],
-    //         );
-    //         repr = r;
-    //         res[i] = m;
-    //     }
+        Ok(res)
+    }
 
-    //     res[0] = repr.as_ref()[0] as u16;
+    fn wrap_int_by_num<CS>(cs: &mut CS, val: u16, is_const: bool, has_value: bool) -> Result<Num<E>>
+    where CS: ConstraintSystem<E>
+    {
+        let fr = u64_to_ff(val as u64);
+        Self::wrap_fr_by_num(cs, fr, is_const, has_value)
+    }
 
-    //     // just debugging
-    //     if cfg!(debug_assertions) {
-    //         let repr_ref = repr.as_ref();
-    //         debug_assert!(repr_ref[0] < self.params.si[0] as u64);
-    //         repr_ref
-    //             .iter()
-    //             .skip(1)
-    //             .for_each(|el| debug_assert!(*el == 0));
-    //     }
+    fn wrap_by_boolean<CS>(cs: &mut CS, flag: bool, is_const: bool, has_value: bool) -> Result<Boolean>
+    where CS: ConstraintSystem<E>
+    {
+        let res = if is_const {
+            Boolean::Constant(flag)
+        }
+        else {
+            let val = if has_value { Some(flag) } else { None };
+            let var = AllocatedBit::alloc(cs, val)?;
+            Boolean::Is(var)
+        };
 
-    //     res
-    // }
+        Ok(res)
+    }
 
+    fn decompose<CS: ConstraintSystem<E>>(&self, cs: &mut CS, num: &Num<E>) -> Result<DecomposedNum<E>> {
+        let is_const = num.is_constant();
+        let has_value = num.get_value().is_some();
+        let value = num.get_value().unwrap_or(E::Fr::zero());
+        
+        let len = self.s_arr.len();
+        let mut chunks = Vec::with_capacity(len);
+        let mut state_trns = Vec::with_capacity(len);
+        let mut ge_p_flags = Vec::with_capacity(len);
+        let mut x = repr_to_biguint::<E::Fr>(&value.into_repr());
+
+        for s in self.s_arr.iter().rev() {
+            let chunk = (x % s).to_u16().unwrap();
+            chunks.push(chunk);
+            x = (x - chunk) / s;
+            ge_p_flags.push(Self::wrap_by_boolean(cs, chunk >= self.p_prime, is_const, has_value)?);
+        }
+        ge_p_flags.reverse();
+
+        let control_flag = true;
+        for (chunk, u) in chunks.iter().rev().zip(self.u_arr.iter()) {
+            //              |-- 0, if chunk = u_i and control_flag = true
+            //              |
+            //  state_trns =|-- 1, if chunk < u_i
+            //              |
+            //              |-- 2, if chunk >= u_i and control flag = false
+            //
+            //  control flag is dropped once we encounter chunk < u_i
+            let trn = match (chunk.cmp(u), control_flag) {
+                (Ordering::Equal, true) => 0,
+                (Ordering::Less, _) => 1,
+                (Ordering::Equal, false) | (Ordering::Greater, false) => 2,
+                _ => unreachable!(),
+            };
+            control_flag &= chunk < u;
+            state_trns.push(Self::wrap_int_by_num(cs, trn, is_const, has_value)?);
+        }
+
+        let chunks : Vec<Num<E>> = chunks.into_iter().rev().map(|x| {
+            Self::wrap_int_by_num(cs, x, is_const, has_value)
+        }).collect::<Result<Vec<_>>>()?;
+
+        Ok(DecomposedNum {
+            chunks,
+            state_trns,
+            ge_p_flags
+        })
+    }
 
     // fn bars<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<()> {
     //     for elem in self.state.0.iter_mut() {
@@ -459,7 +528,7 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         Ok(())
     }
 
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self, state: Option<&[E::Fr]>) {
         self.state = RCState::default();
         self.num_squeezed = 0;
     }

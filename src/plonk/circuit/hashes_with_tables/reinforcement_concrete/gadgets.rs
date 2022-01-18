@@ -451,11 +451,12 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         let mut ge_p_flags = Vec::with_capacity(len);
         let mut x = repr_to_biguint::<E::Fr>(&value.into_repr());
 
-        for s in self.s_arr.iter().rev() {
+        for (is_first, _is_last, s) in self.s_arr.iter().rev().identify_first_last() {
             let in_chunk = (x.clone() % s).to_u16().unwrap();
             in_chunks.push(in_chunk);
             x = (x - in_chunk) / s;
-            ge_p_flags.push(Self::wrap_by_boolean(cs, in_chunk >= self.p_prime, is_const, has_value)?);
+            let ge_p_flag = (in_chunk >= self.p_prime) as u16 + is_first as u16;
+            ge_p_flags.push(Self::wrap_int_by_num(cs, ge_p_flag, is_const, has_value)?);
 
             let out_chunk = if in_chunk < self.p_prime { 
                 let keys = [u64_to_ff::<E::Fr>(in_chunk as u64), E::Fr::one()];
@@ -503,15 +504,90 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
 
     fn bars<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<()> {
         let mut new_state = RCState::default();
-        for (in_elem, out_elem) in self.state.0.iter().cloned().zip(new_state.iter_mut()) {
+        let len = self.s_arr.len();
+
+        for (in_elem, out_elem) in self.state.0.iter().cloned().zip(new_state.0.iter_mut()) {
             let decomposed_num = self.decompose(cs, &in_elem)?;
             if !in_elem.is_constant() {
-                // apply all tables invocations for the rows of the form 
-                // [trn_i, trn_(i+1), z_i, siq_seq], 
-                // where sig_seq is com z_i * DIGIT_SEP + trn_n
-                // the last row, however is of the form:
-                // [trn_n, z_i, trn_0, sig_seq]
-                // (z_i - 1) * DIGIT_SEP + 
+                // apply all tables invocations for all indexes i (except the last one):  
+                // [trn_i, trn_(i+1), z_i, siq_seq_i], alongside with additional gate: 
+                // sig_seq_i = z_i * DIGIT_SEP * (i+1) + trn_i, where DIGIT_SEP * (i+1) is a constant
+                // the last row is however of the form:
+                // [trn_n, z_i, trn_0, sig_seq_n] with additional gate being:
+                // sig_seq_n = (z_n - 1) * DIGIT_SEP * (n+1) + trn_n
+                // by modifying the last row we achieve the following goal:
+                // we need to check trn_0 is either 0 or 1, which is done by placing trn_0 into the third row
+                // if trn_n = 1 or 2, then z_n is 1 or 2, hence z_n' is 0 or 1
+                // if trn_n = 0, then the only valid option for z_n is 1 which in agreement with the logic:
+                // trn_n = 0 => in_chunk_n == u_n => chunk_n > p_prime => z_n = 1
+                let mut siqnal_sequence = Vec::with_capacity
+
+                let (f_key, g_key) = match key.get_value() {
+                    None => {
+                        (
+                            AllocatedNum::alloc(cs, || Err(SynthesisError::AssignmentMissing))?, 
+                            AllocatedNum::alloc(cs, || Err(SynthesisError::AssignmentMissing))?,
+                        )
+                    },
+                    Some(val) => {
+                        let vals = table.query(&[val])?;
+                        (AllocatedNum::alloc(cs, || Ok(vals[0]))?, AllocatedNum::alloc(cs, || Ok(vals[1]))?)
+                    },     
+                };
+        
+                let new_acc = if !is_final {
+                    AllocatedNum::alloc(cs, || {
+                        let mut res = acc.get_value().grab()?;
+                        let mut tmp = key.get_value().grab()?;
+                        tmp.mul_assign(coef);
+                        res.sub_assign(&tmp);
+                        Ok(res)
+                    })?
+                }
+                else {
+                    AllocatedNum::zero(cs)
+                };
+        
+                let mut minus_one = E::Fr::one();
+                minus_one.negate();
+                let dummy = AllocatedNum::zero(cs).get_variable();
+        
+                let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
+                let range_of_next_step_linear_terms = CS::MainGate::range_of_next_step_linear_terms();
+                let idx_of_last_linear_term = range_of_next_step_linear_terms.last().expect("must have an index");
+        
+                // new_acc = prev_acc - base * key
+                // or: base * key + new_acc - prev_acc = 0;
+                let vars = [key.get_variable(), f_key.get_variable(), g_key.get_variable(), acc.get_variable()];
+                let coeffs = [coef.clone(), E::Fr::zero(), E::Fr::zero(), minus_one];
+        
+                cs.begin_gates_batch_for_step()?;
+        
+                cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
+            
+                let gate_term = MainGateTerm::new();
+                let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;
+        
+                for (idx, coef) in range_of_linear_terms.zip(coeffs.iter()) {
+                    gate_coefs[idx] = *coef;
+                }
+        
+                if !is_final {
+                    gate_coefs[idx_of_last_linear_term] = E::Fr::one();
+                }
+        
+                let mg = CS::MainGate::default();
+                cs.new_gate_in_batch(
+                    &mg,
+                    &gate_coefs,
+                    &vars,
+                    &[]
+                )?;
+        
+                cs.end_gates_batch_for_step()?;
+        
+                *acc = new_acc;
+                Ok((f_key, g_key))
             }
             Num::lc()
         }

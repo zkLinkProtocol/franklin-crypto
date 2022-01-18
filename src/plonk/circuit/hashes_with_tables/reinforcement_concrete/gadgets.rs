@@ -32,6 +32,7 @@ use crate::num_traits::{ Zero, One };
 use std::convert::TryInto;
 use std::ops::{Index, IndexMut};
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 type Result<T> = std::result::Result<T, SynthesisError>;
 
@@ -70,14 +71,19 @@ impl<E: Engine> IndexMut<usize> for RCState<E> {
 
 
 pub struct DecomposedNum<E: Engine> {
-    pub chunks: Vec<Num<E>>,
+    pub in_chunks: Vec<Num<E>>,
+    pub out_chunks: Vec<Num<E>>,
     pub state_trns: Vec<Num<E>>,
-    pub ge_p_flags: Vec<Boolean>
+    pub ge_p_flags: Vec<Num<E>>
 } 
 
 
 #[derive(Clone)]
 pub struct ReinforcementConcreteGadget<E: Engine>{
+    // used tables
+    rc_helper_table0: Arc<LookupTableApplication<E>>,
+    rc_helper_table1: Arc<LookupTableApplication<E>>,
+
     // constants 
     alphas: [E::Fr; 2],
     betas: [E::Fr; 2],
@@ -118,13 +124,13 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         // we are going to check that \prod s_i >= E::Fr::modulus
         // we compute the sequence of u_i and check that p <= u_i
         let modulus = repr_to_biguint::<E::Fr>(&<E::Fr as PrimeField>::char());
-        let mut x = modulus - 1u64;
+        let mut x = modulus.clone() - 1u64;
         let mut u_arr = Vec::with_capacity(s_arr.len());
         let mut s_prod = BigUint::one();
 
         for s in s_arr.iter().rev() {
             s_prod *= *s;
-            let u = (x % s).to_u16().unwrap();
+            let u = (x.clone() % s).to_u16().unwrap();
             u_arr.push(u);
             x = (x - u) / s;
 
@@ -199,6 +205,8 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         }).collect::<Vec<E::Fr>>().as_slice().try_into().unwrap();
 
         Ok(ReinforcementConcreteGadget {
+            rc_helper_table0,
+            rc_helper_table1,
             alphas,
             betas,
             p_prime,
@@ -386,7 +394,7 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
     fn concrete<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, round: usize) -> Result<()>
     {
         let mut new_state = RCState::default();
-        let mut iter = self.mds_matrix.iter().zip(
+        let iter = self.mds_matrix.iter().zip(
             self.round_constants[3 * round..3*(round+1)].iter()).zip(new_state.0.iter_mut()
         );
         for ((row, cnst), out) in iter {
@@ -430,42 +438,40 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         Self::wrap_fr_by_num(cs, fr, is_const, has_value)
     }
 
-    fn wrap_by_boolean<CS>(cs: &mut CS, flag: bool, is_const: bool, has_value: bool) -> Result<Boolean>
-    where CS: ConstraintSystem<E>
-    {
-        let res = if is_const {
-            Boolean::Constant(flag)
-        }
-        else {
-            let val = if has_value { Some(flag) } else { None };
-            let var = AllocatedBit::alloc(cs, val)?;
-            Boolean::Is(var)
-        };
-
-        Ok(res)
-    }
-
     fn decompose<CS: ConstraintSystem<E>>(&self, cs: &mut CS, num: &Num<E>) -> Result<DecomposedNum<E>> {
         let is_const = num.is_constant();
         let has_value = num.get_value().is_some();
         let value = num.get_value().unwrap_or(E::Fr::zero());
+        let table = self.rc_helper_table1.clone();
         
         let len = self.s_arr.len();
-        let mut chunks = Vec::with_capacity(len);
+        let mut in_chunks = Vec::with_capacity(len);
+        let mut out_chunks = Vec::with_capacity(len);
         let mut state_trns = Vec::with_capacity(len);
         let mut ge_p_flags = Vec::with_capacity(len);
         let mut x = repr_to_biguint::<E::Fr>(&value.into_repr());
 
         for s in self.s_arr.iter().rev() {
-            let chunk = (x % s).to_u16().unwrap();
-            chunks.push(chunk);
-            x = (x - chunk) / s;
-            ge_p_flags.push(Self::wrap_by_boolean(cs, chunk >= self.p_prime, is_const, has_value)?);
+            let in_chunk = (x.clone() % s).to_u16().unwrap();
+            in_chunks.push(in_chunk);
+            x = (x - in_chunk) / s;
+            ge_p_flags.push(Self::wrap_by_boolean(cs, in_chunk >= self.p_prime, is_const, has_value)?);
+
+            let out_chunk = if in_chunk < self.p_prime { 
+                let keys = [u64_to_ff::<E::Fr>(in_chunk as u64), E::Fr::one()];
+                let vals = table.query(&keys[..])?;
+                vals[0]
+            }
+            else {
+                u64_to_ff::<E::Fr>(in_chunk as u64)
+            };
+            out_chunks.push(Self::wrap_fr_by_num(cs, out_chunk, is_const, has_value)?)
         }
         ge_p_flags.reverse();
+        out_chunks.reverse();
 
-        let control_flag = true;
-        for (chunk, u) in chunks.iter().rev().zip(self.u_arr.iter()) {
+        let mut control_flag = true;
+        for (chunk, u) in in_chunks.iter().rev().zip(self.u_arr.iter()) {
             //              |-- 0, if chunk = u_i and control_flag = true
             //              |
             //  state_trns =|-- 1, if chunk < u_i
@@ -483,27 +489,35 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
             state_trns.push(Self::wrap_int_by_num(cs, trn, is_const, has_value)?);
         }
 
-        let chunks : Vec<Num<E>> = chunks.into_iter().rev().map(|x| {
+        let in_chunks : Vec<Num<E>> = in_chunks.into_iter().rev().map(|x| {
             Self::wrap_int_by_num(cs, x, is_const, has_value)
         }).collect::<Result<Vec<_>>>()?;
 
         Ok(DecomposedNum {
-            chunks,
+            in_chunks,
+            out_chunks,
             state_trns,
             ge_p_flags
         })
     }
 
-    // fn bars<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<()> {
-    //     for elem in self.state.0.iter_mut() {
-    //         let res = match in_elem {
-    //             Num::Constant(cnst) => {
+    fn bars<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<()> {
+        let mut new_state = RCState::default();
+        for (in_elem, out_elem) in self.state.0.iter().cloned().zip(new_state.iter_mut()) {
+            let decomposed_num = self.decompose(cs, &in_elem)?;
+            if !in_elem.is_constant() {
+                // apply all tables invocations for the rows of the form 
+                // [trn_i, trn_(i+1), z_i, siq_seq], 
+                // where sig_seq is com z_i * DIGIT_SEP + trn_n
+                // the last row, however is of the form:
+                // [trn_n, z_i, trn_0, sig_seq]
+                // (z_i - 1) * DIGIT_SEP + 
+            }
+            Num::lc()
+        }
 
-    //         }
-    //     }
-
-    //     Ok(())
-    // }
+        Ok(())
+    }
 
     fn sponge_permutation<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<()> {
         self.num_squeezed = 0;

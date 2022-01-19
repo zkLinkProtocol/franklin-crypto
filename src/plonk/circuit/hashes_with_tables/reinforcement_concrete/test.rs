@@ -20,6 +20,7 @@ mod test {
     use super::super::hasher::*;
     use crate::plonk::circuit::custom_rescue_gate::Rescue5CustomGate;
     use rand::{Rng, SeedableRng, StdRng};
+    use std::time::SystemTime;
     use std::convert::TryInto;
 
 
@@ -63,7 +64,7 @@ mod test {
             };
             let betas = self.params.betas.clone();
             let s_arr = self.params.si.clone();
-            let p_prime = self.params.sbox.len() as u16;
+            let p_prime = self.params.p_prime;
             let perm_f = |x: u16| -> u16 {
                 self.params.sbox[x as usize]
             };
@@ -110,12 +111,14 @@ mod test {
 
     fn rc_gadget_test_template<E: DefaultRcParams>(is_const_test: bool) 
     {
-        let seed: &[_] = &[1, 2, 3, 4, 5];
-        let mut rng: StdRng = SeedableRng::from_seed(seed);
+        // let seed: &[_] = &[1, 2, 3, 4, 5];
+        // let mut rng: StdRng = SeedableRng::from_seed(seed);
+        let seed = [SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as usize];
+        let mut rng : StdRng = SeedableRng::from_seed(&seed[..]);
 
         let mut input = [E::Fr::zero(); RC_STATE_WIDTH];
         input.iter_mut().for_each(|x| *x = rng.gen());
-       
+
         let mut elems_to_absorb = [E::Fr::zero(); RC_RATE];
         elems_to_absorb.iter_mut().for_each(|x| *x = rng.gen());
 

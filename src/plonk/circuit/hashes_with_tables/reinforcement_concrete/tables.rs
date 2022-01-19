@@ -116,7 +116,7 @@ impl<E: Engine> LookupTableInternal<E> for ReinforcementConcreterHelperTable0<E>
 // tracks the elements of x, s.t. x < p
 // each S_box S_i is associated with unique modulus s_i, s.t. p < s_i, 
 // and S_i(x) = f(x), if x < p, and x othersiwe
-// these means that all S box operate identiacally on the subset of x < p, a
+// these means that all S boxes operate identiacally on the subset of x < p, a
 // the actual tables for the table are the following:
 // x | f(x) | 0, for all x_p
 // for each S box S_i with two used numbers s_i, u_i, p < u_i < s_i
@@ -183,7 +183,7 @@ impl<E: Engine> ReinforcementConcreterHelperTable1<E> {
 
             for x in *u_i..*s_i {
                 let x = u64_to_ff::<E::Fr>(x as u64);
-                let y = u64_to_ff::<E::Fr>((i * DIGIT_SEP + 2) as u64);
+                let y = u64_to_ff::<E::Fr>(((i+1) * DIGIT_SEP + 2) as u64);
                 let z = x.clone();
 
                 column0.push(x); column1.push(y); column2.push(z);

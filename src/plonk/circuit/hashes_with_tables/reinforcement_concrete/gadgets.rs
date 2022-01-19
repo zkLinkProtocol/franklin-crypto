@@ -43,7 +43,8 @@ pub const RC_STATE_WIDTH : usize = 3;
 pub const RC_RATE: usize = 2;
 pub const RC_PRE_ROUNDS_COUNT: usize = 3;
 pub const RC_POST_ROUNDS_COUNT: usize = 3;
-pub const RC_TOTAL_ROUNDS_COUNT: usize = RC_PRE_ROUNDS_COUNT + RC_POST_ROUNDS_COUNT;
+pub const RC_TOTAL_ROUNDS_COUNT: usize = RC_PRE_ROUNDS_COUNT + RC_POST_ROUNDS_COUNT + 1;
+pub const RC_ROUND_CONSTS_COUNT: usize = (RC_TOTAL_ROUNDS_COUNT + 1) * RC_STATE_WIDTH;
 pub const RC_INIT_SHAKE: &'static str = "ReinforcedConcrete";
 
 
@@ -108,7 +109,7 @@ pub struct ReinforcementConcreteGadget<E: Engine>{
 
     pub use_optimized_fifth_power: bool,
     mds_matrix: [[E::Fr; RC_STATE_WIDTH]; RC_STATE_WIDTH],
-    round_constants: [E::Fr; RC_TOTAL_ROUNDS_COUNT * RC_STATE_WIDTH],
+    round_constants: [E::Fr; RC_ROUND_CONSTS_COUNT],
 
     state: RCState<E>,
     num_squeezed: usize,
@@ -194,8 +195,8 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         let mod_ = E::Fr::NUM_BITS % 8;
         let mask = if mod_ == 0 { 0xFF } else { (1u8 << mod_) - 1 };
 
-        let round_constants : [E::Fr; RC_TOTAL_ROUNDS_COUNT * RC_STATE_WIDTH] = (
-            0..RC_TOTAL_ROUNDS_COUNT * RC_STATE_WIDTH
+        let round_constants : [E::Fr; RC_ROUND_CONSTS_COUNT] = (
+            0..RC_ROUND_CONSTS_COUNT
         ).map(|_| {   
             let mut buf = vec![0u8; bytes];
             let mut word_buf = vec![0u64; words];
@@ -392,17 +393,17 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         // y_2 = tmp_1 * x_2
         // tmp_2 = x_2^2 + a2 * x2 + b2
         // y_3 = x_3 * tmp_2
-        // 4 constraints in total
+        // 5 constraints in total
         let mut new_state = RCState::default();
 
         // y_1 = x_1 ^ 5 (using custom gate)
         new_state[0] = self.apply_5th_power(cs, &self.state[0])?;
         // tmp_1 = x_1^2 + a1 * x1 + b1
-        let tmp_1 = Self::compute_quadratic_term(cs, &self.state[1], &self.alphas[0], &self.betas[0])?;
+        let tmp_1 = Self::compute_quadratic_term(cs, &self.state[0], &self.alphas[0], &self.betas[0])?;
         // y_2 = tmp_1 * x_2
         new_state[1] = tmp_1.mul(cs, &self.state[1])?;
         // tmp_2 = x_2^2 + a2 * x2 + b2
-        let tmp_2 = Self::compute_quadratic_term(cs, &self.state[2], &self.alphas[1], &self.betas[1])?;
+        let tmp_2 = Self::compute_quadratic_term(cs, &self.state[1], &self.alphas[1], &self.betas[1])?;
         // y_3 = x_3 * tmp_2
         new_state[2] = tmp_2.mul(cs, &self.state[2])?;
 
@@ -505,7 +506,9 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
                 (Ordering::Equal, false) | (Ordering::Greater, false) => 2,
                 _ => unreachable!(),
             };
-            control_flag &= chunk < u;
+            if chunk < u {
+                control_flag = false;
+            };
             state_trns.push(Self::wrap_int_by_num(cs, trn, is_const, has_value)?);
         }
 
@@ -631,7 +634,6 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         let coeffs = [coef.clone(), E::Fr::zero(), E::Fr::zero(), minus_one];
 
         cs.begin_gates_batch_for_step()?;
-
         cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
     
         let gate_term = MainGateTerm::new();
@@ -663,6 +665,7 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         let len = self.s_arr.len();
         
         for (in_elem, out_elem) in self.state.0.iter().cloned().zip(new_state.0.iter_mut()) {
+            
             let decomposed_num = self.decompose(cs, &in_elem)?;
             if !in_elem.is_constant() {
                 // apply all tables invocations for all indexes i (except the last one):  
@@ -681,7 +684,6 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
                 let iter = {
                     decomposed_num.state_trns.windows(2).zip(decomposed_num.ge_p_flags.iter())
                 };
-                
                 for (window, z) in iter 
                 {
                     idx += 1;
@@ -717,6 +719,7 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
             }
             
             *out_elem = Num::lc(cs, &self.b_arr[..], &decomposed_num.out_chunks[..])?;
+            
         }
 
         self.state = new_state;
@@ -742,7 +745,7 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
             self.bricks(cs)?;
             self.concrete(cs, i)?;
         }
-        
+       
         Ok(())
     }
 

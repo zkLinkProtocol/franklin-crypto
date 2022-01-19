@@ -20,6 +20,7 @@ pub struct ReinforcedConcreteParams<F: PrimeField> {
     pub(crate) norm_shift_i: Vec<u32>,
     pub(crate) sbox: Vec<u16>,
     pub(crate) d: usize,
+    pub(crate) p_prime: u16,
 }
 
 impl<F: PrimeField> ReinforcedConcreteParams<F> {
@@ -37,6 +38,7 @@ impl<F: PrimeField> ReinforcedConcreteParams<F> {
         let alphas = [ab[0], ab[1]];
         let betas = [utils::from_u64(ab[2] as u64), utils::from_u64(ab[3] as u64)];
         let round_constants = Self::instantiate_rc(&mut shake);
+        let p_prime = sbox.len() as u16;
 
         let len = si.len();
         let mut divisor_i = Vec::with_capacity(len);
@@ -59,6 +61,7 @@ impl<F: PrimeField> ReinforcedConcreteParams<F> {
             norm_shift_i,
             sbox: Self::pad_sbox(sbox, si),
             d,
+            p_prime
         }
     }
 
@@ -242,7 +245,7 @@ impl<F: PrimeField> ReinforcedConcrete<F> {
         }
 
         // bar round
-        current_state = self.bars(&current_state);
+        current_state = self.bars(&current_state); 
         self.concrete(
             &mut current_state,
             ReinforcedConcreteParams::<F>::PRE_ROUNDS + 1,

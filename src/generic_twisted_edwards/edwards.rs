@@ -252,6 +252,27 @@ impl<E: Engine, C: TwistedEdwardsCurveParams<E>> TwistedEdwardsCurveImplementor<
         res
     }
 
+    /// expects scalar bits as MSB first
+    pub fn mul_by_bits(
+        &self,
+        p: &TwistedEdwardsPoint<E>,
+        scalar_bits: &[bool],
+    ) -> TwistedEdwardsPoint<E> {
+        // Standard double-and-add scalar multiplication
+
+        let mut res = TwistedEdwardsPoint::identity();
+
+        for b in scalar_bits.iter() {
+            res = self.double(&res);
+
+            if *b {
+                res = self.add(&p, &res);
+            }
+        }
+
+        res
+    }
+
     pub fn ct_mul(
         &self,
         p: &TwistedEdwardsPoint<E>,
@@ -437,6 +458,17 @@ impl<E: Engine> Default for TwistedEdwardsPoint<E> {
 }
 
 impl<E: Engine> TwistedEdwardsPoint<E> {
+    pub fn from_xy(x: E::Fr, y: E::Fr) -> Self {
+        let mut t = x;
+        t.mul_assign(&y);
+        
+        Self {
+            x,
+            y,
+            z: E::Fr::one(),
+            t,
+        }
+    }
     pub fn into_xy(&self) -> (E::Fr, E::Fr) {
         let zinv = self.z.inverse().unwrap();
 

@@ -184,7 +184,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable<E: Engine, CS: Con
             AllocatedNum::alloc(cs, || {
                 let mut res = cur_value.get_value().grab()?;
                 res.mul_assign(&coeffs.last().unwrap());
-                let mut tmp = slice.get_value().grab()?;
+                let tmp = slice.get_value().grab()?;
                 res.sub_assign(&tmp);
                 res.mul_assign(&table_width_shift_inverse);
                 Ok(res)

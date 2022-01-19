@@ -105,8 +105,8 @@ pub fn field_into_allocated_booleans_le_fixed<E: Engine, CS: ConstraintSystem<E>
 /// to be either zero or one.
 #[derive(Clone, Debug)]
 pub struct AllocatedBit {
-    variable: Variable,
-    value: Option<bool>
+    pub(crate) variable: Variable,
+    pub(crate) value: Option<bool>
 }
 
 impl Copy for AllocatedBit {}

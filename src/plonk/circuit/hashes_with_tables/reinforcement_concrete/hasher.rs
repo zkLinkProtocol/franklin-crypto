@@ -262,6 +262,14 @@ impl<F: PrimeField> ReinforcedConcrete<F> {
         let input: [F; 3] = [el1.to_owned(), el2.to_owned(), F::zero()];
         self.permutation(&input)[0]
     }
+
+    // should be used for testing purposes only
+    pub fn tester(&self, state: &[F; 3], elems_to_absorb: &[F; 2]) -> [F; 3] {
+        let mut current_state = state.to_owned();
+        current_state[0].add_assign(&elems_to_absorb[0]);
+        current_state[1].add_assign(&elems_to_absorb[1]);
+        self.permutation(&current_state)
+    }
 }
 
 
@@ -360,7 +368,7 @@ lazy_static! {
 }
 
 
-trait DefaultRcParams : Engine {
+pub trait DefaultRcParams : Engine {
     fn get_default_rc_params() -> Arc<ReinforcedConcreteParams<<Self as ScalarEngine>::Fr>>;
 }
 

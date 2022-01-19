@@ -9,6 +9,7 @@ use crate::plonk::circuit::allocated_num::{
     AllocatedNum,
     Num,
 };
+use crate::plonk::circuit::bigint::biguint_to_fe;
 use crate::plonk::circuit::boolean::{Boolean, AllocatedBit};
 use crate::plonk::circuit::byte::{
     Byte,
@@ -24,6 +25,8 @@ use crate::plonk::circuit::linear_combination::*;
 use super::tables::*;
 use super::super::utils::*;
 use super::super::tables::*;
+use super::super::{NumExtension, AllocatedNumExtension};
+use num_traits::signum;
 use sha3::{digest::ExtendableOutput, digest::Update, Sha3XofReader, Shake128, digest::XofReader};
 
 use crate::num_bigint::BigUint;
@@ -50,6 +53,17 @@ pub struct RCState<E: Engine>([Num<E>; RC_STATE_WIDTH]);
 impl<E: Engine> Default for RCState<E> {
     fn default() -> Self {
         RCState(<[Num<E>; RC_STATE_WIDTH]>::default())
+    }
+}
+
+impl<E: Engine> RCState<E> {
+    fn from_raw(raw_state: &[Num<E>]) -> Self {
+        assert_eq!(raw_state.len(), RC_STATE_WIDTH);
+        let mut inner = [Num::<E>::zero(); RC_STATE_WIDTH];
+        for (in_elem, out_elem) in raw_state.iter().zip(inner.iter_mut()) {
+            *out_elem = in_elem.clone();
+        }
+        RCState(inner)
     }
 }
 
@@ -89,6 +103,7 @@ pub struct ReinforcementConcreteGadget<E: Engine>{
     betas: [E::Fr; 2],
     p_prime: u16,
     s_arr: Vec<u16>,
+    b_arr: Vec<E::Fr>,
     u_arr: Vec<u16>,
 
     pub use_optimized_fifth_power: bool,
@@ -126,9 +141,11 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         let modulus = repr_to_biguint::<E::Fr>(&<E::Fr as PrimeField>::char());
         let mut x = modulus.clone() - 1u64;
         let mut u_arr = Vec::with_capacity(s_arr.len());
+        let mut b_arr = Vec::with_capacity(s_arr.len());
         let mut s_prod = BigUint::one();
 
         for s in s_arr.iter().rev() {
+            b_arr.push(biguint_to_fe::<E::Fr>(s_prod.clone()));
             s_prod *= *s;
             let u = (x.clone() % s).to_u16().unwrap();
             u_arr.push(u);
@@ -138,6 +155,7 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         }
         assert!(s_prod >= modulus);
         u_arr.reverse();
+        b_arr.reverse();
 
         let name1: &'static str = "rc_helper_table1";
         let rc_helper_table1 = LookupTableApplication::new(
@@ -212,6 +230,7 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
             p_prime,
             s_arr,
             u_arr,
+            b_arr,
             use_optimized_fifth_power,
             mds_matrix,
             round_constants,
@@ -502,10 +521,147 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         })
     }
 
+    // apply rc_table0 to the row [a, b, c, d] 
+    // alongside with the the following main gate:
+    // if !is_final:
+    //      d = c * cnst + a
+    //  else:
+    //      d = (b - 1) * cnst + a = b * cnst - cnst + a
+    // return computed d
+    fn apply_table0<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, a: &AllocatedNum<E>, b: &AllocatedNum<E>, c: &AllocatedNum<E>,
+        cnst: &E::Fr, is_final: bool,
+    ) -> Result<AllocatedNum<E>> 
+    { 
+        let table = self.rc_helper_table0.clone();
+        let mut minus_one = E::Fr::one();
+        minus_one.negate();
+        let dummy = AllocatedNum::zero(cs).get_variable();
+        let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
+        let cnst_term_idx = CS::MainGate:: index_for_constant_term();
+
+        let d = match (a.get_value(), b.get_value(), c.get_value()) {
+            (Some(a_val), Some(b_val), Some(c_val)) => {
+                AllocatedNum::alloc(cs, || {
+                    let mut res = if is_final { 
+                        let mut x = b_val;
+                        x.sub_assign(&E::Fr::one());
+                        x
+                    }
+                    else { 
+                        c_val 
+                    };
+                    res.mul_assign(&cnst);
+                    res.add_assign(&a_val);
+
+                    Ok(res)
+                })?
+            },
+            (_, _, _) => AllocatedNum::alloc(cs, || Err(SynthesisError::AssignmentMissing))?,
+        };
+                    
+        let vars = [a.get_variable(), b.get_variable(), c.get_variable(), d.get_variable()];
+        let coeffs = if is_final {
+            [E::Fr::one(), cnst.clone(), E::Fr::zero(), minus_one.clone()]
+        }
+        else {
+            [E::Fr::one(), E::Fr::zero(), cnst.clone(), minus_one.clone()]
+        };
+        let cnst_term = if is_final {
+            let mut x = cnst.clone();
+            x.negate();
+            x
+        } else {
+            E::Fr::zero()
+        }; 
+                    
+        cs.begin_gates_batch_for_step()?;
+        cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
+
+        let gate_term = MainGateTerm::new();
+        let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;
+        for (idx, coef) in range_of_linear_terms.zip(coeffs.iter()) {
+            gate_coefs[idx] = *coef;
+        }
+        gate_coefs[cnst_term_idx] = cnst_term;
+       
+        let mg = CS::MainGate::default();
+        cs.new_gate_in_batch(&mg, &gate_coefs, &vars, &[])?;
+        cs.end_gates_batch_for_step()?;
+
+        Ok(d)
+    }
+
+    // actual implementation is the following:
+    // for row of the form [x | signal_seq | f(x) | acc] do: (y = f(x) - notation)
+    // enforce table row validity
+    // running sum for input: acc_next = acc - coef * x
+    // if is_final is set, simply check: acc = coef * x
+    // returns updated accumulator
+    fn apply_table1_acc<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, x: &AllocatedNum<E>, sig_seq: &AllocatedNum<E>, y: &AllocatedNum<E>,
+        acc: &mut AllocatedNum<E>, coef: &E::Fr, is_final: bool
+    ) -> Result<()> 
+    {
+        let new_acc = if !is_final {
+            AllocatedNum::alloc(cs, || {
+                let mut res = acc.get_value().grab()?;
+                let mut tmp = x.get_value().grab()?;
+                tmp.mul_assign(coef);
+                res.sub_assign(&tmp);
+                Ok(res)
+            })?
+        }
+        else {
+            AllocatedNum::zero(cs)
+        };
+
+        let mut minus_one = E::Fr::one();
+        minus_one.negate();
+        let dummy = AllocatedNum::zero(cs).get_variable();
+        let table = self.rc_helper_table1.clone();
+
+        let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
+        let range_of_next_step_linear_terms = CS::MainGate::range_of_next_step_linear_terms();
+        let idx_of_last_linear_term = range_of_next_step_linear_terms.last().expect("must have an index");
+
+        // new_acc = prev_acc - base * key
+        // or: base * key + new_acc - prev_acc = 0;
+        let vars = [x.get_variable(), sig_seq.get_variable(), y.get_variable(), acc.get_variable()];
+        let coeffs = [coef.clone(), E::Fr::zero(), E::Fr::zero(), minus_one];
+
+        cs.begin_gates_batch_for_step()?;
+
+        cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
+    
+        let gate_term = MainGateTerm::new();
+        let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;
+
+        for (idx, coef) in range_of_linear_terms.zip(coeffs.iter()) {
+            gate_coefs[idx] = *coef;
+        }
+        if !is_final {
+            gate_coefs[idx_of_last_linear_term] = E::Fr::one();
+        }
+
+        let mg = CS::MainGate::default();
+        cs.new_gate_in_batch(
+            &mg,
+            &gate_coefs,
+            &vars,
+            &[]
+        )?;
+
+        cs.end_gates_batch_for_step()?;
+
+        *acc = new_acc;
+        Ok(())
+    }
+
     fn bars<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<()> {
         let mut new_state = RCState::default();
         let len = self.s_arr.len();
-
+        
         for (in_elem, out_elem) in self.state.0.iter().cloned().zip(new_state.0.iter_mut()) {
             let decomposed_num = self.decompose(cs, &in_elem)?;
             if !in_elem.is_constant() {
@@ -513,85 +669,57 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
                 // [trn_i, trn_(i+1), z_i, siq_seq_i], alongside with additional gate: 
                 // sig_seq_i = z_i * DIGIT_SEP * (i+1) + trn_i, where DIGIT_SEP * (i+1) is a constant
                 // the last row is however of the form:
-                // [trn_n, z_i, trn_0, sig_seq_n] with additional gate being:
+                // [trn_n, z_n, trn_0, sig_seq_n] with additional gate being:
                 // sig_seq_n = (z_n - 1) * DIGIT_SEP * (n+1) + trn_n
                 // by modifying the last row we achieve the following goal:
                 // we need to check trn_0 is either 0 or 1, which is done by placing trn_0 into the third row
                 // if trn_n = 1 or 2, then z_n is 1 or 2, hence z_n' is 0 or 1
                 // if trn_n = 0, then the only valid option for z_n is 1 which in agreement with the logic:
                 // trn_n = 0 => in_chunk_n == u_n => chunk_n > p_prime => z_n = 1
-                let mut siqnal_sequence = Vec::with_capacity
-
-                let (f_key, g_key) = match key.get_value() {
-                    None => {
-                        (
-                            AllocatedNum::alloc(cs, || Err(SynthesisError::AssignmentMissing))?, 
-                            AllocatedNum::alloc(cs, || Err(SynthesisError::AssignmentMissing))?,
-                        )
-                    },
-                    Some(val) => {
-                        let vals = table.query(&[val])?;
-                        (AllocatedNum::alloc(cs, || Ok(vals[0]))?, AllocatedNum::alloc(cs, || Ok(vals[1]))?)
-                    },     
+                let mut signal_sequence = Vec::with_capacity(len);
+                let mut idx = 0;
+                let iter = {
+                    decomposed_num.state_trns.windows(2).zip(decomposed_num.ge_p_flags.iter())
                 };
-        
-                let new_acc = if !is_final {
-                    AllocatedNum::alloc(cs, || {
-                        let mut res = acc.get_value().grab()?;
-                        let mut tmp = key.get_value().grab()?;
-                        tmp.mul_assign(coef);
-                        res.sub_assign(&tmp);
-                        Ok(res)
-                    })?
+                
+                for (window, z) in iter 
+                {
+                    idx += 1;
+                    let trn = window[0].get_variable();
+                    let trn_next = window[1].get_variable();
+                    let cnst = u64_to_ff::<E::Fr>((DIGIT_SEP * idx) as u64);
+                    let signal = self.apply_table0(cs, &trn, &trn_next, &z.get_variable(), &cnst, false)?;
+                    signal_sequence.push(signal);
                 }
-                else {
-                    AllocatedNum::zero(cs)
-                };
-        
-                let mut minus_one = E::Fr::one();
-                minus_one.negate();
-                let dummy = AllocatedNum::zero(cs).get_variable();
-        
-                let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
-                let range_of_next_step_linear_terms = CS::MainGate::range_of_next_step_linear_terms();
-                let idx_of_last_linear_term = range_of_next_step_linear_terms.last().expect("must have an index");
-        
-                // new_acc = prev_acc - base * key
-                // or: base * key + new_acc - prev_acc = 0;
-                let vars = [key.get_variable(), f_key.get_variable(), g_key.get_variable(), acc.get_variable()];
-                let coeffs = [coef.clone(), E::Fr::zero(), E::Fr::zero(), minus_one];
-        
-                cs.begin_gates_batch_for_step()?;
-        
-                cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
+                
+                // deal with the last row
+                // [trn_n, z_n, trn_0, sig_seq_n] with additional gate being:
+                // sig_seq_n = (z_n - 1) * DIGIT_SEP * (n+1) + trn_n
+                idx += 1;
+                let last_trn = decomposed_num.state_trns.last().unwrap().get_variable();
+                let first_trn = decomposed_num.state_trns.first().unwrap().get_variable();
+                let z = decomposed_num.ge_p_flags.last().unwrap().get_variable();
+                let cnst = u64_to_ff::<E::Fr>((DIGIT_SEP * idx) as u64);
+                let signal = self.apply_table0(cs, &last_trn, &z, &first_trn, &cnst, true)?;
+                signal_sequence.push(signal);
             
-                let gate_term = MainGateTerm::new();
-                let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;
-        
-                for (idx, coef) in range_of_linear_terms.zip(coeffs.iter()) {
-                    gate_coefs[idx] = *coef;
+                let mut acc = in_elem.get_variable();
+                let iter = itertools::multizip(
+                    (&decomposed_num.in_chunks, &decomposed_num.out_chunks, &signal_sequence, &self.b_arr)
+                ).identify_first_last();
+
+                for (_is_first, is_last, (in_chunk, out_chunk, sig_seq, coef)) in iter {
+                    self.apply_table1_acc(
+                        cs, &in_chunk.get_variable(), &sig_seq, &out_chunk.get_variable(), 
+                        &mut acc, &coef, is_last
+                    )?;
                 }
-        
-                if !is_final {
-                    gate_coefs[idx_of_last_linear_term] = E::Fr::one();
-                }
-        
-                let mg = CS::MainGate::default();
-                cs.new_gate_in_batch(
-                    &mg,
-                    &gate_coefs,
-                    &vars,
-                    &[]
-                )?;
-        
-                cs.end_gates_batch_for_step()?;
-        
-                *acc = new_acc;
-                Ok((f_key, g_key))
             }
-            Num::lc()
+            
+            *out_elem = Num::lc(cs, &self.b_arr[..], &decomposed_num.out_chunks[..])?;
         }
 
+        self.state = new_state;
         Ok(())
     }
 
@@ -618,8 +746,8 @@ impl<E: Engine> ReinforcementConcreteGadget<E> {
         Ok(())
     }
 
-    pub fn reset(&mut self, state: Option<&[E::Fr]>) {
-        self.state = RCState::default();
+    pub fn reset(&mut self, state: Option<&[Num<E>]>) {
+        self.state = state.map(|raw_state| RCState::from_raw(raw_state)).unwrap_or(RCState::default());
         self.num_squeezed = 0;
     }
 

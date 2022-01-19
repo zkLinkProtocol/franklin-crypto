@@ -91,7 +91,7 @@ impl<E: Engine> LookupTableInternal<E> for ReinforcementConcreterHelperTable0<E>
     fn box_clone(&self) -> Box<dyn LookupTableInternal<E>> {
         Box::from(self.clone())
     }
-    fn column_is_trivial(&self, column_num: usize) -> bool {
+    fn column_is_trivial(&self, _column_num: usize) -> bool {
         false
     }
 
@@ -104,13 +104,13 @@ impl<E: Engine> LookupTableInternal<E> for ReinforcementConcreterHelperTable0<E>
         self.valid_state_transitions.contains(&trns) && check_booleanity(&keys[2]) 
     }
 
-    fn query(&self, keys: &[E::Fr]) -> Result<Vec<E::Fr>, SynthesisError> {
+    fn query(&self, _keys: &[E::Fr]) -> Result<Vec<E::Fr>, SynthesisError> {
         Err(SynthesisError::Unsatisfiable)
     }
 }
 
         
-// Special ReinForcement Concrete table has the following column structure: |  x  |   f(x)  |  sig_seq |
+// Special ReinForcement Concrete table has the following column structure: |  x  |   sig_seq  |  f(x) |
 // where x is, roughly speaking, is the input of S_box (for Bars round), f(x) is the result of S box
 // and signal sequence is auxiliary number which indicates both the index of the current S_box and 
 // tracks the elements of x, s.t. x < p
@@ -234,7 +234,7 @@ impl<E: Engine> LookupTableInternal<E> for ReinforcementConcreterHelperTable1<E>
     fn box_clone(&self) -> Box<dyn LookupTableInternal<E>> {
         Box::from(self.clone())
     }
-    fn column_is_trivial(&self, column_num: usize) -> bool {
+    fn column_is_trivial(&self, _column_num: usize) -> bool {
         false
     }
 

@@ -12,7 +12,8 @@ mod test {
     use crate::plonk::circuit::byte::{
         Byte,
     };
-    use crate::bellman::pairing::bn256::{Bn256, Fr};
+    use crate::bellman::pairing::bn256::Bn256;
+    use crate::bellman::pairing::bls12_381::Bls12;
 
     use super::super::gadgets::*;
     use super::super::utils::*;
@@ -67,7 +68,7 @@ mod test {
                 self.params.sbox[x as usize]
             };
 
-            let rc_gadget = ReinforcementConcreteGadget::new(
+            let mut rc_gadget = ReinforcementConcreteGadget::new(
                 cs, alphas, betas, p_prime, s_arr, perm_f, false
             )?;
 
@@ -107,101 +108,55 @@ mod test {
         }
     }
 
-    fn rc_gadget_test_template<E: Engine>() 
+    fn rc_gadget_test_template<E: DefaultRcParams>(is_const_test: bool) 
     {
         let seed: &[_] = &[1, 2, 3, 4, 5];
         let mut rng: StdRng = SeedableRng::from_seed(seed);
 
         let mut input = [E::Fr::zero(); RC_STATE_WIDTH];
-        for i in 0..RC_STATE_WIDTH {
-            input[i] = rng.gen();
-        }
+        input.iter_mut().for_each(|x| *x = rng.gen());
+       
+        let mut elems_to_absorb = [E::Fr::zero(); RC_RATE];
+        elems_to_absorb.iter_mut().for_each(|x| *x = rng.gen());
 
         let params = E::get_default_rc_params();
-        let mut hasher = ReinforcedConcrete::<E::Fr>::new(&params);
-        // write input message
-        hasher.update(&input[0..55]);
-        // read hash digest and consume hasher
-        let output = hasher.finalize();
+        let hasher = ReinforcedConcrete::<E::Fr>::new(&params);
+        let output = hasher.tester(&input, &elems_to_absorb);
 
-        let mut input_fr_arr = Vec::with_capacity(16);
-        let mut output_fr_arr = [Fr::zero(); 8];
-
-        for block in input.chunks(4) {
-            input_fr_arr.push(slice_to_ff::<Fr>(block));
-        }
-
-        for (i, block) in output.chunks(4).enumerate() {
-            output_fr_arr[i] = slice_to_ff::<Fr>(block);
-        }
-        
-        let circuit = TestSha256Circuit::<Bn256>{
-            input: input_fr_arr,
-            output: output_fr_arr,
-            ch_base_num_of_chunks: None,
-            maj_sheduler_base_num_of_chunks: None,
-            is_const_test: false,
-            is_byte_test: false,
+        let circuit = TestReinforcementConcreteCircuit::<E> {
+            input, output, elems_to_absorb, params, is_const_test
         };
-
-        let mut assembly = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
-
+        let mut assembly = TrivialAssembly::<
+            E, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext
+        >::new();
         circuit.synthesize(&mut assembly).expect("must work");
+        
         println!("Assembly contains {} gates", assembly.n());
         println!("Total length of all tables: {}", assembly.total_length_of_all_tables);
         assert!(assembly.is_satisfied());
     }
 
     #[test]
-    fn rc_gadget_const_propagation_test() 
+    fn rc_bn256_gadget_test()
     {
-        const NUM_OF_BLOCKS: usize = 3;
-        let mut rng = rand::thread_rng();
+        rc_gadget_test_template::<Bn256>(false) 
+    }
 
-        let mut input = [0u8; 64 * NUM_OF_BLOCKS];
-        for i in 0..(64 * (NUM_OF_BLOCKS-1) + 55) {
-            input[i] = rng.gen();
-        }
-        input[64 * (NUM_OF_BLOCKS-1) + 55] = 0b10000000;
-        
-        let total_number_of_bits = (64 * (NUM_OF_BLOCKS-1) + 55) * 8;
-        input[64 * (NUM_OF_BLOCKS-1) + 60] = (total_number_of_bits >> 24) as u8;
-        input[64 * (NUM_OF_BLOCKS-1) + 61] = (total_number_of_bits >> 16) as u8;
-        input[64 * (NUM_OF_BLOCKS-1) + 62] = (total_number_of_bits >> 8) as u8;
-        input[64 * (NUM_OF_BLOCKS-1) + 63] = total_number_of_bits as u8;
+    #[test]
+    fn rc_bn256_cnst_propagation_test()
+    {
+        rc_gadget_test_template::<Bn256>(true) 
+    }
 
-        // create a Sha256 object
-        let mut hasher = Sha256::new();
-        // write input message
-        hasher.update(&input[0..(64 * (NUM_OF_BLOCKS-1) + 55)]);
-        // read hash digest and consume hasher
-        let output = hasher.finalize();
+    #[test]
+    fn rc_bls12_gadget_test()
+    {
+        rc_gadget_test_template::<Bls12>(false) 
+    }
 
-        let mut input_fr_arr = Vec::with_capacity(16 * NUM_OF_BLOCKS);
-        let mut output_fr_arr = [Fr::zero(); 8];
-
-        for block in input.chunks(4) {
-            input_fr_arr.push(slice_to_ff::<Fr>(block));
-        }
-
-        for (i, block) in output.chunks(4).enumerate() {
-            output_fr_arr[i] = slice_to_ff::<Fr>(block);
-        }
-        
-        let circuit = TestSha256Circuit::<Bn256>{
-            input: input_fr_arr,
-            output: output_fr_arr,
-            ch_base_num_of_chunks: None,
-            maj_sheduler_base_num_of_chunks: None,
-            is_const_test: true,
-            is_byte_test: false,
-        };
-
-        let mut assembly = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
-
-        circuit.synthesize(&mut assembly).expect("must work");
-        println!("Assembly contains {} gates", assembly.n());
-        println!("Total length of all tables: {}", assembly.total_length_of_all_tables);
-        assert!(assembly.is_satisfied());
+    #[test]
+    fn rc_bls12_cnst_propagation_test()
+    {
+        rc_gadget_test_template::<Bls12>(true) 
     }
 }

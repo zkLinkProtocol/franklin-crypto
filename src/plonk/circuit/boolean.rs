@@ -1513,6 +1513,32 @@ impl From<AllocatedBit> for Boolean {
         Boolean::Is(b)
     }
 }
+impl PartialEq for Boolean {
+    #[inline]
+    fn eq(&self, other: &Boolean) -> bool {
+        match (self, other) {
+            (Boolean::Is(a), Boolean::Is(b)) => a.get_variable() == b.get_variable(),
+            (Boolean::Not(a), Boolean::Not(b)) => a.get_variable() == b.get_variable(),
+            _ => false,
+    }
+}}
+impl Eq for Boolean {}
+
+use std::hash::{Hash, Hasher};
+impl Hash for Boolean {
+    #[inline]
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        match self {
+            Boolean::Constant(_) => unimplemented!(),
+            Boolean::Is(x) => {
+                x.get_variable().hash(hasher);
+            }
+            Boolean::Not(y) => {
+                y.get_variable().hash(hasher);
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod test {

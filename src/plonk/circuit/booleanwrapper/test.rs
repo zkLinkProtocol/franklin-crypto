@@ -1,14 +1,12 @@
 #[cfg(test)]
 mod test{
-    use franklin_crypto::plonk::circuit::boolean::{AllocatedBit, Boolean};
-    use franklin_crypto::bellman::pairing::Engine;
-    pub(crate) use franklin_crypto::bellman::plonk::better_better_cs::cs::*;
-    use franklin_crypto::bellman::SynthesisError;
-    use franklin_crypto::{
-        bellman::plonk::better_better_cs::cs::{TrivialAssembly, Width4MainGateWithDNext},
-    };
-    use franklin_crypto::bellman::pairing::{bn256::Bn256};
-    use crate::base::*;
+    use crate::plonk::circuit::boolean::{AllocatedBit, Boolean};
+    use crate::bellman::pairing::Engine;
+    use crate::bellman::plonk::better_better_cs::cs::*;
+    use crate::bellman::SynthesisError;
+    use crate::bellman::plonk::better_better_cs::cs::{TrivialAssembly, Width4MainGateWithDNext};
+    use crate::bellman::pairing::{bn256::Bn256};
+    use super::super::base::*;
     #[test]
     fn test_1(){
         //with the usual call of the same methods with the same variables, two constraints are formed

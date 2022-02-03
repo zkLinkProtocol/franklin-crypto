@@ -1,8 +1,8 @@
 
-use franklin_crypto::plonk::circuit::boolean::Boolean;
-pub(crate) use franklin_crypto::bellman::plonk::better_better_cs::cs::*;
-use franklin_crypto::bellman::SynthesisError;
-use franklin_crypto::bellman::pairing::Engine;
+use crate::plonk::circuit::boolean::Boolean;
+use crate::bellman::plonk::better_better_cs::cs::*;
+use crate::bellman::SynthesisError;
+use crate::bellman::pairing::Engine;
 use std::ops::Deref;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -131,10 +131,6 @@ impl BooleanWrapper{
     }
 
 }
-use derivative;
-pub(crate) use derivative::*;
-#[derive(Derivative)]
-#[derivative(Clone, Debug)]
 pub struct Storage{
     pub inner: std::collections::HashMap<(Boolean, Boolean, String), Boolean>
 }
@@ -166,8 +162,8 @@ impl Storage{
 #[cfg(test)]
 mod test{
 
-    use franklin_crypto::bellman::pairing::{bn256::Bn256};
-    use franklin_crypto::plonk::circuit::boolean::AllocatedBit;
+    use crate::bellman::pairing::{bn256::Bn256};
+    use crate::plonk::circuit::boolean::AllocatedBit;
     use super::*;
     #[test]
     fn test_xor(){

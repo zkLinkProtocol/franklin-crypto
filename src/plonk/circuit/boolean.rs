@@ -221,6 +221,23 @@ impl AllocatedBit {
         })
     }
 
+    pub fn from_allocated_num_unchecked<E: Engine>(
+        num: AllocatedNum<E>
+    ) -> Self {
+        AllocatedBit {
+            variable: num.get_variable(),
+            value: num.get_value().map(|el| {
+                if el == E::Fr::one() {
+                    true
+                } else if el.is_zero() {
+                    false
+                } else {
+                    unreachable!()
+                }
+            })
+        }
+    }
+
     /// Performs an XOR operation over the two operands, returning
     /// an `AllocatedBit`.
     pub fn xor<E, CS>(

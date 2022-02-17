@@ -3,6 +3,7 @@ pub mod tables;
 pub mod sha256;
 pub mod blake2s;
 pub mod keccak;
+pub mod reinforcement_concrete;
 
 
 use crate::bellman::SynthesisError;

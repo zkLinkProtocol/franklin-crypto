@@ -24,11 +24,13 @@ tiny-keccak = "1.4.2"
 bit-vec = "0.6"
 num-bigint = "0.4"
 sha2 = "0.9"
+sha3 = "0.9"
 num-integer = "0.1"
 num-traits = "0.2"
 itertools = "0.10"
 splitmut = "0.2"
 blake2 = "0.9"
+lazy_static = "1.4"
 
 #bellman = { package = "bellman_ce", path = "../../bellman/plonk" }
 bellman = { package = "bellman_ce", git = "https://github.com/matter-labs/bellman", branch = "dev" }
@@ -38,6 +40,7 @@ blake2-rfc_bellman_edition = "0.0.1"
 
 blake2s_simd = { version = "0.5" }
 hex = "0.4"
+
 
 [dev-dependencies]
 web3 = "0.13.0"

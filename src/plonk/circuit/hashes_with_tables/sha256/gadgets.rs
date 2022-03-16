@@ -1672,7 +1672,7 @@ impl<E: Engine> Sha256Gadget<E> {
 
     /// expects well formed and padded input, outputs 32 bit words
     /// Can be used when we perform something like sha256(truncate(sha256(a)), truncate(sha256(b)))
-    // to fit hashing of truncated outputs into the single round
+    /// to fit hashing of truncated outputs into the single round
     pub fn sha256<CS: ConstraintSystem<E>>(&self, cs: &mut CS, message: &[Num<E>]) -> Result<[Num<E>; 8]>
     {    
         // we assume that input is already well-padded
@@ -1704,6 +1704,68 @@ impl<E: Engine> Sha256Gadget<E> {
             self.extact_32_bits_from_tracked_num(cs, regs.f)?,
             self.extact_32_bits_from_tracked_num(cs, regs.g)?,
             self.extact_32_bits_from_tracked_num(cs, regs.h)?,
+        ];
+
+        Ok(res)
+    }
+
+    pub fn empty_state(&self) -> Sha256Registers<E> {
+        let regs = Sha256Registers {
+            a: Num::Constant(self.iv[0].clone()).into(),
+            b: Num::Constant(self.iv[1].clone()).into(),
+            c: Num::Constant(self.iv[2].clone()).into(),
+            d: Num::Constant(self.iv[3].clone()).into(),
+            e: Num::Constant(self.iv[4].clone()).into(),
+            f: Num::Constant(self.iv[5].clone()).into(),
+            g: Num::Constant(self.iv[6].clone()).into(),
+            h: Num::Constant(self.iv[7].clone()).into(),
+        };
+
+        regs
+    }
+
+    pub fn empty_state_as_nums(&self) -> [Num<E>; 8] {
+        let regs = [
+            Num::Constant(self.iv[0].clone()),
+            Num::Constant(self.iv[1].clone()),
+            Num::Constant(self.iv[2].clone()),
+            Num::Constant(self.iv[3].clone()),
+            Num::Constant(self.iv[4].clone()),
+            Num::Constant(self.iv[5].clone()),
+            Num::Constant(self.iv[6].clone()),
+            Num::Constant(self.iv[7].clone()),
+        ];
+
+        regs
+    }
+
+    /// expects inner state as 8 32-bit words and input as 16 32-bit words, and outputs and updated state
+    pub fn sha256_round_function<CS: ConstraintSystem<E>>(&self, cs: &mut CS, inner_state: [Num<E>; 8], round_input: &[Num<E>; 16]) -> Result<[Num<E>; 8]>
+    {            
+
+        let state = Sha256Registers {
+            a: inner_state[0].into(),
+            b: inner_state[1].into(),
+            c: inner_state[2].into(),
+            d: inner_state[3].into(),
+            e: inner_state[4].into(),
+            f: inner_state[5].into(),
+            g: inner_state[6].into(),
+            h: inner_state[7].into(),
+        };
+    
+        let expanded_block = self.message_expansion(cs, round_input)?;
+        let state = self.sha256_inner_block(cs, state, &expanded_block[..], &self.round_constants)?;
+
+        let res = [
+            self.extact_32_bits_from_tracked_num(cs, state.a)?,
+            self.extact_32_bits_from_tracked_num(cs, state.b)?,
+            self.extact_32_bits_from_tracked_num(cs, state.c)?,
+            self.extact_32_bits_from_tracked_num(cs, state.d)?,
+            self.extact_32_bits_from_tracked_num(cs, state.e)?,
+            self.extact_32_bits_from_tracked_num(cs, state.f)?,
+            self.extact_32_bits_from_tracked_num(cs, state.g)?,
+            self.extact_32_bits_from_tracked_num(cs, state.h)?,
         ];
 
         Ok(res)

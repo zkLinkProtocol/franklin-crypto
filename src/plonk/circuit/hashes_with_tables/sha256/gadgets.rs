@@ -142,7 +142,7 @@ impl Add for OverflowTracker {
 }
 
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct NumWithTracker<E: Engine> {
     num: Num<E>,
     overflow_tracker: OverflowTracker,
@@ -189,6 +189,7 @@ pub struct SparseMajValue<E: Engine> {
     rot22: Num<E>,
 }
 
+#[derive(Clone, Copy)]
 pub struct Sha256Registers<E: Engine> {
     a : NumWithTracker<E>,
     b : NumWithTracker<E>,
@@ -245,6 +246,20 @@ pub struct Sha256Gadget<E: Engine> {
     round_constants: [E::Fr; 64],
 }
 
+fn get_or_create_table<E: Engine, CS: ConstraintSystem<E>, FN: FnOnce() -> LookupTableApplication<E>>(
+    cs: &mut CS,
+    table_name: &str,
+    init_fn: FN
+) -> Result<Arc<LookupTableApplication<E>>> {
+    if let Ok(existing) = cs.get_table(table_name) {
+        Ok(existing)
+    } else {
+        let new_one = init_fn();
+        let new_one = cs.add_table(new_one)?;
+
+        Ok(new_one)
+    }
+}
 
 impl<E: Engine> Sha256Gadget<E> {
     pub fn iv() -> [E::Fr; 8] {
@@ -281,90 +296,130 @@ impl<E: Engine> Sha256Gadget<E> {
         ];
 
         let name1: &'static str = "sha256_base7_rot6_table";
-        let sha256_base7_rot6_table = LookupTableApplication::new(
+        let sha256_base7_rot6_table = get_or_create_table(
+            cs,
             name1,
-            SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 6, 0, SHA256_CHOOSE_BASE, name1),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_base7_rot6_table = cs.add_table(sha256_base7_rot6_table)?;
+            || {
+                LookupTableApplication::new(
+                    name1,
+                    SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 6, 0, SHA256_CHOOSE_BASE, name1),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
 
         let name2 : &'static str = "sha256_base7_rot3_extr10_table";
-        let sha256_base7_rot3_extr10_table = LookupTableApplication::new(
+        let sha256_base7_rot3_extr10_table = get_or_create_table(
+            cs,
             name2,
-            SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 3, SHA256_GADGET_CHUNK_SIZE-1, SHA256_CHOOSE_BASE, name2),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_base7_rot3_extr10_table = cs.add_table(sha256_base7_rot3_extr10_table)?;
+            || {
+                LookupTableApplication::new(
+                    name2,
+                    SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 3, SHA256_GADGET_CHUNK_SIZE-1, SHA256_CHOOSE_BASE, name2),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
 
         let name3 : &'static str = "sha256_base4_rot2_table";
-        let sha256_base4_rot2_table = LookupTableApplication::new(
+        let sha256_base4_rot2_table = get_or_create_table(
+            cs,
             name3,
-            SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 2, 0, SHA256_MAJORITY_SHEDULER_BASE, name3),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_base4_rot2_table  = cs.add_table(sha256_base4_rot2_table)?;
+            || {
+                LookupTableApplication::new(
+                    name3,
+                    SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 2, 0, SHA256_MAJORITY_SHEDULER_BASE, name3),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
         
         let name4 : &'static str = "sha256_base4_rot2_width10_table";
-        let sha256_base4_rot2_width10_table = LookupTableApplication::new(
+        let sha256_base4_rot2_width10_table = get_or_create_table(
+            cs,
             name4,
-            SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE - 1, 2, 0, SHA256_MAJORITY_SHEDULER_BASE, name4),
-            columns3.clone(),
-            None,
-            true,
-        );
-        let sha256_base4_rot2_width10_table = cs.add_table(sha256_base4_rot2_width10_table)?;
+            || {
+                LookupTableApplication::new(
+                    name4,
+                    SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE - 1, 2, 0, SHA256_MAJORITY_SHEDULER_BASE, name4),
+                    columns3.clone(),
+                    None,
+                    true,
+                )
+            } 
+        )?;
 
         let xor_f = | x | { x & 1};
         let ch_f = | x | { ch_u64_normalizer(x) };
         let maj_f = | x | { maj_u64_normalizer(x) };
         
         let name5 : &'static str = "sha256_ch_normalization_table";
-        let sha256_ch_normalization_table = LookupTableApplication::new(
+        let sha256_ch_normalization_table = get_or_create_table(
+            cs,
             name5,
-            MultiBaseNormalizationTable::new(ch_num_of_chunks, SHA256_CHOOSE_BASE, BINARY_BASE, BINARY_BASE, ch_f, xor_f, name5),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_ch_normalization_table = cs.add_table(sha256_ch_normalization_table)?;
+            || {
+                LookupTableApplication::new(
+                    name5,
+                    MultiBaseNormalizationTable::new(ch_num_of_chunks, SHA256_CHOOSE_BASE, BINARY_BASE, BINARY_BASE, ch_f, xor_f, name5),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
 
         let name6 : &'static str = "sha256_maj_normalization_table";
-        let sha256_maj_sheduler_normalization_table = LookupTableApplication::new(
+        let sha256_maj_sheduler_normalization_table = get_or_create_table(
+            cs,
             name6,
-            MultiBaseNormalizationTable::new(
-                maj_and_sheduler_num_of_chunks, SHA256_MAJORITY_SHEDULER_BASE, BINARY_BASE, BINARY_BASE, maj_f, xor_f, name6
-            ),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_maj_sheduler_normalization_table = cs.add_table(sha256_maj_sheduler_normalization_table)?;
+            || {
+                LookupTableApplication::new(
+                    name6,
+                    MultiBaseNormalizationTable::new(
+                        maj_and_sheduler_num_of_chunks, SHA256_MAJORITY_SHEDULER_BASE, BINARY_BASE, BINARY_BASE, maj_f, xor_f, name6
+                    ),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
 
         let name7 : &'static str = "sha256_base4_rot7_table";
-        let sha256_base4_rot7_table = LookupTableApplication::new(
+        let sha256_base4_rot7_table = get_or_create_table(
+            cs,
             name7,
-            SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 7, 0, SHA256_MAJORITY_SHEDULER_BASE, name7),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_base4_rot7_table = cs.add_table(sha256_base4_rot7_table)?;
+            || {
+                LookupTableApplication::new(
+                    name7,
+                    SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 7, 0, SHA256_MAJORITY_SHEDULER_BASE, name7),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
         
         let name8 : &'static str = "sha256_sheduler_helper_table";
-        let sha256_sheduler_helper_table = LookupTableApplication::new(
+        let sha256_sheduler_helper_table = get_or_create_table(
+            cs,
             name8,
-            Sha256ShedulerHelperTable::new(name8),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_sheduler_helper_table = cs.add_table(sha256_sheduler_helper_table)?;
+            || {
+                LookupTableApplication::new(
+                    name8,
+                    Sha256ShedulerHelperTable::new(name8),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
     
         // Initialize IV values:
         // (first 32 bits of the fractional parts of the square roots of the first 8 primes 2..19):
@@ -1702,7 +1757,6 @@ impl<E: Engine> Sha256Gadget<E> {
             g: Num::Constant(self.iv[6].clone()).into(),
             h: Num::Constant(self.iv[7].clone()).into(),
         };
-
 
         for block in message.chunks(16) {
             let expanded_block = self.message_expansion(cs, block)?;

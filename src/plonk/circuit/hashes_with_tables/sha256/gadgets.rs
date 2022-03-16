@@ -247,6 +247,20 @@ pub struct Sha256Gadget<E: Engine> {
 
 
 impl<E: Engine> Sha256Gadget<E> {
+    pub fn iv() -> [E::Fr; 8] {
+        [ 
+            u64_to_ff(0x6a09e667), u64_to_ff(0xbb67ae85), u64_to_ff(0x3c6ef372), u64_to_ff(0xa54ff53a),
+            u64_to_ff(0x510e527f), u64_to_ff(0x9b05688c), u64_to_ff(0x1f83d9ab), u64_to_ff(0x5be0cd19),
+        ]
+    }
+
+    pub fn iv_as_nums() -> [Num<E>; 8] {
+        let iv = Self::iv();
+        use std::convert::TryInto;
+
+        iv.iter().map(|&el| Num::Constant(el)).collect::<Vec<_>>().try_into().unwrap()
+    }
+
     pub fn new<CS: ConstraintSystem<E>>(
         cs: &mut CS, 
         ch_base_num_of_chunks: Option<usize>,
@@ -1709,34 +1723,24 @@ impl<E: Engine> Sha256Gadget<E> {
         Ok(res)
     }
 
-    pub fn empty_state(&self) -> Sha256Registers<E> {
+    pub fn empty_state() -> Sha256Registers<E> {
+        let iv = Self::iv();
         let regs = Sha256Registers {
-            a: Num::Constant(self.iv[0].clone()).into(),
-            b: Num::Constant(self.iv[1].clone()).into(),
-            c: Num::Constant(self.iv[2].clone()).into(),
-            d: Num::Constant(self.iv[3].clone()).into(),
-            e: Num::Constant(self.iv[4].clone()).into(),
-            f: Num::Constant(self.iv[5].clone()).into(),
-            g: Num::Constant(self.iv[6].clone()).into(),
-            h: Num::Constant(self.iv[7].clone()).into(),
+            a: Num::Constant(iv[0].clone()).into(),
+            b: Num::Constant(iv[1].clone()).into(),
+            c: Num::Constant(iv[2].clone()).into(),
+            d: Num::Constant(iv[3].clone()).into(),
+            e: Num::Constant(iv[4].clone()).into(),
+            f: Num::Constant(iv[5].clone()).into(),
+            g: Num::Constant(iv[6].clone()).into(),
+            h: Num::Constant(iv[7].clone()).into(),
         };
 
         regs
     }
 
-    pub fn empty_state_as_nums(&self) -> [Num<E>; 8] {
-        let regs = [
-            Num::Constant(self.iv[0].clone()),
-            Num::Constant(self.iv[1].clone()),
-            Num::Constant(self.iv[2].clone()),
-            Num::Constant(self.iv[3].clone()),
-            Num::Constant(self.iv[4].clone()),
-            Num::Constant(self.iv[5].clone()),
-            Num::Constant(self.iv[6].clone()),
-            Num::Constant(self.iv[7].clone()),
-        ];
-
-        regs
+    pub fn empty_state_as_nums() -> [Num<E>; 8] {
+        Self::iv_as_nums()
     }
 
     /// expects inner state as 8 32-bit words and input as 16 32-bit words, and outputs and updated state

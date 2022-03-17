@@ -84,121 +84,125 @@ pub fn enforce_using_single_column_table_for_shifted_variable<E: Engine, CS: Con
     shift: E::Fr,
     num_bits: usize
 ) -> Result<Vec<Num<E>>, SynthesisError> {
-    todo!("temporary broken");
-    // // we ensure that var * shift <= N bits
-    // let strategies = get_range_constraint_info(&*cs);
-    // assert_eq!(CS::Params::STATE_WIDTH, 4);
-    // assert!(strategies.len() > 0);
-    // assert_eq!(strategies[0].strategy, RangeConstraintStrategy::SingleTableInvocation);
+    // we ensure that var * shift <= N bits
+    let strategies = get_range_constraint_info(&*cs);
+    assert_eq!(CS::Params::STATE_WIDTH, 4);
+    assert!(strategies.len() > 0);
+    assert_eq!(strategies[0].strategy, RangeConstraintStrategy::SingleTableInvocation);
 
-    // let width_per_gate = strategies[0].optimal_multiple;
-    // let minimal_per_gate = strategies[0].minimal_multiple;
-    // let linear_terms_used = strategies[0].linear_terms_used;
+    let width_per_gate = strategies[0].optimal_multiple;
+    let minimal_per_gate = strategies[0].minimal_multiple;
+    let linear_terms_used = strategies[0].linear_terms_used;
 
-    // assert_eq!(linear_terms_used, 3);
-    // assert_eq!(width_per_gate, minimal_per_gate);
+    assert_eq!(linear_terms_used, 3);
+    assert_eq!(width_per_gate, minimal_per_gate);
 
-    // if num_bits <= width_per_gate {
-    //     return enforce_shorter_range_into_single_gate_for_shifted_variable(
-    //         cs,
-    //         to_constraint,
-    //         shift,
-    //         num_bits
-    //     );
-    // }
+    if num_bits <= width_per_gate {
+        let chunk = enforce_shorter_range_into_single_gate_for_shifted_variable(
+            cs,
+            to_constraint,
+            shift,
+            num_bits
+        )?;
 
-    // increment_invocation_count();
+        return Ok(vec![chunk])
+    }
 
-    // // initial_d = 2^k * num_to_constraint;
-    // // we split this initial_d into chunks of equal_length W: [a0, a1, ..., an]
-    // // 2^W d_next = d - a_i
-    // // we do two things simultaneously:
-    // // - arithmetic constraint like d - a_i + d + 2^W d_next = 0
-    // // - range constraint that a has width W
-    // // NB: on the last row the arithmetic constraint would be simply:
-    // // d - a_n = 0
+    increment_invocation_count();
 
-    // let dummy_var = CS::get_dummy_variable();
-    // let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
-    // let mut next_term_range = CS::MainGate::range_of_next_step_linear_terms();
-    // assert_eq!(next_term_range.len(), 1, "for now works only if only one variable is accessible on the next step");
-    // let next_step_coeff_idx = next_term_range.next().expect("must give at least one index");
-    // let mut minus_one = E::Fr::one();
-    // minus_one.negate();
+    // initial_d = 2^k * num_to_constraint;
+    // we split this initial_d into chunks of equal_length W: [a0, a1, ..., an]
+    // 2^W d_next = d - a_i
+    // we do two things simultaneously:
+    // - arithmetic constraint like d - a_i + d + 2^W d_next = 0
+    // - range constraint that a has width W
+    // NB: on the last row the arithmetic constraint would be simply:
+    // d - a_n = 0
 
-    // let mut table_width_shift = E::Fr::one();
-    // for _ in 0..width_per_gate {
-    //     table_width_shift.double();
-    // }
-    // let mut table_width_shift_negated = table_width_shift.clone();
-    // table_width_shift_negated.negate();
-    // let table_width_shift_inverse = table_width_shift.inverse().unwrap();
+    let dummy_var = CS::get_dummy_variable();
+    let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
+    let mut next_term_range = CS::MainGate::range_of_next_step_linear_terms();
+    assert_eq!(next_term_range.len(), 1, "for now works only if only one variable is accessible on the next step");
+    let next_step_coeff_idx = next_term_range.next().expect("must give at least one index");
+    let mut minus_one = E::Fr::one();
+    minus_one.negate();
 
-    // let mut num_gates_for_coarse_constraint = num_bits / width_per_gate;
-    // let remainder_bits = num_bits % width_per_gate;
-    // if remainder_bits != 0 {
-    //     num_gates_for_coarse_constraint += 1;
-    // }
-    // let num_slices = num_gates_for_coarse_constraint;
+    let mut table_width_shift = E::Fr::one();
+    for _ in 0..width_per_gate {
+        table_width_shift.double();
+    }
+    let mut table_width_shift_negated = table_width_shift.clone();
+    table_width_shift_negated.negate();
+    let table_width_shift_inverse = table_width_shift.inverse().unwrap();
 
-    // use crate::plonk::circuit::SomeField;
+    let mut num_gates_for_coarse_constraint = num_bits / width_per_gate;
+    let remainder_bits = num_bits % width_per_gate;
+    if remainder_bits != 0 {
+        num_gates_for_coarse_constraint += 1;
+    }
+    let num_slices = num_gates_for_coarse_constraint;
 
-    // let value_to_constraint = to_constraint.get_value().mul(&Some(shift));
-    // let slices = split_some_into_slices(value_to_constraint, width_per_gate, num_slices);
-    // let mut it = slices.into_iter().peekable();
+    use crate::plonk::circuit::SomeField;
+
+    let value_to_constraint = to_constraint.get_value().mul(&Some(shift));
+    let slices = split_some_into_slices(value_to_constraint, width_per_gate, num_slices);
+    let mut it = slices.into_iter().peekable();
     
-    // let table = cs.get_table(RANGE_CHECK_SINGLE_APPLICATION_TABLE_NAME)?;
-    // let mut cur_value = to_constraint.clone();
-    // let mut coeffs = [minus_one, E::Fr::zero(), E::Fr::zero(), shift];
+    let table = cs.get_table(RANGE_CHECK_SINGLE_APPLICATION_TABLE_NAME)?;
+    let mut cur_value = to_constraint.clone();
+    let mut coeffs = [minus_one, E::Fr::zero(), E::Fr::zero(), shift];
 
-    // while let Some(slice_fr) = it.next() {
-    //     let d_next_coef = if it.peek().is_some() {
-    //         table_width_shift_negated
-    //     } else {
-    //         E::Fr::zero()
-    //     };
+    let mut chunks = vec![];
+    while let Some(slice_fr) = it.next() {
+        let d_next_coef = if it.peek().is_some() {
+            table_width_shift_negated
+        } else {
+            E::Fr::zero()
+        };
 
-    //     let slice = AllocatedNum::alloc(cs, || slice_fr.grab())?;
-    //     let vars = [slice.get_variable(), dummy_var, dummy_var, cur_value.get_variable()];  
+        let slice = AllocatedNum::alloc(cs, || slice_fr.grab())?;
+        let vars = [slice.get_variable(), dummy_var, dummy_var, cur_value.get_variable()];
+        chunks.push(Num::Variable(slice));
 
-    //     cs.begin_gates_batch_for_step()?;
-    //     cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
+        cs.begin_gates_batch_for_step()?;
+        cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
     
-    //     let gate_term = MainGateTerm::new();
-    //     let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy_var)?;
+        let gate_term = MainGateTerm::new();
+        let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy_var)?;
 
-    //     for (idx, coef) in range_of_linear_terms.clone().zip(coeffs.iter()) {
-    //         gate_coefs[idx] = *coef;
-    //     }
-    //     gate_coefs[next_step_coeff_idx] = d_next_coef;
+        for (idx, coef) in range_of_linear_terms.clone().zip(coeffs.iter()) {
+            gate_coefs[idx] = *coef;
+        }
+        gate_coefs[next_step_coeff_idx] = d_next_coef;
 
-    //     let mg = CS::MainGate::default();
-    //     cs.new_gate_in_batch(
-    //         &mg,
-    //         &gate_coefs,
-    //         &vars,
-    //         &[]
-    //     )?;
-    //     cs.end_gates_batch_for_step()?;
+        let mg = CS::MainGate::default();
+        cs.new_gate_in_batch(
+            &mg,
+            &gate_coefs,
+            &vars,
+            &[]
+        )?;
+        cs.end_gates_batch_for_step()?;
 
-    //     cur_value = if it.peek().is_some() {
-    //         AllocatedNum::alloc(cs, || {
-    //             let mut res = cur_value.get_value().grab()?;
-    //             res.mul_assign(&coeffs.last().unwrap());
-    //             let tmp = slice.get_value().grab()?;
-    //             res.sub_assign(&tmp);
-    //             res.mul_assign(&table_width_shift_inverse);
-    //             Ok(res)
-    //         })?
-    //     }
-    //     else {
-    //         AllocatedNum::zero(cs)
-    //     };
-    //     *coeffs.last_mut().unwrap() = E::Fr::one();
-    // }
+        cur_value = if it.peek().is_some() {
+            AllocatedNum::alloc(cs, || {
+                let mut res = cur_value.get_value().grab()?;
+                res.mul_assign(&coeffs.last().unwrap());
+                let tmp = slice.get_value().grab()?;
+                res.sub_assign(&tmp);
+                res.mul_assign(&table_width_shift_inverse);
+                Ok(res)
+            })?
+        }
+        else {
+            AllocatedNum::zero(cs)
+        };
+        *coeffs.last_mut().unwrap() = E::Fr::one();
+    }
       
-    // increment_total_gates_count(num_gates_for_coarse_constraint + (remainder_bits != 0) as usize);
-    // Ok(())
+    increment_total_gates_count(num_gates_for_coarse_constraint + (remainder_bits != 0) as usize);
+
+    Ok(chunks)
 }
 
 // enforces that this value is either `num_bits` long or a little longer 
@@ -310,7 +314,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized<E: Engin
         let chunk_allocated = AllocatedNum::alloc(cs, || {
             Ok(*value.get()?)
         })?;
-        chunks.push(Num::Variable((chunk_allocated)));
+        chunks.push(Num::Variable(chunk_allocated));
         last_allocated_var = Some(chunk_allocated.clone());
         let scaled = value.mul(&Some(current_term_coeff));
         next_step_value = next_step_value.add(&scaled);

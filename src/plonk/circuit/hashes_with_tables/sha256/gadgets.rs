@@ -246,21 +246,6 @@ pub struct Sha256Gadget<E: Engine> {
     round_constants: [E::Fr; 64],
 }
 
-fn get_or_create_table<E: Engine, CS: ConstraintSystem<E>, FN: FnOnce() -> LookupTableApplication<E>>(
-    cs: &mut CS,
-    table_name: &str,
-    init_fn: FN
-) -> Result<Arc<LookupTableApplication<E>>> {
-    if let Ok(existing) = cs.get_table(table_name) {
-        Ok(existing)
-    } else {
-        let new_one = init_fn();
-        let new_one = cs.add_table(new_one)?;
-
-        Ok(new_one)
-    }
-}
-
 impl<E: Engine> Sha256Gadget<E> {
     pub fn iv() -> [E::Fr; 8] {
         [ 
@@ -294,6 +279,8 @@ impl<E: Engine> Sha256Gadget<E> {
             PolyIdentifier::VariablesPolynomial(1), 
             PolyIdentifier::VariablesPolynomial(2)
         ];
+
+        use plonk::circuit::hashes_with_tables::get_or_create_table;
 
         let name1: &'static str = "sha256_base7_rot6_table";
         let sha256_base7_rot6_table = get_or_create_table(

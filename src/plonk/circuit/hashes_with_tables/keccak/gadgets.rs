@@ -24,6 +24,7 @@ use super::super::utils::*;
 use super::super::tables::*;
 use super::super::{NumExtension, AllocatedNumExtension};
 
+use std::convert::TryInto;
 use std::sync::Arc;
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
@@ -56,8 +57,32 @@ pub const KECCAK_NUM_ROUNDS : usize = 24;
 pub const MAX_OF_COUNT_PER_ITER : u64 = 50;
 pub const DEFAULT_RANGE_TABLE_WIDTH: usize = 16;
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct KeccakState<E: Engine>([[Num<E>; KECCAK_STATE_WIDTH]; KECCAK_STATE_WIDTH]);
+
+impl<E: Engine> KeccakState<E> {
+    pub fn from_raw(state: [Num<E>; KECCAK_STATE_WIDTH * KECCAK_STATE_WIDTH]) -> Self {
+        let mut new = Self([[Num::<E>::zero(); KECCAK_STATE_WIDTH]; KECCAK_STATE_WIDTH]);
+        let mut it = state.iter();
+        for row in new.0.iter_mut() {
+            for el in row.iter_mut() {
+                *el = *it.next().unwrap();
+            }
+        }
+
+        assert!(it.next().is_none());
+
+        new
+    }
+
+    pub fn into_raw(self) -> [Num<E>; KECCAK_STATE_WIDTH * KECCAK_STATE_WIDTH] {
+        let mut tmp = vec![];
+        for row in self.0.iter() {
+            tmp.extend_from_slice(row);
+        }
+        tmp.try_into().unwrap()
+    }
+}
 
 impl<E: Engine> Default for KeccakState<E> {
     fn default() -> Self {
@@ -158,16 +183,24 @@ impl<E: Engine> Keccak256Gadget<E> {
             PolyIdentifier::VariablesPolynomial(2)
         ];
 
+        use plonk::circuit::hashes_with_tables::get_or_create_table;
+
         let name1: &'static str = "from_binary_converter_table";
-        let from_binary_converter_table = LookupTableApplication::new(
+        let from_binary_converter_table = get_or_create_table(
+            cs,
             name1,
-            MultiBaseNormalizationTable::new(
-                binary_base_num_of_chunks, BINARY_BASE, KECCAK_FIRST_SPARSE_BASE, KECCAK_SECOND_SPARSE_BASE, |x| {x}, |x| {x}, name1,
-            ),
-            columns3.clone(),
-            None,
-            true
-        );
+            || {
+                LookupTableApplication::new(
+                    name1,
+                    MultiBaseNormalizationTable::new(
+                        binary_base_num_of_chunks, BINARY_BASE, KECCAK_FIRST_SPARSE_BASE, KECCAK_SECOND_SPARSE_BASE, |x| {x}, |x| {x}, name1,
+                    ),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            }
+        )?;
 
         let name2 : &'static str = "first_to_second_base_converter_table";
         let f = |x| { keccak_u64_first_converter(x)};
@@ -197,44 +230,57 @@ impl<E: Engine> Keccak256Gadget<E> {
         };
         
         let g = |x| { of_transformed[x as usize] };
-        let first_to_second_base_converter_table = LookupTableApplication::new(
+        let first_to_second_base_converter_table = get_or_create_table(
+            cs,
             name2,
-            ExtendedBaseConverterTable::new(
-                first_base_num_of_chunks, KECCAK_FIRST_SPARSE_BASE, KECCAK_SECOND_SPARSE_BASE, f, g, name2
-            ),
-            columns3.clone(),
-            None,
-            true
-        );
+            || {
+                LookupTableApplication::new(
+                    name2,
+                    ExtendedBaseConverterTable::new(
+                        first_base_num_of_chunks, KECCAK_FIRST_SPARSE_BASE, KECCAK_SECOND_SPARSE_BASE, f, g, name2
+                    ),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            }
+        )?;
 
         let name3 : &'static str = "of_first_to_second_base_converter_table";
         let f = |x| { keccak_u64_first_converter(x)};
-        let of_first_to_second_base_converter_table = LookupTableApplication::new(
+        let of_first_to_second_base_converter_table = get_or_create_table(
+            cs,
             name3,
-            OverflowCognizantConverterTable::new(
-                KECCAK_FIRST_SPARSE_BASE, KECCAK_SECOND_SPARSE_BASE, KECCAK_LANE_WIDTH as u64, f, name3,
-            ),
-            columns3.clone(),
-            None,
-            true
-        );
+            || {
+                LookupTableApplication::new(
+                    name3,
+                    OverflowCognizantConverterTable::new(
+                        KECCAK_FIRST_SPARSE_BASE, KECCAK_SECOND_SPARSE_BASE, KECCAK_LANE_WIDTH as u64, f, name3,
+                    ),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            }
+        )?;
 
         let name4 : &'static str = "from_second_base_converter_table";
         let f = |x| { keccak_u64_second_converter(x)};
-        let from_second_base_converter_table = LookupTableApplication::new(
+        let from_second_base_converter_table = get_or_create_table(
+            cs,
             name4,
-            MultiBaseNormalizationTable::new(
-                second_base_num_of_chunks, KECCAK_SECOND_SPARSE_BASE, KECCAK_FIRST_SPARSE_BASE, BINARY_BASE, f, f, name4
-            ),
-            columns3.clone(),
-            None,
-            true
-        );
-
-        let from_binary_converter_table = cs.add_table(from_binary_converter_table)?;
-        let first_to_second_base_converter_table = cs.add_table(first_to_second_base_converter_table)?;
-        let of_first_to_second_base_converter_table = cs.add_table(of_first_to_second_base_converter_table)?;
-        let from_second_base_converter_table = cs.add_table(from_second_base_converter_table)?;
+            || {
+                LookupTableApplication::new(
+                    name4,
+                    MultiBaseNormalizationTable::new(
+                        second_base_num_of_chunks, KECCAK_SECOND_SPARSE_BASE, KECCAK_FIRST_SPARSE_BASE, BINARY_BASE, f, f, name4
+                    ),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            }
+        )?;
 
         let f = |mut input: u64, step: u64| -> E::Fr {
             let mut acc = BigUint::default(); 
@@ -1031,6 +1077,10 @@ impl<E: Engine> Keccak256Gadget<E> {
             res.extend(squeezed.unwrap().into_iter());
         }
 
+        for (i, el) in res.iter().enumerate() {
+            println!("Squeezed word {} = {}", i, el.get_value().unwrap());
+        }
+
         Ok(res)
     }
 
@@ -1063,8 +1113,10 @@ impl<E: Engine> Keccak256Gadget<E> {
                 is_first = false;
                 let tmp = self.convert_binary_to_sparse_repr(cs, &elem_in, KeccakBase::KeccakSecondSparseBase)?;
                 Num::conditionally_select(
-                    cs, &is_first_block, 
-                    &Num::Constant(self.round_cnsts_in_second_base[KECCAK_NUM_ROUNDS-1]), &tmp
+                    cs, 
+                    &is_first_block, 
+                    &Num::Constant(self.round_cnsts_in_second_base[KECCAK_NUM_ROUNDS-1]), 
+                    &tmp
                 )?
             } else {
                 // returns 0 if condition == `false` and `a` if condition == `true` 
@@ -1140,6 +1192,10 @@ impl<E: Engine> Keccak256Gadget<E> {
             ];
             let tmp = Num::long_weighted_sum(cs, &elems, &u64_to_ff(1 << 8))?;
             words64.push(tmp);
+        }
+
+        for (i, el) in words64.iter().enumerate() {
+            println!("Keccak input word {} = {}", i, el.get_value().unwrap());
         }
 
         self.digest(cs, &words64[..])           

@@ -1,11 +1,14 @@
-
+use super::*;
 use crate::plonk::circuit::boolean::Boolean;
 use crate::bellman::plonk::better_better_cs::cs::*;
 use crate::bellman::SynthesisError;
 use crate::bellman::pairing::Engine;
 use std::ops::Deref;
 use std::collections::HashMap;
+// use std::collections::HashSet;
 use std::sync::Mutex;
+use std::clone::Clone;
+use plonk::circuit::booleanwrapper::utils::smart_and;
 
 lazy_static!{
     static ref GLOBAL_STORAGE: Mutex<Storage> = Mutex::new(Storage::new());
@@ -13,9 +16,24 @@ lazy_static!{
 
 //The BooleanWrapper structure is a wrapper to the Boulevard structure. 
 //Its main idea is not to allow duplicates of constraints when calling Boolean methods.
-#[derive(Debug)]
-pub struct BooleanWrapper(Boolean);
+#[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
+pub enum StringForKey{
+    Xor,
+    And, 
+    Or,
+    ConditionallySelect,
+    Smart_And,
+    Smart_Or
+}
 
+#[derive(Debug, Clone, Copy)]
+pub struct BooleanWrapper(pub Boolean);
+
+impl From<Boolean> for BooleanWrapper{
+    fn from(item: Boolean)-> Self{
+        return BooleanWrapper(item);
+    }
+}
 
 impl Deref for BooleanWrapper {
     type Target = Boolean;
@@ -27,94 +45,94 @@ impl BooleanWrapper{
     //Inside the structure, Boolean itself is called
     //Also call the methods of the local Storage, which checks whether there is already such 
     // a key with the desired constraint in the database.
-    pub fn xor<E, CS>(cs: &mut CS, a: &Boolean, b: &Boolean)-> Result<Self, SynthesisError>
+    pub fn xor<E, CS>(cs: &mut CS, a: &BooleanWrapper, b: &BooleanWrapper)-> Result<Self, SynthesisError>
     where E: Engine,
         CS: ConstraintSystem<E>{
             match (a,b){
-                (&Boolean::Constant(true), a)|(a, &Boolean::Constant(true))|(&Boolean::Constant(false), a)|(a, &Boolean::Constant(false))=>{
+                (&BooleanWrapper(Boolean::Constant(true)), a)|(a, &BooleanWrapper(Boolean::Constant(true)))|(&BooleanWrapper(Boolean::Constant(false)), a)|(a, &BooleanWrapper(Boolean::Constant(false)))=>{
                     Ok(BooleanWrapper(Boolean::xor(cs, &a, &b).unwrap()))
                 }
                 (_,_)=>{
-                    if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), String::from("xor"))){
-                        return Ok(BooleanWrapper(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), String::from("xor")))))
+                    if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), StringForKey::Xor)){
+                        return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), StringForKey::Xor)))
                     }
             
                     else{
-                        let value = Boolean::xor(cs, &a, &b).unwrap();
-                        GLOBAL_STORAGE.lock().unwrap().insert_value((a.clone(), b.clone(), String::from("xor")), &value);
-                        Ok(BooleanWrapper(value))
+                        let value = BooleanWrapper(Boolean::xor(cs, &a, &b).unwrap());
+                        GLOBAL_STORAGE.lock().unwrap().insert_value(&(a.clone(), b.clone(), StringForKey::Xor), &value);
+                        Ok(value)
                 
                     }
                 }
         } 
     }
 
-    pub fn and<E, CS>(cs: &mut CS, a: &Boolean, b: &Boolean)-> Result<Self, SynthesisError>
+    pub fn and<E, CS>(cs: &mut CS, a: &BooleanWrapper, b: &BooleanWrapper)-> Result<Self, SynthesisError>
     where E: Engine,
         CS: ConstraintSystem<E>{
             match (a,b){
-                (&Boolean::Constant(true), a)|(a, &Boolean::Constant(true))|(&Boolean::Constant(false), a)|(a, &Boolean::Constant(false))=>{
+                (&BooleanWrapper(Boolean::Constant(true)), a)|(a, &BooleanWrapper(Boolean::Constant(true)))|(&BooleanWrapper(Boolean::Constant(false)), a)|(a, &BooleanWrapper(Boolean::Constant(false)))=>{
                     Ok(BooleanWrapper(Boolean::and(cs, &a, &b).unwrap()))
                 }
 
                 (_,_)=>{
-                    if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), String::from("and"))){
-                        return Ok(BooleanWrapper(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), String::from("and")))))
+                    if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), StringForKey::And)){
+                        return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), StringForKey::And)))
                     }
             
                     else{
-                        let value = Boolean::and(cs, &a, &b).unwrap();
-                        GLOBAL_STORAGE.lock().unwrap().insert_value((a.clone(), b.clone(), String::from("and")), &value);
-                        Ok(BooleanWrapper(value))
+                        let value = BooleanWrapper(Boolean::and(cs, &a, &b).unwrap());
+                        GLOBAL_STORAGE.lock().unwrap().insert_value(&(a.clone(), b.clone(), StringForKey::And), &value);
+                        Ok(value)
                 
                     }
                 }
         }
     }
 
-    pub fn or<E, CS>(cs: &mut CS, a: &Boolean, b: &Boolean)-> Result<Self, SynthesisError>
+    pub fn or<E, CS>(cs: &mut CS, a: &BooleanWrapper, b: &BooleanWrapper)-> Result<Self, SynthesisError>
     where E: Engine,
         CS: ConstraintSystem<E>{
             match (a,b){
-                (&Boolean::Constant(true), a)|(a, &Boolean::Constant(true))|(&Boolean::Constant(false), a)|(a, &Boolean::Constant(false))=>{
+                (&BooleanWrapper(Boolean::Constant(true)), a)|(a, &BooleanWrapper(Boolean::Constant(true)))|(&BooleanWrapper(Boolean::Constant(false)), a)|(a, &BooleanWrapper(Boolean::Constant(false)))=>{
                     Ok(BooleanWrapper(Boolean::or(cs, &a, &b).unwrap()))
                 }
 
                 (_,_)=>{
-                    if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), String::from("or"))){
-                        return Ok(BooleanWrapper(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), String::from("or")))))
+                    if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), StringForKey::Or)){
+                        return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), StringForKey::Or)))
                     }
             
                     else{
-                        let value = Boolean::or(cs, &a, &b).unwrap();
-                        GLOBAL_STORAGE.lock().unwrap().insert_value((a.clone(), b.clone(), String::from("or")), &value);
-                        Ok(BooleanWrapper(value))
+                        let value = BooleanWrapper(Boolean::or(cs, &a, &b).unwrap());
+                        GLOBAL_STORAGE.lock().unwrap().insert_value(&(a.clone(), b.clone(), StringForKey::Or), &value);
+                        Ok(value)
                 
                     }
                 }
+            }
         }
-    }
 
     pub fn conditionally_select<E: Engine, CS: ConstraintSystem<E>>(
         cs: &mut CS,
-        flag: &Boolean,
-        a: &Boolean,
-        b: &Boolean
+        flag: &BooleanWrapper,
+        a: &BooleanWrapper,
+        b: &BooleanWrapper
     ) -> Result<Self, SynthesisError> {
         match (a,b){
-            (&Boolean::Constant(true), a)|(a, &Boolean::Constant(true))|(&Boolean::Constant(false), a)|(a, &Boolean::Constant(false))=>{
+            (&BooleanWrapper(Boolean::Constant(true)), a)|(a, &BooleanWrapper(Boolean::Constant(true)))|(&BooleanWrapper(Boolean::Constant(false)), a)|(a, &BooleanWrapper(Boolean::Constant(false)))=>{
                 Ok(BooleanWrapper(Boolean::sha256_ch(cs, &flag, &a, &b).unwrap()))
             }
 
             (_,_)=>{
-                if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), String::from("conditionally_select"))){
-                    return Ok(BooleanWrapper(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), String::from("conditionally_select")))))
+                if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), StringForKey:: ConditionallySelect)){
+                    return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), StringForKey:: ConditionallySelect)))
                 }
                 
                 else{
-                    let value = Boolean::sha256_ch(cs, &flag, &a, &b).unwrap();
-                    GLOBAL_STORAGE.lock().unwrap().insert_value((a.clone(), b.clone(), String::from("conditionally_select")), &value);
-                    Ok(BooleanWrapper(value))
+                    let value = BooleanWrapper(Boolean::sha256_ch(cs, &flag, &a, &b).unwrap());
+                    GLOBAL_STORAGE.lock().unwrap().insert_value(&(a.clone(), b.clone(), StringForKey:: ConditionallySelect), &value);
+                    Ok(value)
                     
                 }
             }
@@ -124,6 +142,31 @@ impl BooleanWrapper{
     pub fn alloc<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, witness: Option<bool>) -> Result<Self, SynthesisError> {
             Ok(BooleanWrapper(Boolean::alloc(cs, witness).unwrap()))
     }
+
+    // pub fn smart_and<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, bools: &[Boolean])-> Result<Self, SynthesisError>{
+    //     if bools.iter().all(|x| x.is_constant()){
+    //         return Ok(BooleanWrapper(smart_and(cs, bools).unwrap()))
+    //     }
+    //     // else{
+    //     //     (_,_)=>{
+    //     //         if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), StringForKey::Xor)){
+    //     //             return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), StringForKey::Xor)))
+    //     //         }
+        
+    //     //         else{
+    //     //             let value = BooleanWrapper(Boolean::xor(cs, &a, &b).unwrap());
+    //     //             GLOBAL_STORAGE.lock().unwrap().insert_value(&(a.clone(), b.clone(), StringForKey::Xor), &value);
+    //     //             Ok(value)
+            
+    //     //         }
+    //     //     }
+    //     // }
+
+    // }
+    pub fn smart_or<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, bools: &[Boolean])-> Result<Self, SynthesisError>{
+        todo!();
+        
+    }
     
     pub fn convert(&self)-> Boolean{
         self.0
@@ -131,8 +174,35 @@ impl BooleanWrapper{
     }
 
 }
+impl PartialEq for BooleanWrapper {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (BooleanWrapper(Boolean::Is(a)), BooleanWrapper(Boolean::Is(b))) => a.get_variable() == b.get_variable(),
+            (BooleanWrapper(Boolean::Not(a)), BooleanWrapper(Boolean::Not(b))) => a.get_variable() == b.get_variable(),
+            _ => false,
+    }
+}}
+impl Eq for BooleanWrapper {}
+
+use std::hash::{Hash, Hasher};
+impl Hash for BooleanWrapper {
+    #[inline]
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        match self {
+            BooleanWrapper(Boolean::Constant(_)) => unimplemented!(),
+            BooleanWrapper(Boolean::Is(x)) => {
+                x.get_variable().hash(hasher);
+            }
+            BooleanWrapper(Boolean::Not(y)) => {
+                y.get_variable().hash(hasher);
+            }
+        }
+    }
+}
+
 pub struct Storage{
-    pub inner: std::collections::HashMap<(Boolean, Boolean, String), Boolean>
+    pub inner: std::collections::HashMap<(BooleanWrapper, BooleanWrapper, StringForKey), BooleanWrapper>
 }
 
 impl Storage{
@@ -142,16 +212,16 @@ impl Storage{
         }
     }
 
-    pub fn insert_value(&mut self, key: (Boolean, Boolean, String), value: &Boolean ){
+    pub fn insert_value(&mut self, key: &(BooleanWrapper, BooleanWrapper, StringForKey), value: &BooleanWrapper ){
         self.inner.insert(key.clone(), value.clone());
     }
 
-    pub fn check_storage(&self, key: &(Boolean, Boolean, String))->bool{
-        return self.inner.contains_key(key);
+    pub fn check_storage(&self, key: &(BooleanWrapper, BooleanWrapper, StringForKey))->bool{
+        return self.inner.contains_key(&key);
 
     }
-    pub fn return_value(&self, key: &(Boolean, Boolean, String))->Boolean{
-        return *self.inner.get(&key).unwrap();
+    pub fn return_value(&self, key: &(BooleanWrapper, BooleanWrapper, StringForKey))->BooleanWrapper{
+        return *self.inner.get(key).unwrap();
     }
 
     pub fn clear_storage(&mut self){
@@ -172,8 +242,8 @@ mod test{
              let mut cs = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
              let a = AllocatedBit::alloc(&mut cs, Some(*a_val)).unwrap();
              let b = AllocatedBit::alloc(&mut cs, Some(*b_val)).unwrap();
-             let c = BooleanWrapper::xor(&mut cs, &Boolean::Is(a), &Boolean::Is(b)).unwrap();
-             let cd = BooleanWrapper::xor(&mut cs, &Boolean::Constant(a_val.clone()), &Boolean::Constant(b_val.clone())).unwrap();
+             let c = BooleanWrapper::xor(&mut cs, &BooleanWrapper(Boolean::Is(a)), &BooleanWrapper(Boolean::Is(b))).unwrap();
+             let cd = BooleanWrapper::xor(&mut cs, &BooleanWrapper(Boolean::Constant(a_val.clone())), &BooleanWrapper(Boolean::Constant(b_val.clone()))).unwrap();
              println!("const_xor = {:?}", cd);
              println!("c_xor = {:?}", c);
 
@@ -189,8 +259,8 @@ mod test{
              let mut cs = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
              let a = AllocatedBit::alloc(&mut cs, Some(*a_val)).unwrap();
              let b = AllocatedBit::alloc(&mut cs, Some(*b_val)).unwrap();
-             let c = BooleanWrapper::and(&mut cs, &Boolean::Is(a), &Boolean::Is(b)).unwrap();
-             let cd = BooleanWrapper::and(&mut cs, &Boolean::Constant(a_val.clone()), &Boolean::Constant(b_val.clone())).unwrap();
+             let c = BooleanWrapper::and(&mut cs, &BooleanWrapper(Boolean::Is(a)), &BooleanWrapper(Boolean::Is(b))).unwrap();
+             let cd = BooleanWrapper::and(&mut cs, &BooleanWrapper(Boolean::Constant(a_val.clone())), &BooleanWrapper(Boolean::Constant(b_val.clone()))).unwrap();
              println!("const_and = {:?}", cd);
              println!("c_and = {:?}", c);
 
@@ -207,8 +277,8 @@ mod test{
                     let mut cs = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
                     let a = AllocatedBit::alloc(&mut cs, Some(*a_val)).unwrap();
                     let b = AllocatedBit::alloc(&mut cs, Some(*b_val)).unwrap();
-                    let c = BooleanWrapper::or(&mut cs, &Boolean::Is(a), &Boolean::Is(b)).unwrap();
-                    let cd = BooleanWrapper::or(&mut cs, &Boolean::Constant(a_val.clone()), &Boolean::Constant(b_val.clone())).unwrap();
+                    let c = BooleanWrapper::or(&mut cs, &BooleanWrapper(Boolean::Is(a)), &BooleanWrapper(Boolean::Is(b))).unwrap();
+                    let cd = BooleanWrapper::or(&mut cs, &BooleanWrapper(Boolean::Constant(a_val.clone())), &BooleanWrapper(Boolean::Constant(b_val.clone()))).unwrap();
                     println!("const_or = {:?}", cd);
                     println!("c_or = {:?}", c);
    
@@ -225,8 +295,8 @@ mod test{
                     let mut cs = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
                     let a = AllocatedBit::alloc(&mut cs, Some(*a_val)).unwrap();
                     let b = AllocatedBit::alloc(&mut cs, Some(*b_val)).unwrap();
-                    let c = BooleanWrapper::conditionally_select(&mut cs, &Boolean::Constant(true), &Boolean::Is(a), &Boolean::Is(b)).unwrap();
-                    let cd = BooleanWrapper::conditionally_select(&mut cs, &Boolean::Constant(false), &Boolean::Constant(a_val.clone()), &Boolean::Constant(b_val.clone())).unwrap();
+                    let c = BooleanWrapper::conditionally_select(&mut cs, &BooleanWrapper(Boolean::Constant(true)), &BooleanWrapper(Boolean::Is(a)), &BooleanWrapper(Boolean::Is(b))).unwrap();
+                    let cd = BooleanWrapper::conditionally_select(&mut cs, &BooleanWrapper(Boolean::Constant(false)), &BooleanWrapper(Boolean::Constant(a_val.clone())), &BooleanWrapper(Boolean::Constant(b_val.clone()))).unwrap();
                     println!("const_select = {:?}", cd);
                     println!("c_select = {:?}", c);
    

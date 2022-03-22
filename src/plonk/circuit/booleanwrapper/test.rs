@@ -93,17 +93,17 @@ mod test{
                 let value_3 = AllocatedBit::alloc(cs, self.value_3).unwrap();
                 let value_4 = AllocatedBit::alloc(cs, self.value_4).unwrap();
     
-                let _experiment_1 = BooleanWrapper::xor(cs, &Boolean::Is(value_1), &Boolean::Is(value_2));
-                let _experiment_2 = BooleanWrapper::xor(cs, &Boolean::Is(value_1), &Boolean::Is(value_2));
+                let _experiment_1 = BooleanWrapper::xor(cs, &BooleanWrapper(Boolean::Is(value_1)), &BooleanWrapper(Boolean::Is(value_2)));
+                let _experiment_2 = BooleanWrapper::xor(cs, &BooleanWrapper(Boolean::Is(value_1)), &BooleanWrapper(Boolean::Is(value_2)));
 
-                let _experiment_3 = BooleanWrapper::or(cs, &Boolean::Is(value_3), &Boolean::Is(value_4));
-                let _experiment_4 = BooleanWrapper::or(cs, &Boolean::Is(value_3), &Boolean::Is(value_4));
+                let _experiment_3 = BooleanWrapper::or(cs, &BooleanWrapper(Boolean::Is(value_3)), &BooleanWrapper(Boolean::Is(value_4)));
+                let _experiment_4 = BooleanWrapper::or(cs, &BooleanWrapper(Boolean::Is(value_3)), &BooleanWrapper(Boolean::Is(value_4)));
 
-                let _experiment_5 = BooleanWrapper::and(cs, &Boolean::Not(value_2), &Boolean::Is(value_4));
-                let _experiment_6 = BooleanWrapper::and(cs, &Boolean::Not(value_2), &Boolean::Is(value_4));
+                let _experiment_5 = BooleanWrapper::and(cs, &BooleanWrapper(Boolean::Not(value_2)), &BooleanWrapper(Boolean::Is(value_4)));
+                let _experiment_6 = BooleanWrapper::and(cs, &BooleanWrapper(Boolean::Not(value_2)), &BooleanWrapper(Boolean::Is(value_4)));
 
-                let _experiment_7 = BooleanWrapper::conditionally_select(cs, &Boolean::Is(value_1), &Boolean::Is(value_2), &Boolean::Is(value_4));
-                let _experiment_8 = BooleanWrapper::conditionally_select(cs, &Boolean::Is(value_1), &Boolean::Is(value_2), &Boolean::Is(value_4));
+                let _experiment_7 = BooleanWrapper::conditionally_select(cs, &BooleanWrapper(Boolean::Is(value_1)), &BooleanWrapper(Boolean::Is(value_2)), &BooleanWrapper(Boolean::Is(value_4)));
+                let _experiment_8 = BooleanWrapper::conditionally_select(cs, &BooleanWrapper(Boolean::Is(value_1)), &BooleanWrapper(Boolean::Is(value_2)), &BooleanWrapper(Boolean::Is(value_4)));
     
                 Ok(())
             }

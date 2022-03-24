@@ -841,7 +841,7 @@ impl<E: Engine> Num<E> {
         }
     }
 
-    // returns 0 if condition == `false` and `a` if condition == `true`
+    /// returns 0 if condition == `false` and `a` if condition == `true`
     pub fn mask<CS: ConstraintSystem<E>>(
         cs: &mut CS,
         a: &Self,

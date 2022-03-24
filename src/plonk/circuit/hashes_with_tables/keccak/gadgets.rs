@@ -61,6 +61,7 @@ pub const DEFAULT_RANGE_TABLE_WIDTH: usize = 16;
 pub enum KeccakStateBase {
     First,
     Second,
+    Binary,
     Unknown
 }
 
@@ -93,6 +94,7 @@ impl<E: Engine> KeccakState<E> {
         for row in self.state.iter() {
             tmp.extend_from_slice(row);
         }
+
         tmp.try_into().unwrap()
     }
 }
@@ -850,8 +852,7 @@ impl<E: Engine> Keccak256Gadget<E> {
 
             let last_chunk = if has_value {
                 Some(last_chunk_value)     
-            }
-            else {
+            } else {
                 None
             };
             let last_chunk = AllocatedNum::alloc(cs, || last_chunk.grab())?;
@@ -1043,6 +1044,9 @@ impl<E: Engine> Keccak256Gadget<E> {
         is_final: bool,
     ) -> Result<(KeccakState<E>, Vec<Num<E>>)> 
     {
+        if elems_to_squeeze > 0 {
+            assert!(is_final);
+        }
         assert!(state.base == KeccakStateBase::Second);
         let mut new_state = KeccakState::default();
         let mut iter_count = 0;
@@ -1141,6 +1145,8 @@ impl<E: Engine> Keccak256Gadget<E> {
                 output2_slices.push(output2);
             }
 
+            // always go into 1st base
+
             if !is_final {
                 let output1_total = AllocatedNum::alloc(cs, || {
                     let fr = var.get_value().grab()?;
@@ -1150,18 +1156,22 @@ impl<E: Engine> Keccak256Gadget<E> {
                 AllocatedNum::long_weighted_sum_eq(cs, &output1_slices[..], &first_sparse_base_modulus_fr, &output1_total, false)?;
                 new_state[(i, j)] = Num::Variable(output1_total);
                 new_state.base = KeccakStateBase::First;
-            }
+            } else {
+                // and squeeze ONLY if final, and convert full state into binary
 
-            if iter_count < elems_to_squeeze {
                 let output2_total = AllocatedNum::alloc(cs, || {
                     let fr = var.get_value().grab()?;
                     Ok(keccak_ff_second_converter(fr, BINARY_BASE))
                 })?;
 
                 AllocatedNum::long_weighted_sum_eq(cs, &output2_slices[..], &binary_sparse_base_modulus_fr, &output2_total, false)?;
-                squeezed.push(Num::Variable(output2_total));
+                if iter_count < elems_to_squeeze {
+                    squeezed.push(Num::Variable(output2_total));
+                    iter_count += 1;
+                }
 
-                iter_count += 1;
+                new_state[(i,j)] = Num::Variable(output2_total);
+                new_state.base = KeccakStateBase::Binary;
             }
         }
        
@@ -1239,10 +1249,6 @@ impl<E: Engine> Keccak256Gadget<E> {
             res.extend(squeezed.unwrap().into_iter());
         }
 
-        for (i, el) in res.iter().enumerate() {
-            println!("Squeezed word {} = {}", i, el.get_value().unwrap());
-        }
-
         Ok(res)
     }
 
@@ -1260,13 +1266,22 @@ impl<E: Engine> Keccak256Gadget<E> {
         Ok(state)
     }
 
-    pub fn keccak_absorb_into_state_in_second_base<CS: ConstraintSystem<E>>(
+    pub fn keccak_absorb_into_state_into_binary_base<CS: ConstraintSystem<E>>(
         &self, 
         cs: &mut CS, 
         state: KeccakState<E>, 
         elems_to_mix: [Num<E>; KECCAK_RATE_WORDS_SIZE],
     ) -> Result<KeccakState<E>>{
-        assert!(state.base == KeccakStateBase::Second);
+        assert!(state.base == KeccakStateBase::Binary);
+        let mut state = state;
+        for row in state.state.iter_mut() {
+            for el in row.iter_mut() {
+                *el = self.convert_binary_to_sparse_repr(
+                    cs, el, KeccakBase::KeccakSecondSparseBase
+                )?;
+            }
+        }
+        state.base = KeccakStateBase::Second;
 
         // we kind of partially repeat xi_i step, since all the table is available, and
         // second base implements a ^ (~b & c) ^ d, and for b = c = 0 it's A xor 0 xor D = A xor D
@@ -1490,7 +1505,7 @@ impl<E: Engine> Keccak256Gadget<E> {
         let block_size = KECCAK_RATE_WORDS_SIZE * (KECCAK_LANE_WIDTH / 8);
         let last_block_size = bytes.len() % block_size;
         let padlen = block_size - last_block_size;
-        if padlen == 1{
+        if padlen == 1 {
             padded.push(Byte::from_cnst(u64_to_ff(0x81)));
         }
         else {

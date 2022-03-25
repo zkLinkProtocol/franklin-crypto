@@ -1,11 +1,12 @@
 use super::*;
-use crate::plonk::circuit::boolean::Boolean;
+use crate::plonk::circuit::boolean::{Boolean, AllocatedBit};
+use crate::plonk::circuit::booleanwrapper::base::Index::*;
 use crate::bellman::plonk::better_better_cs::cs::*;
 use crate::bellman::SynthesisError;
 use crate::bellman::pairing::Engine;
+use std::{collections::BTreeSet, cmp::Ordering};
 use std::ops::Deref;
 use std::collections::HashMap;
-// use std::collections::HashSet;
 use std::sync::Mutex;
 use std::clone::Clone;
 use plonk::circuit::booleanwrapper::utils::smart_and;
@@ -13,6 +14,7 @@ use plonk::circuit::booleanwrapper::utils::smart_and;
 lazy_static!{
     static ref GLOBAL_STORAGE: Mutex<Storage> = Mutex::new(Storage::new());
 }
+
 
 //The BooleanWrapper structure is a wrapper to the Boulevard structure. 
 //Its main idea is not to allow duplicates of constraints when calling Boolean methods.
@@ -52,14 +54,18 @@ impl BooleanWrapper{
                 (&BooleanWrapper(Boolean::Constant(true)), a)|(a, &BooleanWrapper(Boolean::Constant(true)))|(&BooleanWrapper(Boolean::Constant(false)), a)|(a, &BooleanWrapper(Boolean::Constant(false)))=>{
                     Ok(BooleanWrapper(Boolean::xor(cs, &a, &b).unwrap()))
                 }
+                
                 (_,_)=>{
-                    if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), StringForKey::Xor)){
-                        return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), StringForKey::Xor)))
+                    let mut sec_array = BTreeSet::new();
+                    sec_array.insert(a.clone());
+                    sec_array.insert(b.clone());
+                    if GLOBAL_STORAGE.lock().unwrap().check_storage(&(sec_array.clone(), StringForKey::Xor)){
+                        return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(sec_array.clone(), StringForKey::Xor)))
                     }
             
                     else{
                         let value = BooleanWrapper(Boolean::xor(cs, &a, &b).unwrap());
-                        GLOBAL_STORAGE.lock().unwrap().insert_value(&(a.clone(), b.clone(), StringForKey::Xor), &value);
+                        GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey::Xor), &value);
                         Ok(value)
                 
                     }
@@ -76,13 +82,16 @@ impl BooleanWrapper{
                 }
 
                 (_,_)=>{
-                    if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), StringForKey::And)){
-                        return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), StringForKey::And)))
+                    let mut sec_array = BTreeSet::new();
+                    sec_array.insert(a.clone());
+                    sec_array.insert(b.clone());
+                    if GLOBAL_STORAGE.lock().unwrap().check_storage(&(sec_array.clone(), StringForKey::And)){
+                        return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(sec_array.clone(), StringForKey::And)))
                     }
             
                     else{
                         let value = BooleanWrapper(Boolean::and(cs, &a, &b).unwrap());
-                        GLOBAL_STORAGE.lock().unwrap().insert_value(&(a.clone(), b.clone(), StringForKey::And), &value);
+                        GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey::And), &value);
                         Ok(value)
                 
                     }
@@ -99,13 +108,16 @@ impl BooleanWrapper{
                 }
 
                 (_,_)=>{
-                    if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), StringForKey::Or)){
-                        return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), StringForKey::Or)))
+                    let mut sec_array = BTreeSet::new();
+                    sec_array.insert(a.clone());
+                    sec_array.insert(b.clone());
+                    if GLOBAL_STORAGE.lock().unwrap().check_storage(&(sec_array.clone(), StringForKey::Or)){
+                        return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(sec_array.clone(), StringForKey::Or)))
                     }
             
                     else{
                         let value = BooleanWrapper(Boolean::or(cs, &a, &b).unwrap());
-                        GLOBAL_STORAGE.lock().unwrap().insert_value(&(a.clone(), b.clone(), StringForKey::Or), &value);
+                        GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey::Or), &value);
                         Ok(value)
                 
                     }
@@ -125,13 +137,16 @@ impl BooleanWrapper{
             }
 
             (_,_)=>{
-                if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), StringForKey:: ConditionallySelect)){
-                    return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), StringForKey:: ConditionallySelect)))
+                let mut sec_array = BTreeSet::new();
+                sec_array.insert(a.clone());
+                sec_array.insert(b.clone());
+                if GLOBAL_STORAGE.lock().unwrap().check_storage(&(sec_array.clone(), StringForKey:: ConditionallySelect)){
+                    return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(sec_array.clone(), StringForKey:: ConditionallySelect)))
                 }
                 
                 else{
                     let value = BooleanWrapper(Boolean::sha256_ch(cs, &flag, &a, &b).unwrap());
-                    GLOBAL_STORAGE.lock().unwrap().insert_value(&(a.clone(), b.clone(), StringForKey:: ConditionallySelect), &value);
+                    GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey:: ConditionallySelect), &value);
                     Ok(value)
                     
                 }
@@ -143,26 +158,24 @@ impl BooleanWrapper{
             Ok(BooleanWrapper(Boolean::alloc(cs, witness).unwrap()))
     }
 
-    // pub fn smart_and<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, bools: &[Boolean])-> Result<Self, SynthesisError>{
-    //     if bools.iter().all(|x| x.is_constant()){
-    //         return Ok(BooleanWrapper(smart_and(cs, bools).unwrap()))
-    //     }
-    //     // else{
-    //     //     (_,_)=>{
-    //     //         if GLOBAL_STORAGE.lock().unwrap().check_storage(&(a.clone(), b.clone(), StringForKey::Xor)){
-    //     //             return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(a.clone(), b.clone(), StringForKey::Xor)))
-    //     //         }
-        
-    //     //         else{
-    //     //             let value = BooleanWrapper(Boolean::xor(cs, &a, &b).unwrap());
-    //     //             GLOBAL_STORAGE.lock().unwrap().insert_value(&(a.clone(), b.clone(), StringForKey::Xor), &value);
-    //     //             Ok(value)
-            
-    //     //         }
-    //     //     }
-    //     // }
+    pub fn smart_and<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, bools: &[BooleanWrapper])-> Result<Self, SynthesisError>{
+        if bools.iter().all(|x| x.is_constant()){
+            return Ok(BooleanWrapper(smart_and(cs, bools).unwrap()))
+        }
+        else{ 
+            let mut sec_array = BTreeSet::new();
+            let a = bools.iter().map(|x| sec_array.insert(x)).collect();
+            println!("{:?}", a);
+            todo!();
+            // if GLOBAL_STORAGE.lock().unwrap().check_storage(&(sec_array.clone(), StringForKey::Smart_And)){
+            //     return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(sec_array.clone(), StringForKey::Smart_And)))
+            // }
+            // else{
+            //     todo!();
+            // }
+        }
 
-    // }
+    }
     pub fn smart_or<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, bools: &[Boolean])-> Result<Self, SynthesisError>{
         todo!();
         
@@ -177,11 +190,17 @@ impl BooleanWrapper{
 impl PartialEq for BooleanWrapper {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
+        // match (self, other) {
+        //     self.iter().map(
+        //         |x| x.get_variable()
+        //     ) == other.iter().map(|y| y.get_variable())
+            
+        // }
         match (self, other) {
             (BooleanWrapper(Boolean::Is(a)), BooleanWrapper(Boolean::Is(b))) => a.get_variable() == b.get_variable(),
             (BooleanWrapper(Boolean::Not(a)), BooleanWrapper(Boolean::Not(b))) => a.get_variable() == b.get_variable(),
             _ => false,
-    }
+        }
 }}
 impl Eq for BooleanWrapper {}
 
@@ -201,8 +220,201 @@ impl Hash for BooleanWrapper {
     }
 }
 
+impl PartialOrd for BooleanWrapper{
+    fn partial_cmp(&self, other: &Self)->Option<::std::cmp::Ordering>{
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BooleanWrapper{
+    #[inline]
+    fn cmp(&self, other: &Self)->::std::cmp::Ordering{
+        match (self, other){
+            (BooleanWrapper(Boolean::Is(a)), BooleanWrapper(Boolean::Is(b))) => {
+                let idx_a = a.get_variable().get_unchecked();
+                let idx_b = b.get_variable().get_unchecked();
+
+                match(idx_a, idx_b){
+                    (Index::Input(v), Index::Input(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+
+                    }
+                    (Index::Aux(v), Index::Aux(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+                    }
+                    (Index::Input(v), Index::Aux(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+                    }
+                    (Index::Aux(v), Index::Input(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+                    }
+                }
+            }
+            (BooleanWrapper(Boolean::Not(a)), BooleanWrapper(Boolean::Not(b))) => {
+                let idx_a = a.get_variable().get_unchecked();
+                let idx_b = b.get_variable().get_unchecked();
+
+                match(idx_a, idx_b){
+                    (Index::Input(v), Index::Input(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+
+                    }
+                    (Index::Aux(v), Index::Aux(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+                    }
+                    (Index::Input(v), Index::Aux(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+                    }
+                    (Index::Aux(v), Index::Input(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+                    }
+                }
+            }
+            (BooleanWrapper(Boolean::Is(a)), BooleanWrapper(Boolean::Not(b))) => {
+                let idx_a = a.get_variable().get_unchecked();
+                let idx_b = b.get_variable().get_unchecked();
+
+                match(idx_a, idx_b){
+                    (Index::Input(v), Index::Input(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+
+                    }
+                    (Index::Aux(v), Index::Aux(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+                    }
+                    (Index::Input(v), Index::Aux(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+                    }
+                    (Index::Aux(v), Index::Input(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+                    }
+                }
+            }
+            (BooleanWrapper(Boolean::Not(a)), BooleanWrapper(Boolean::Is(b))) => {
+                let idx_a = a.get_variable().get_unchecked();
+                let idx_b = b.get_variable().get_unchecked();
+
+                match(idx_a, idx_b){
+                    (Index::Input(v), Index::Input(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+
+                    }
+                    (Index::Aux(v), Index::Aux(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+                    }
+                    (Index::Input(v), Index::Aux(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+                    }
+                    (Index::Aux(v), Index::Input(m)) => {
+                        if v>m{
+                            return Ordering::Less
+                        }
+                        if v<m{
+                            return Ordering::Greater
+                        }
+                        return Ordering::Equal
+                    }
+                }
+            }
+            _=> unimplemented!(),
+        }
+    }
+}
+
+
+
 pub struct Storage{
-    pub inner: std::collections::HashMap<(BooleanWrapper, BooleanWrapper, StringForKey), BooleanWrapper>
+    pub inner: std::collections::HashMap<(BTreeSet<BooleanWrapper>, StringForKey), BooleanWrapper>
 }
 
 impl Storage{
@@ -212,15 +424,15 @@ impl Storage{
         }
     }
 
-    pub fn insert_value(&mut self, key: &(BooleanWrapper, BooleanWrapper, StringForKey), value: &BooleanWrapper ){
+    pub fn insert_value(&mut self, key: &(BTreeSet<BooleanWrapper>, StringForKey), value: &BooleanWrapper ){
         self.inner.insert(key.clone(), value.clone());
     }
 
-    pub fn check_storage(&self, key: &(BooleanWrapper, BooleanWrapper, StringForKey))->bool{
+    pub fn check_storage(&self, key: &(BTreeSet<BooleanWrapper>, StringForKey))->bool{
         return self.inner.contains_key(&key);
 
     }
-    pub fn return_value(&self, key: &(BooleanWrapper, BooleanWrapper, StringForKey))->BooleanWrapper{
+    pub fn return_value(&self, key: &(BTreeSet<BooleanWrapper>, StringForKey))->BooleanWrapper{
         return *self.inner.get(key).unwrap();
     }
 

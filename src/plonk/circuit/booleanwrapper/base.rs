@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::clone::Clone;
 use plonk::circuit::booleanwrapper::utils::smart_and;
+use serde::de::value::BoolDeserializer;
 
 lazy_static!{
     static ref GLOBAL_STORAGE: Mutex<Storage> = Mutex::new(Storage::new());
@@ -160,19 +161,19 @@ impl BooleanWrapper{
 
     pub fn smart_and<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, bools: &[BooleanWrapper])-> Result<Self, SynthesisError>{
         if bools.iter().all(|x| x.is_constant()){
-            return Ok(BooleanWrapper(smart_and(cs, bools).unwrap()))
+            let boolean: Vec<Boolean> = bools.into_iter().map(|x| x.convert()).collect();
+            return Ok(BooleanWrapper(smart_and(cs, boolean.as_slice()).unwrap()))
         }
         else{ 
             let mut sec_array = BTreeSet::new();
-            let a = bools.iter().map(|x| sec_array.insert(x)).collect();
-            println!("{:?}", a);
-            todo!();
-            // if GLOBAL_STORAGE.lock().unwrap().check_storage(&(sec_array.clone(), StringForKey::Smart_And)){
-            //     return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(sec_array.clone(), StringForKey::Smart_And)))
-            // }
-            // else{
-            //     todo!();
-            // }
+            bools.iter().map(|x| sec_array.insert(*x));
+
+            if GLOBAL_STORAGE.lock().unwrap().check_storage(&(sec_array.clone(), StringForKey::Smart_And)){
+                return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(sec_array.clone(), StringForKey::Smart_And)))
+            }
+            else{
+                todo!();
+            }
         }
 
     }
@@ -184,6 +185,10 @@ impl BooleanWrapper{
     pub fn convert(&self)-> Boolean{
         self.0
 
+    }
+
+    pub fn finalize(){
+        todo!();
     }
 
 }
@@ -229,185 +234,49 @@ impl PartialOrd for BooleanWrapper{
 impl Ord for BooleanWrapper{
     #[inline]
     fn cmp(&self, other: &Self)->::std::cmp::Ordering{
-        match (self, other){
+        match (self, other) {
+            (BooleanWrapper(Boolean::Constant(a)), BooleanWrapper(Boolean::Constant(b))) => {
+                a.cmp(&b)
+            },
+            (BooleanWrapper(Boolean::Constant(_a)), _) => {
+                std::cmp::Ordering::Less
+            },
+            (BooleanWrapper(Boolean::Is(..)), BooleanWrapper(Boolean::Constant(..))) => {
+                std::cmp::Ordering::Greater
+            },
+            (BooleanWrapper(Boolean::Not(..)), BooleanWrapper(Boolean::Constant(..))) => {
+                std::cmp::Ordering::Greater
+            },
+            (BooleanWrapper(Boolean::Is(..)), BooleanWrapper(Boolean::Not(..))) => {
+                std::cmp::Ordering::Less
+            },
             (BooleanWrapper(Boolean::Is(a)), BooleanWrapper(Boolean::Is(b))) => {
                 let idx_a = a.get_variable().get_unchecked();
                 let idx_b = b.get_variable().get_unchecked();
-
+    
                 match(idx_a, idx_b){
-                    (Index::Input(v), Index::Input(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-
-                    }
-                    (Index::Aux(v), Index::Aux(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-                    }
-                    (Index::Input(v), Index::Aux(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-                    }
-                    (Index::Aux(v), Index::Input(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-                    }
+                    (Index::Input(v), Index::Input(m)) => v.cmp(&m),
+                    (Index::Input(_), Index::Aux(_)) => std::cmp::Ordering::Less,
+                    (Index::Aux(_), Index::Input(_)) => std::cmp::Ordering::Greater,
+                    (Index::Aux(v), Index::Aux(m)) => v.cmp(&m),
                 }
-            }
+            },
+            (BooleanWrapper(Boolean::Not(..)), BooleanWrapper(Boolean::Is(..))) => {
+                std::cmp::Ordering::Greater
+            },
             (BooleanWrapper(Boolean::Not(a)), BooleanWrapper(Boolean::Not(b))) => {
                 let idx_a = a.get_variable().get_unchecked();
                 let idx_b = b.get_variable().get_unchecked();
-
+    
                 match(idx_a, idx_b){
-                    (Index::Input(v), Index::Input(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-
-                    }
-                    (Index::Aux(v), Index::Aux(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-                    }
-                    (Index::Input(v), Index::Aux(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-                    }
-                    (Index::Aux(v), Index::Input(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-                    }
+                    (Index::Input(v), Index::Input(m)) => v.cmp(&m),
+                    (Index::Input(_), Index::Aux(_)) => std::cmp::Ordering::Less,
+                    (Index::Aux(_), Index::Input(_)) => std::cmp::Ordering::Greater,
+                    (Index::Aux(v), Index::Aux(m)) => v.cmp(&m),
                 }
-            }
-            (BooleanWrapper(Boolean::Is(a)), BooleanWrapper(Boolean::Not(b))) => {
-                let idx_a = a.get_variable().get_unchecked();
-                let idx_b = b.get_variable().get_unchecked();
-
-                match(idx_a, idx_b){
-                    (Index::Input(v), Index::Input(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-
-                    }
-                    (Index::Aux(v), Index::Aux(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-                    }
-                    (Index::Input(v), Index::Aux(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-                    }
-                    (Index::Aux(v), Index::Input(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-                    }
-                }
-            }
-            (BooleanWrapper(Boolean::Not(a)), BooleanWrapper(Boolean::Is(b))) => {
-                let idx_a = a.get_variable().get_unchecked();
-                let idx_b = b.get_variable().get_unchecked();
-
-                match(idx_a, idx_b){
-                    (Index::Input(v), Index::Input(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-
-                    }
-                    (Index::Aux(v), Index::Aux(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-                    }
-                    (Index::Input(v), Index::Aux(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-                    }
-                    (Index::Aux(v), Index::Input(m)) => {
-                        if v>m{
-                            return Ordering::Less
-                        }
-                        if v<m{
-                            return Ordering::Greater
-                        }
-                        return Ordering::Equal
-                    }
-                }
-            }
-            _=> unimplemented!(),
+            },
         }
+       
     }
 }
 

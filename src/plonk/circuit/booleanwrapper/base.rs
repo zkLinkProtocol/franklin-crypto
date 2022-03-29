@@ -4,13 +4,17 @@ use crate::plonk::circuit::booleanwrapper::base::Index::*;
 use crate::bellman::plonk::better_better_cs::cs::*;
 use crate::bellman::SynthesisError;
 use crate::bellman::pairing::Engine;
+// use core::slice::SlicePattern;
 use std::{collections::BTreeSet, cmp::Ordering};
-use std::ops::Deref;
+use std::ops::{Deref, BitAnd};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::clone::Clone;
 use plonk::circuit::booleanwrapper::utils::smart_and;
 use serde::de::value::BoolDeserializer;
+
+use std::ops::BitXor;
+use std::ops::Not;
 
 lazy_static!{
     static ref GLOBAL_STORAGE: Mutex<Storage> = Mutex::new(Storage::new());
@@ -172,7 +176,26 @@ impl BooleanWrapper{
                 return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(sec_array.clone(), StringForKey::Smart_And)))
             }
             else{
-                todo!();
+                let mut new_bools = vec![];
+                for key in GLOBAL_STORAGE.lock().unwrap().keys(){
+                    let set = key.0;
+                    let intersection = sec_array.bitand(&set);
+                    // new_bools.clear();
+                    if intersection.is_empty().not(){
+                        let value_of_intersec = GLOBAL_STORAGE.lock().unwrap().return_value(&(intersection.clone(), StringForKey::Smart_And));
+                        sec_array.bitxor(&intersection);
+                        sec_array.insert(value_of_intersec);
+                        new_bools = sec_array.into_iter().collect();
+
+
+                    }else{
+                        new_bools = sec_array.into_iter().collect();
+                    }
+                }
+                let boolean: Vec<Boolean> = new_bools.into_iter().map(|x| x.convert()).collect();
+                let value = BooleanWrapper(smart_and(cs, &boolean.as_slice()).unwrap());
+                GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey:: Smart_And), &value);
+                Ok(value)
             }
         }
 
@@ -281,7 +304,8 @@ impl Ord for BooleanWrapper{
 }
 
 
-
+use std::collections::hash_map::Keys;
+use std::fmt::Debug;
 pub struct Storage{
     pub inner: std::collections::HashMap<(BTreeSet<BooleanWrapper>, StringForKey), BooleanWrapper>
 }
@@ -307,6 +331,10 @@ impl Storage{
 
     pub fn clear_storage(&mut self){
         self.inner.clear();
+    }
+    
+    pub fn keys(&self) -> Vec<(BTreeSet<BooleanWrapper>, StringForKey)> {
+        self.inner.keys().cloned().collect()
     }
 }
 

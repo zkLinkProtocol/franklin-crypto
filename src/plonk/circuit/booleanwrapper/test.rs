@@ -8,7 +8,7 @@ mod test{
     use crate::bellman::SynthesisError;
     use crate::bellman::plonk::better_better_cs::cs::{TrivialAssembly, Width4MainGateWithDNext};
     use crate::bellman::pairing::{bn256::Bn256};
-    use plonk::circuit::booleanwrapper::utils::smart_and;
+    use plonk::circuit::booleanwrapper::utils::{smart_and, smart_or};
     use super::super::base::*;
     #[test]
     fn test_1(){
@@ -55,6 +55,8 @@ mod test{
                 let _experiment_8 = Boolean::conditionally_select(cs, &Boolean::Is(value_1), &Boolean::Is(value_2), &Boolean::Is(value_4));
                 
                 let _experiment_9 = smart_and(cs, &[Boolean::Not(value_2), Boolean::Is(value_4), Boolean::Is(value_5), Boolean::Not(value_6), Boolean::Is(value_7)]);
+                let _experiment_10 = smart_or(cs, &[Boolean::Not(value_2), Boolean::Is(value_4), Boolean::Is(value_3), Boolean::Not(value_6), Boolean::Is(value_7)]);
+
 
                 Ok(())
             }
@@ -126,7 +128,7 @@ mod test{
                 let _experiment_8 = BooleanWrapper::conditionally_select(cs, &BooleanWrapper(Boolean::Is(value_1)), &BooleanWrapper(Boolean::Is(value_2)), &BooleanWrapper(Boolean::Is(value_4)));
 
                 let _experiment_9 = BooleanWrapper::smart_and(cs, &[BooleanWrapper(Boolean::Not(value_2)), BooleanWrapper(Boolean::Is(value_4)), BooleanWrapper(Boolean::Is(value_5)), BooleanWrapper(Boolean::Not(value_6)), BooleanWrapper(Boolean::Is(value_7))]);
-    
+                let _experiment_10 = BooleanWrapper::smart_and(cs, &[BooleanWrapper(Boolean::Not(value_2)), BooleanWrapper(Boolean::Is(value_4)), BooleanWrapper(Boolean::Is(value_3)), BooleanWrapper(Boolean::Not(value_6)), BooleanWrapper(Boolean::Is(value_7))]);
                 Ok(())
             }
         } 

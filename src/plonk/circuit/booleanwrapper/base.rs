@@ -27,9 +27,7 @@ pub enum StringForKey{
     Xor,
     And, 
     Or,
-    ConditionallySelect,
-    Smart_And,
-    Smart_Or
+    ConditionallySelect
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -175,10 +173,10 @@ impl BooleanWrapper{
             let mut sec_array = BTreeSet::new();
             sec_array.extend(bools.into_iter());
             assert_eq!(sec_array.is_empty(), false);
-            println!("{:?}", sec_array);
+            // println!("{:?}", sec_array);
             //check Storage if there was already such a variable with such a value
-            if storage.check_storage(&(sec_array.clone(), StringForKey::Smart_And)){
-                return Ok(storage.return_value(&(sec_array.clone(), StringForKey::Smart_And)))
+            if storage.check_storage(&(sec_array.clone(), StringForKey::And)){
+                return Ok(storage.return_value(&(sec_array.clone(), StringForKey::And)))
             }
             // Optimization algorithm
             else{
@@ -192,9 +190,11 @@ impl BooleanWrapper{
                             if intersection.len()>1{
                                 // new_bools.clear();
                                 let value_of_intersec = storage.return_value(&(intersection.clone(), StringForKey::And));
-                                sec_array.bitxor(&intersection);
-                                sec_array.insert(value_of_intersec);
-                                new_bools = sec_array.clone().into_iter().collect();
+                                let mut tree_set = sec_array.bitxor(&intersection);
+                                tree_set.insert(value_of_intersec);
+                                // println!("tree set {:?}", tree_set);
+                                new_bools = tree_set.clone().into_iter().collect();
+                                sec_array = tree_set;
 
 
                             }
@@ -204,15 +204,17 @@ impl BooleanWrapper{
                         }
                     }
                     let boolean: Vec<Boolean> = new_bools.iter().map(|x| x.convert()).collect();
-                    let value = BooleanWrapper(smart_and(cs, &boolean.as_slice()).unwrap());
-                    println!("res{:?}", sec_array);
-                    GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey::And), &value);
+                    let bools = boolean.as_slice();
+                    let value = BooleanWrapper(smart_and(cs, &bools).unwrap());
+                    // println!("res{:?}", sec_array);
+                    // GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey::And), &value);
                     Ok(value)
                 }
                 else{
                     let boolean: Vec<Boolean> = bools.into_iter().map(|x| x.convert()).collect();
                     let value = BooleanWrapper(smart_and(cs, &boolean).unwrap());
-                    GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey:: Smart_And), &value);
+                    sec_array.extend(bools.into_iter());
+                    GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey:: And), &value);
                     Ok(value)
                 }
 
@@ -222,9 +224,69 @@ impl BooleanWrapper{
         }
 
     }
-    pub fn smart_or<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, bools: &[Boolean])-> Result<Self, SynthesisError>{
-        todo!();
-        
+    pub fn smart_or<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, bools: &[BooleanWrapper])-> Result<Self, SynthesisError>{
+        //if all elements are constants, perform the function without optimization
+        let storage = GLOBAL_STORAGE.lock().unwrap();
+        if bools.iter().all(|x| x.is_constant()){
+            let boolean: Vec<Boolean> = bools.into_iter().map(|x| x.convert()).collect();
+            return Ok(BooleanWrapper(smart_and(cs, boolean.as_slice()).unwrap()))
+        }
+
+        else{ 
+
+            let mut sec_array = BTreeSet::new();
+            sec_array.extend(bools.into_iter());
+            assert_eq!(sec_array.is_empty(), false);
+            // println!("{:?}", sec_array);
+            //check Storage if there was already such a variable with such a value
+            if storage.check_storage(&(sec_array.clone(), StringForKey::Or)){
+                return Ok(storage.return_value(&(sec_array.clone(), StringForKey::Or)))
+            }
+            // Optimization algorithm
+            else{
+                let mut new_bools = vec![];
+                if storage.keys().is_empty().not(){
+                    for key in storage.keys(){
+                        if key.1==StringForKey::Or{
+                            let set = key.0;
+                            let intersection = sec_array.bitand(&set);
+                    
+                            if intersection.len()>1{
+                                // new_bools.clear();
+                                let value_of_intersec = storage.return_value(&(intersection.clone(), StringForKey::Or));
+                                let mut tree_set = sec_array.bitxor(&intersection);
+                                tree_set.insert(value_of_intersec);
+                                // println!("tree set {:?}", tree_set);
+                                new_bools = tree_set.clone().into_iter().collect();
+                                sec_array = tree_set;
+
+
+                            }
+                            else{
+                                new_bools = sec_array.clone().into_iter().collect();
+                            }
+                        }
+                    }
+                    let boolean: Vec<Boolean> = new_bools.iter().map(|x| x.convert()).collect();
+                    let bools = boolean.as_slice();
+                    let value = BooleanWrapper(smart_and(cs, &bools).unwrap());
+                    // println!("res{:?}", sec_array);
+                    // GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey::Or), &value);
+                    Ok(value)
+                }
+                else{
+                    let boolean: Vec<Boolean> = bools.into_iter().map(|x| x.convert()).collect();
+                    let value = BooleanWrapper(smart_and(cs, &boolean).unwrap());
+                    sec_array.extend(bools.into_iter());
+                    GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey::Or), &value);
+                    Ok(value)
+                }
+
+                
+                
+            }
+        }
+
     }
     
     pub fn convert(&self)-> Boolean{

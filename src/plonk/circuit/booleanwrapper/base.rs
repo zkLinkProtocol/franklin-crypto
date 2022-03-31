@@ -4,7 +4,6 @@ use crate::plonk::circuit::booleanwrapper::base::Index::*;
 use crate::bellman::plonk::better_better_cs::cs::*;
 use crate::bellman::SynthesisError;
 use crate::bellman::pairing::Engine;
-// use core::slice::SlicePattern;
 use std::{collections::BTreeSet, cmp::Ordering};
 use std::ops::{Deref, BitAnd};
 use std::collections::HashMap;
@@ -164,38 +163,61 @@ impl BooleanWrapper{
     }
 
     pub fn smart_and<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, bools: &[BooleanWrapper])-> Result<Self, SynthesisError>{
+        //if all elements are constants, perform the function without optimization
+        let storage = GLOBAL_STORAGE.lock().unwrap();
         if bools.iter().all(|x| x.is_constant()){
             let boolean: Vec<Boolean> = bools.into_iter().map(|x| x.convert()).collect();
             return Ok(BooleanWrapper(smart_and(cs, boolean.as_slice()).unwrap()))
         }
-        else{ 
-            let mut sec_array = BTreeSet::new();
-            bools.iter().map(|x| sec_array.insert(*x));
 
-            if GLOBAL_STORAGE.lock().unwrap().check_storage(&(sec_array.clone(), StringForKey::Smart_And)){
-                return Ok(GLOBAL_STORAGE.lock().unwrap().return_value(&(sec_array.clone(), StringForKey::Smart_And)))
+        else{ 
+
+            let mut sec_array = BTreeSet::new();
+            sec_array.extend(bools.into_iter());
+            assert_eq!(sec_array.is_empty(), false);
+            println!("{:?}", sec_array);
+            //check Storage if there was already such a variable with such a value
+            if storage.check_storage(&(sec_array.clone(), StringForKey::Smart_And)){
+                return Ok(storage.return_value(&(sec_array.clone(), StringForKey::Smart_And)))
             }
+            // Optimization algorithm
             else{
                 let mut new_bools = vec![];
-                for key in GLOBAL_STORAGE.lock().unwrap().keys(){
-                    let set = key.0;
-                    let intersection = sec_array.bitand(&set);
-                    // new_bools.clear();
-                    if intersection.is_empty().not(){
-                        let value_of_intersec = GLOBAL_STORAGE.lock().unwrap().return_value(&(intersection.clone(), StringForKey::Smart_And));
-                        sec_array.bitxor(&intersection);
-                        sec_array.insert(value_of_intersec);
-                        new_bools = sec_array.into_iter().collect();
+                if storage.keys().is_empty().not(){
+                    for key in storage.keys(){
+                        if key.1==StringForKey::And{
+                            let set = key.0;
+                            let intersection = sec_array.bitand(&set);
+                    
+                            if intersection.len()>1{
+                                // new_bools.clear();
+                                let value_of_intersec = storage.return_value(&(intersection.clone(), StringForKey::And));
+                                sec_array.bitxor(&intersection);
+                                sec_array.insert(value_of_intersec);
+                                new_bools = sec_array.clone().into_iter().collect();
 
 
-                    }else{
-                        new_bools = sec_array.into_iter().collect();
+                            }
+                            else{
+                                new_bools = sec_array.clone().into_iter().collect();
+                            }
+                        }
                     }
+                    let boolean: Vec<Boolean> = new_bools.iter().map(|x| x.convert()).collect();
+                    let value = BooleanWrapper(smart_and(cs, &boolean.as_slice()).unwrap());
+                    println!("res{:?}", sec_array);
+                    GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey::And), &value);
+                    Ok(value)
                 }
-                let boolean: Vec<Boolean> = new_bools.into_iter().map(|x| x.convert()).collect();
-                let value = BooleanWrapper(smart_and(cs, &boolean.as_slice()).unwrap());
-                GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey:: Smart_And), &value);
-                Ok(value)
+                else{
+                    let boolean: Vec<Boolean> = bools.into_iter().map(|x| x.convert()).collect();
+                    let value = BooleanWrapper(smart_and(cs, &boolean).unwrap());
+                    GLOBAL_STORAGE.lock().unwrap().insert_value(&(sec_array.clone(), StringForKey:: Smart_And), &value);
+                    Ok(value)
+                }
+
+                
+                
             }
         }
 
@@ -414,5 +436,30 @@ mod test{
                 }
            }
        
+    }
+
+    #[test]
+    fn test_smart_and(){
+        for a_val in [false, true].iter() {
+            for b_val in [false, true].iter() {
+                for c_val in [false, true].iter(){
+                    for d_val in [false, true].iter(){
+                        let mut cs = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
+                        let a = AllocatedBit::alloc(&mut cs, Some(*a_val)).unwrap();
+                        let b = AllocatedBit::alloc(&mut cs, Some(*b_val)).unwrap();
+                        let c = AllocatedBit::alloc(&mut cs, Some(*c_val)).unwrap();
+                        let d = AllocatedBit::alloc(&mut cs, Some(*d_val)).unwrap();
+
+                        let bools = [BooleanWrapper(Boolean::Is(a)), BooleanWrapper(Boolean::Not(b)), BooleanWrapper(Boolean::Is(c)) ,BooleanWrapper(Boolean::Is(d))];
+                        let result = BooleanWrapper::smart_and(&mut cs, &bools);
+                        println!("{:?}", result);
+
+                        assert!(cs.is_satisfied(), "unsatisfied for a = {}, b = {}, c = {}, d = {}", a_val, b_val, c_val, d_val);
+                        GLOBAL_STORAGE.lock().unwrap().clear_storage();
+                    }   
+                }
+            }
+        }
+
     }
 }

@@ -1,11 +1,14 @@
 #[cfg(test)]
 mod test{
+    use serde::de::value::BoolDeserializer;
+
     use crate::plonk::circuit::boolean::{AllocatedBit, Boolean};
     use crate::bellman::pairing::Engine;
     use crate::bellman::plonk::better_better_cs::cs::*;
     use crate::bellman::SynthesisError;
     use crate::bellman::plonk::better_better_cs::cs::{TrivialAssembly, Width4MainGateWithDNext};
     use crate::bellman::pairing::{bn256::Bn256};
+    use plonk::circuit::booleanwrapper::utils::smart_and;
     use super::super::base::*;
     #[test]
     fn test_1(){
@@ -15,6 +18,9 @@ mod test{
             value_2: Option<bool>,
             value_3: Option<bool>,
             value_4: Option<bool>,
+            value_5: Option<bool>,
+            value_6: Option<bool>,
+            value_7: Option<bool>,
         }
         impl<E: Engine> Circuit<E> for TestCircuit{
             type MainGate = Width4MainGateWithDNext;
@@ -32,6 +38,9 @@ mod test{
                 let value_2 = AllocatedBit::alloc(cs, self.value_2).unwrap();
                 let value_3 = AllocatedBit::alloc(cs, self.value_3).unwrap();
                 let value_4 = AllocatedBit::alloc(cs, self.value_4).unwrap();
+                let value_5 = AllocatedBit::alloc(cs, self.value_5).unwrap();
+                let value_6 = AllocatedBit::alloc(cs, self.value_6).unwrap();
+                let value_7 = AllocatedBit::alloc(cs, self.value_7).unwrap();
     
                 let _experiment_1 = Boolean::xor(cs, &Boolean::Is(value_1), &Boolean::Is(value_2));
                 let _experiment_2 = Boolean::xor(cs, &Boolean::Is(value_1), &Boolean::Is(value_2));
@@ -44,7 +53,9 @@ mod test{
 
                 let _experiment_7 = Boolean::conditionally_select(cs, &Boolean::Is(value_1), &Boolean::Is(value_2), &Boolean::Is(value_4));
                 let _experiment_8 = Boolean::conditionally_select(cs, &Boolean::Is(value_1), &Boolean::Is(value_2), &Boolean::Is(value_4));
-    
+                
+                let _experiment_9 = smart_and(cs, &[Boolean::Not(value_2), Boolean::Is(value_4), Boolean::Is(value_5), Boolean::Not(value_6), Boolean::Is(value_7)]);
+
                 Ok(())
             }
         } 
@@ -54,6 +65,9 @@ mod test{
             value_2: Some(true),
             value_3: Some(false),
             value_4: Some(false),
+            value_5: Some(true),
+            value_6: Some(false),
+            value_7: Some(true),
     
         };
 
@@ -75,6 +89,9 @@ mod test{
             value_2: Option<bool>,
             value_3: Option<bool>,
             value_4: Option<bool>,
+            value_5: Option<bool>,
+            value_6: Option<bool>,
+            value_7: Option<bool>,
         }
         impl<E: Engine> Circuit<E> for TestCircuit{
             type MainGate = Width4MainGateWithDNext;
@@ -92,6 +109,9 @@ mod test{
                 let value_2 = AllocatedBit::alloc(cs, self.value_2).unwrap();
                 let value_3 = AllocatedBit::alloc(cs, self.value_3).unwrap();
                 let value_4 = AllocatedBit::alloc(cs, self.value_4).unwrap();
+                let value_5 = AllocatedBit::alloc(cs, self.value_5).unwrap();
+                let value_6 = AllocatedBit::alloc(cs, self.value_6).unwrap();
+                let value_7 = AllocatedBit::alloc(cs, self.value_7).unwrap();
     
                 let _experiment_1 = BooleanWrapper::xor(cs, &BooleanWrapper(Boolean::Is(value_1)), &BooleanWrapper(Boolean::Is(value_2)));
                 let _experiment_2 = BooleanWrapper::xor(cs, &BooleanWrapper(Boolean::Is(value_1)), &BooleanWrapper(Boolean::Is(value_2)));
@@ -104,6 +124,8 @@ mod test{
 
                 let _experiment_7 = BooleanWrapper::conditionally_select(cs, &BooleanWrapper(Boolean::Is(value_1)), &BooleanWrapper(Boolean::Is(value_2)), &BooleanWrapper(Boolean::Is(value_4)));
                 let _experiment_8 = BooleanWrapper::conditionally_select(cs, &BooleanWrapper(Boolean::Is(value_1)), &BooleanWrapper(Boolean::Is(value_2)), &BooleanWrapper(Boolean::Is(value_4)));
+
+                let _experiment_9 = BooleanWrapper::smart_and(cs, &[BooleanWrapper(Boolean::Not(value_2)), BooleanWrapper(Boolean::Is(value_4)), BooleanWrapper(Boolean::Is(value_5)), BooleanWrapper(Boolean::Not(value_6)), BooleanWrapper(Boolean::Is(value_7))]);
     
                 Ok(())
             }
@@ -114,6 +136,9 @@ mod test{
             value_2: Some(true),
             value_3: Some(false),
             value_4: Some(false),
+            value_5: Some(true),
+            value_6: Some(false),
+            value_7: Some(true),
     
         };
 

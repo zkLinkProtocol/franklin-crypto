@@ -6,8 +6,23 @@ use crate::bellman::SynthesisError;
 use crate::bellman::Engine;
 
 use super::utils::*;
-
 use itertools::Itertools;
+use std::sync::Arc;
+
+
+pub fn add_table_once<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, table: LookupTableApplication<E>
+) -> Result<Arc<LookupTableApplication<E>>, SynthesisError>
+{
+    let existing_table_or_err = cs.get_table(&table.functional_name());
+    if existing_table_or_err.is_ok() {
+        existing_table_or_err
+    }
+    else {
+        cs.add_table(table)
+    }
+}
+
 
 // GENERAL PURPOSE TABLES (so to say)
 // ----------------------------------------------------------------------------------------------------------------------------

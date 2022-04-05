@@ -1200,7 +1200,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     }
 
     // return current value unreduced
-    pub(crate) fn get_value(&self) -> Option<BigUint> {
+    pub fn get_value(&self) -> Option<BigUint> {
         let shift = self.representation_params.binary_limbs_params.limb_size_bits;
 
         let mut result = BigUint::from(0u64);
@@ -3492,13 +3492,12 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     }
 }
 
-#[cfg(test)]
-mod test {
+pub mod test {
     use super::*;
     use crate::plonk::circuit::*;
 
     #[test]
-    fn test_bn_254() {
+    pub fn test_bn_254() {
         use crate::bellman::pairing::bn256::{Fq, Bn256, Fr};
 
         let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
@@ -3625,7 +3624,7 @@ mod test {
         use rand::{XorShiftRng, SeedableRng, Rng};
         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
-        for i in 0..100 {
+        for i in 0..1 {
             let mut cs = init();
 
             let a_f: F = rng.gen();
@@ -3656,7 +3655,10 @@ mod test {
             m.mul_assign(&b_f);
 
             assert_eq!(result.value.unwrap(), m);
-
+            println!("a_full: {}, b_full: {}, res_full: {}", a.get_value().unwrap(), b.get_value().unwrap(),
+            result.get_value().unwrap());
+            println!("a_fr: {}, b_fr: {}, res_fr: {}", a.base_field_limb.get_value().unwrap(), b.base_field_limb.get_value().unwrap(),
+            result.base_field_limb.get_value().unwrap());
             assert_eq!(result.get_value().unwrap(), fe_to_biguint(&m));
 
             if i == 0 {

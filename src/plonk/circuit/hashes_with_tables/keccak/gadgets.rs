@@ -231,10 +231,10 @@ impl<E: Engine> Keccak256Gadget<E> {
             true
         );
 
-        let from_binary_converter_table = cs.add_table(from_binary_converter_table)?;
-        let first_to_second_base_converter_table = cs.add_table(first_to_second_base_converter_table)?;
-        let of_first_to_second_base_converter_table = cs.add_table(of_first_to_second_base_converter_table)?;
-        let from_second_base_converter_table = cs.add_table(from_second_base_converter_table)?;
+        let from_binary_converter_table = add_table_once(cs, from_binary_converter_table)?;
+        let first_to_second_base_converter_table = add_table_once(cs, first_to_second_base_converter_table)?;
+        let of_first_to_second_base_converter_table = add_table_once(cs, of_first_to_second_base_converter_table)?;
+        let from_second_base_converter_table = add_table_once(cs, from_second_base_converter_table)?;
 
         let f = |mut input: u64, step: u64| -> E::Fr {
             let mut acc = BigUint::default(); 
@@ -258,7 +258,7 @@ impl<E: Engine> Keccak256Gadget<E> {
             },
             false => {
                 let range_table = LookupTableApplication::new_range_table_of_width_3(range_table_bitlen, columns3)?;
-                cs.add_table(range_table)?
+                add_table_once(cs, range_table)?
             },
         };
 
@@ -1046,6 +1046,124 @@ impl<E: Engine> Keccak256Gadget<E> {
         }
 
         Ok(state)
+    }
+
+    pub fn prepare_state<CS>(&self, cs: &mut CS, state: &mut KeccakState<E>) -> Result<()>
+    where CS: ConstraintSystem<E> {
+        for idx in (0..KECCAK_STATE_WIDTH).cartesian_product(0..KECCAK_STATE_WIDTH) {
+            state[idx] = self.convert_binary_to_sparse_repr(
+                cs, &state[idx], KeccakBase::KeccakFirstSparseBase
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn normalize_state<CS>(&self, cs: &mut CS, state: &mut KeccakState<E>) -> Result<()>
+    where CS: ConstraintSystem<E> {
+        use std::cell::RefCell;
+        let is_first_conversion = RefCell::new(true);
+        
+        let converter = |n: u64| -> u64 {
+            if *is_first_conversion.borrow() { (n & 1) << 1 } else { keccak_u64_second_converter(n) }
+        };
+
+        for idx in (0..KECCAK_STATE_WIDTH).cartesian_product(0..KECCAK_STATE_WIDTH) {
+            // we don't have trable for direct conversion from FIRST_SPARSE_BASE to BINARY_BASE
+            // thus we have to take circuitous route through two table applications"
+            // FIRST_SPARSE_BASE -> SECOND_SPARSE_BASE -> mul 2 -> BINARY_BASE 
+            let elem = state[idx].clone();
+            if elem.is_constant() {
+                let fr = elem.get_value().unwrap();
+                let res = func_normalizer(fr, KECCAK_FIRST_SPARSE_BASE, BINARY_BASE, |x| { x & 1});
+                state[idx] = Num::Constant(res);
+                continue;
+            }
+            let mut var = elem.get_variable();
+
+            let aux_arr = [
+                (
+                    KECCAK_FIRST_SPARSE_BASE, KECCAK_SECOND_SPARSE_BASE, self.first_base_num_of_chunks,
+                    self.first_to_second_base_converter_table.clone(), u64_to_ff(2), 
+                ),
+                (
+                    KECCAK_SECOND_SPARSE_BASE, BINARY_BASE, self.second_base_num_of_chunks,
+                    self.from_second_base_converter_table.clone(), E::Fr::one(), 
+                    
+                ),
+            ];
+            
+            *is_first_conversion.borrow_mut() = true;
+            for (in_base, out_base, num_of_chunks, table, scale) in std::array::IntoIter::new(aux_arr) 
+            {
+                let num_slices = round_up(KECCAK_LANE_WIDTH, num_of_chunks);
+                let mut input_slices : Vec<AllocatedNum<E>> = Vec::with_capacity(num_slices);
+                let mut output_slices : Vec<AllocatedNum<E>> = Vec::with_capacity(num_slices);
+    
+                let input_slice_modulus = pow(in_base as usize, num_of_chunks);
+                let input_slice_modulus_fr = u64_exp_to_ff(in_base, num_of_chunks as u64);
+                let output_slice_modulus_fr = u64_exp_to_ff(out_base, num_of_chunks as u64);
+    
+                let witnesses = match var.get_value() {
+                    None => {
+                        vec![None; num_slices]
+                    },
+                    Some(f) => {
+                        let mut result = vec![];
+                        // here we have to operate on row biguint number
+                        let mut big_f = BigUint::default();
+                        let f_repr = f.into_repr();
+                        for n in f_repr.as_ref().iter().rev() {
+                            big_f <<= 64u32;
+                            big_f += *n;
+                        } 
+    
+                        for _ in 0..num_slices {
+                            let remainder = (big_f.clone() % BigUint::from(input_slice_modulus)).to_u64().unwrap();
+                            let new_val = u64_to_ff(remainder);
+                            big_f /= input_slice_modulus;
+                            result.push(Some(new_val));
+                        }
+    
+                        assert!(big_f.is_zero());
+                        result
+                    }
+                };
+    
+                for w in witnesses.into_iter() {
+                    let tmp = AllocatedNum::alloc(cs, || w.grab())?;
+                    input_slices.push(tmp);
+                }
+    
+                let mut coef = E::Fr::one();
+                let mut acc = var.clone();
+                for (_is_first, is_last, input_chunk) in input_slices.iter().identify_first_last() {
+                    let (_output1, output2, new_acc) = self.query_table_accumulate(
+                        cs, &table, input_chunk, &acc, &coef, is_last
+                    )?; 
+    
+                    coef.mul_assign(&input_slice_modulus_fr);
+                    acc = new_acc;
+                    output_slices.push(output2);
+                }
+                    
+                var = AllocatedNum::alloc(cs, || {
+                    let fr = var.get_value().grab()?;
+                    Ok(func_normalizer(fr, in_base, out_base, converter))
+                })?;
+
+                let coefs = std::iter::repeat(()).take(num_slices).scan(scale.clone(), |acc, _el| {
+                    let tmp = acc.clone();
+                    acc.mul_assign(&output_slice_modulus_fr);
+                    Some(tmp)
+                }).collect::<Vec<E::Fr>>();
+                AllocatedNum::long_lc_eq(cs, &output_slices[..], &coefs[..], &var, false)?;
+
+                *is_first_conversion.borrow_mut() = false;
+            };
+    
+            state[idx] = Num::Variable(var)
+        }
+        Ok(())
     }
 
     pub fn keccak_round_function<CS: ConstraintSystem<E>>(

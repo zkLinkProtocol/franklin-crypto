@@ -311,7 +311,7 @@ mod test {
 
     #[test]
     fn test_sha256_on_real_prover() {
-        const NUM_OF_BLOCKS: usize = 2;
+        const NUM_OF_BLOCKS: usize = 1;
         let mut rng = rand::thread_rng();
 
         let mut input = [0u8; 64 * NUM_OF_BLOCKS];
@@ -375,5 +375,10 @@ mod test {
             .unwrap();
         // let valid = verify::<_, _, RollingKeccakTranscript<Fr>>(&vk, &proof, None).unwrap();
         // assert!(valid);
+
+        
+        // let mut proof_as_bytes : Vec<u8> = vec![];
+        // vk.write(&mut proof_as_bytes).expect("should_write");
+        // println!("proof size: {}", proof_as_bytes.len());
     }
 }

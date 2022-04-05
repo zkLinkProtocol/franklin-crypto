@@ -339,7 +339,7 @@ mod test {
 
     #[test]
     fn test_keccak_on_real_prover() {
-        const NUM_OF_BLOCKS: usize = 2;
+        const NUM_OF_BLOCKS: usize = 1;
         let mut rng = rand::thread_rng();
 
         let mut input = [0u8; 8 * KECCAK_RATE_WORDS_SIZE * NUM_OF_BLOCKS];
@@ -384,7 +384,7 @@ mod test {
         use crate::bellman::plonk::better_better_cs::verifier::verify;
 
         let worker = Worker::new();
-        let required_size = assembly.n().next_power_of_two();
+        //let required_size = assembly.n().next_power_of_two();
         let crs = Crs::<Bn256, CrsForMonomialForm>::dummy_crs(1 << 20);
         let setup = assembly.create_setup::<TestKeccakCircuit::<Bn256>>(&worker).unwrap();
         let vk = VerificationKey::from_setup(&setup, &worker, &crs).unwrap();
@@ -393,8 +393,42 @@ mod test {
             .create_proof::<_, RollingKeccakTranscript<Fr>>(&worker, &setup, &crs, None)
             .unwrap();
 
-        // let valid = verify::<_, _, RollingKeccakTranscript<Fr>>(&vk, &proof, None).unwrap();
-        // assert!(valid);
+        let valid = verify::<_, _, RollingKeccakTranscript<Fr>>(&vk, &proof, None).unwrap();
+        assert!(valid);    
+    }
+
+    #[test]
+    fn test_keccak_state_converter() {
+        use itertools::Itertools;
+        let mut cs = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepAndCustomGatesParams, Width4MainGateWithDNext>::new();
+        let mut rng = rand::thread_rng();
+
+        let actual_state = std::iter::repeat(()).take(KECCAK_STATE_WIDTH * KECCAK_STATE_WIDTH).map(|_| {
+            u64_to_ff::<Fr>(rng.gen())
+        }).collect::<Vec<Fr>>();
+        let mut circuit_state = KeccakState::default();
+
+        let mut circuit_routine = || -> Result<(), SynthesisError> {
+            for (i, j) in (0..KECCAK_STATE_WIDTH).cartesian_product(0..KECCAK_STATE_WIDTH) {
+                let fr = actual_state[i * KECCAK_STATE_WIDTH + j].clone();
+                let var = AllocatedNum::alloc(&mut cs, || Ok(fr))?;
+                circuit_state[(i, j)] = Num::Variable(var); 
+            }
+            let keccak_gadget = Keccak256Gadget::new(&mut cs, None, None, None, None, false, "")?;
+            keccak_gadget.prepare_state(&mut cs, &mut circuit_state)?;
+            keccak_gadget.normalize_state(&mut cs, &mut circuit_state)?;
+
+            for (i, j) in (0..KECCAK_STATE_WIDTH).cartesian_product(0..KECCAK_STATE_WIDTH) {
+                let a = Num::Constant(actual_state[i * KECCAK_STATE_WIDTH + j].clone());
+                let b = circuit_state[(i, j)].clone();
+                a.enforce_equal(&mut cs, &b)?;
+            }
+
+            Ok(())
+        };
+
+        circuit_routine().expect("should synthesize");
+        assert!(cs.is_satisfied());
     }
 }
 

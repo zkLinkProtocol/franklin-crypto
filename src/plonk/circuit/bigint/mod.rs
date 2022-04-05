@@ -1,21 +1,8 @@
-use crate::bellman::pairing::{
-    Engine,
-};
-
-use crate::bellman::pairing::ff::{
-    Field,
-    PrimeField,
-    PrimeFieldRepr,
-    BitIterator
-};
-
-use crate::bellman::{
-    SynthesisError,
-};
-
+use crate::bellman::pairing::Engine;
+use crate::bellman::pairing::ff::{Field, PrimeField, PrimeFieldRepr, BitIterator};
+use crate::bellman::SynthesisError;
 use crate::bellman::plonk::better_better_cs::cs::{
-    Variable, 
-    ConstraintSystem,
+    Variable, ConstraintSystem,
     ArithmeticTerm,
     MainGateTerm,
     Width4MainGateWithDNext,

@@ -274,7 +274,7 @@ impl<E: Engine> Sha256Gadget<E> {
             None,
             true
         );
-        let sha256_base7_rot6_table = cs.add_table(sha256_base7_rot6_table)?;
+        let sha256_base7_rot6_table = add_table_once(cs, sha256_base7_rot6_table)?;
 
         let name2 : &'static str = "sha256_base7_rot3_extr10_table";
         let sha256_base7_rot3_extr10_table = LookupTableApplication::new(
@@ -284,7 +284,7 @@ impl<E: Engine> Sha256Gadget<E> {
             None,
             true
         );
-        let sha256_base7_rot3_extr10_table = cs.add_table(sha256_base7_rot3_extr10_table)?;
+        let sha256_base7_rot3_extr10_table = add_table_once(cs, sha256_base7_rot3_extr10_table)?;
 
         let name3 : &'static str = "sha256_base4_rot2_table";
         let sha256_base4_rot2_table = LookupTableApplication::new(
@@ -294,7 +294,7 @@ impl<E: Engine> Sha256Gadget<E> {
             None,
             true
         );
-        let sha256_base4_rot2_table  = cs.add_table(sha256_base4_rot2_table)?;
+        let sha256_base4_rot2_table = add_table_once(cs, sha256_base4_rot2_table)?;
         
         let name4 : &'static str = "sha256_base4_rot2_width10_table";
         let sha256_base4_rot2_width10_table = LookupTableApplication::new(
@@ -304,7 +304,7 @@ impl<E: Engine> Sha256Gadget<E> {
             None,
             true,
         );
-        let sha256_base4_rot2_width10_table = cs.add_table(sha256_base4_rot2_width10_table)?;
+        let sha256_base4_rot2_width10_table = add_table_once(cs, sha256_base4_rot2_width10_table)?;
 
         let xor_f = | x | { x & 1};
         let ch_f = | x | { ch_u64_normalizer(x) };
@@ -318,7 +318,7 @@ impl<E: Engine> Sha256Gadget<E> {
             None,
             true
         );
-        let sha256_ch_normalization_table = cs.add_table(sha256_ch_normalization_table)?;
+        let sha256_ch_normalization_table = add_table_once(cs, sha256_ch_normalization_table)?;
 
         let name6 : &'static str = "sha256_maj_normalization_table";
         let sha256_maj_sheduler_normalization_table = LookupTableApplication::new(
@@ -330,7 +330,9 @@ impl<E: Engine> Sha256Gadget<E> {
             None,
             true
         );
-        let sha256_maj_sheduler_normalization_table = cs.add_table(sha256_maj_sheduler_normalization_table)?;
+        let sha256_maj_sheduler_normalization_table = add_table_once(
+            cs, sha256_maj_sheduler_normalization_table
+        )?;
 
         let name7 : &'static str = "sha256_base4_rot7_table";
         let sha256_base4_rot7_table = LookupTableApplication::new(
@@ -340,7 +342,7 @@ impl<E: Engine> Sha256Gadget<E> {
             None,
             true
         );
-        let sha256_base4_rot7_table = cs.add_table(sha256_base4_rot7_table)?;
+        let sha256_base4_rot7_table = add_table_once(cs, sha256_base4_rot7_table)?;
         
         let name8 : &'static str = "sha256_sheduler_helper_table";
         let sha256_sheduler_helper_table = LookupTableApplication::new(
@@ -350,7 +352,7 @@ impl<E: Engine> Sha256Gadget<E> {
             None,
             true
         );
-        let sha256_sheduler_helper_table = cs.add_table(sha256_sheduler_helper_table)?;
+        let sha256_sheduler_helper_table = add_table_once(cs, sha256_sheduler_helper_table)?;
     
         // Initialize IV values:
         // (first 32 bits of the fractional parts of the square roots of the first 8 primes 2..19):
@@ -1670,26 +1672,10 @@ impl<E: Engine> Sha256Gadget<E> {
         Ok(regs)
     }
 
-    /// expects well formed and padded input, outputs 32 bit words
-    /// Can be used when we perform something like sha256(truncate(sha256(a)), truncate(sha256(b)))
-    // to fit hashing of truncated outputs into the single round
-    pub fn sha256<CS: ConstraintSystem<E>>(&self, cs: &mut CS, message: &[Num<E>]) -> Result<[Num<E>; 8]>
-    {    
-        // we assume that input is already well-padded
-        assert!(message.len() % 16 == 0);
-        
-        let mut regs = Sha256Registers {
-            a: Num::Constant(self.iv[0].clone()).into(),
-            b: Num::Constant(self.iv[1].clone()).into(),
-            c: Num::Constant(self.iv[2].clone()).into(),
-            d: Num::Constant(self.iv[3].clone()).into(),
-            e: Num::Constant(self.iv[4].clone()).into(),
-            f: Num::Constant(self.iv[5].clone()).into(),
-            g: Num::Constant(self.iv[6].clone()).into(),
-            h: Num::Constant(self.iv[7].clone()).into(),
-        };
-
-
+    fn sha256_impl<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, mut regs : Sha256Registers<E>, message: &[Num<E>]
+    ) -> Result<[Num<E>; 8]>
+    {
         for block in message.chunks(16) {
             let expanded_block = self.message_expansion(cs, block)?;
             regs = self.sha256_inner_block(cs, regs, &expanded_block[..], &self.round_constants)?;
@@ -1709,10 +1695,58 @@ impl<E: Engine> Sha256Gadget<E> {
         Ok(res)
     }
 
+    fn initial_state(&self) -> Sha256Registers<E> {
+        let regs = Sha256Registers {
+            a: Num::Constant(self.iv[0].clone()).into(),
+            b: Num::Constant(self.iv[1].clone()).into(),
+            c: Num::Constant(self.iv[2].clone()).into(),
+            d: Num::Constant(self.iv[3].clone()).into(),
+            e: Num::Constant(self.iv[4].clone()).into(),
+            f: Num::Constant(self.iv[5].clone()).into(),
+            g: Num::Constant(self.iv[6].clone()).into(),
+            h: Num::Constant(self.iv[7].clone()).into(),
+        };
+
+        regs
+    }
+
     // ---------------------------------------------------------------------------------------------------------------------------
     // public interface: exported functions
     // ---------------------------------------------------------------------------------------------------------------------------
-    
+    pub fn iv_as_nums(&self) -> [Num<E>; 8] {
+        use std::convert::TryInto;
+        self.iv.iter().map(|&el| Num::Constant(el)).collect::<Vec<_>>().try_into().unwrap()
+    }
+
+    /// expects well formed and padded input, outputs 32 bit words
+    /// Can be used when we perform something like sha256(truncate(sha256(a)), truncate(sha256(b)))
+    /// to fit hashing of truncated outputs into the single round
+    pub fn sha256<CS: ConstraintSystem<E>>(&self, cs: &mut CS, message: &[Num<E>]) -> Result<[Num<E>; 8]>
+    {
+        let regs = self.initial_state();
+        self.sha256_impl(cs, regs, message)
+    }
+
+    /// expects inner state as 8 32-bit words and input as 16 32-bit words, and outputs and updated state
+    pub fn round_function<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, inner_state: [Num<E>; 8], round_input: &[Num<E>; 16]
+    ) -> Result<[Num<E>; 8]>
+    {            
+
+        let regs = Sha256Registers {
+            a: inner_state[0].into(),
+            b: inner_state[1].into(),
+            c: inner_state[2].into(),
+            d: inner_state[3].into(),
+            e: inner_state[4].into(),
+            f: inner_state[5].into(),
+            g: inner_state[6].into(),
+            h: inner_state[7].into(),
+        };
+        
+        self.sha256_impl(cs, regs, round_input)
+    }
+
     /// take bytes as input and return Num<E> as output, where each Num<E> is 32 bit integer
     pub fn sha256_from_bytes<CS: ConstraintSystem<E>>(&self, cs: &mut CS, bytes: &[Byte<E>]) -> Result<[Num<E>; 8]>
     {

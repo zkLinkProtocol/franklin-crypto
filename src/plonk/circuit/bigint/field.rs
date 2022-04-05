@@ -1,266 +1,30 @@
-use crate::bellman::pairing::{
-    Engine,
-};
+use super::*;
+use super::bigint::*;
+use num_traits::{Zero, One};
 
-use crate::bellman::pairing::ff::{
-    Field,
-    PrimeField,
-    PrimeFieldRepr,
-    BitIterator
-};
-
-use crate::bellman::{
-    SynthesisError,
-};
-
-use crate::bellman::plonk::better_better_cs::cs::{
-    Variable, 
-    ConstraintSystem,
-    ArithmeticTerm,
-    MainGateTerm,
-    Width4MainGateWithDNext,
-    MainGate,
-    GateInternal,
-    Gate,
-    LinearCombinationOfTerms,
-    PolynomialMultiplicativeTerm,
-    PolynomialInConstraint,
-    TimeDilation,
-    Coefficient,
-    PlonkConstraintSystemParams
-};
-
+use num_bigint::BigUint;
 use super::super::allocated_num::{AllocatedNum, Num};
 use super::super::linear_combination::LinearCombination;
 use super::super::simple_term::Term;
-use super::super::boolean::{Boolean, AllocatedBit};
-use crate::plonk::circuit::SomeField;
 
-use super::*;
-use super::bigint::*;
-use num_bigint::BigUint;
-use num_integer::Integer;
-use num_traits::Zero;
 
 // Parameters of the representation
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RnsParameters<E: Engine, F: PrimeField>{
-    // this is kind-of normal UintX limbs
-    pub binary_limbs_params: LimbedRepresentationParameters<E>,
-    pub num_binary_limbs: usize,
-    pub binary_modulus: BigUint,
-    pub num_limbs_for_in_field_representation: usize,
-
-    // convenience
-    pub base_field_modulus: BigUint,
-    pub binary_representation_max_value: BigUint,
-
-    // modulus if the field that we represent
-    // we know the modulus and how large will be limbs in the base case
-    // of maximally filled distribution
-    pub represented_field_modulus: BigUint,
-    pub binary_limbs_bit_widths: Vec<usize>,
-    pub binary_limbs_max_values: Vec<BigUint>,
-
-    // we do modular reductions, so we want to have these for convenience
-    pub represented_field_modulus_limbs: Vec<E::Fr>,
-    pub represented_field_modulus_negated_limbs_biguints: Vec<BigUint>,
-    pub represented_field_modulus_negated_limbs: Vec<E::Fr>,
-
-    pub represented_field_modulus_in_base_field: E::Fr,
-
-    // -modulus of represented field in base field
-    pub represented_field_modulus_negated_in_base_field: E::Fr,
-
-    pub range_check_info: RangeConstraintInfo,
-
-    pub prefer_single_limb_allocation: bool,
-    pub prefer_single_limb_carry_propagation: bool,
-
-    pub (crate) _marker: std::marker::PhantomData<F>
+    pub limb_size: usize,
+    pub limb_capacity: usize,
+    pub range_check_strategy: RangeConstraintStrategy,
+    pub (crate) _marker_engine: std::marker::PhantomData<E>,
+    pub (crate) _marker_fr: std::marker::PhantomData<F>
 }
 
 impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
-    pub fn max_representable_value(&self) -> BigUint {
-        let mut tmp = self.base_field_modulus.clone() * &self.binary_representation_max_value;
-        tmp = tmp.sqrt();
-
-        tmp
-    }
-
-    pub fn rns_system_max_value(&self) -> BigUint {
-        self.base_field_modulus.clone() * &self.binary_representation_max_value
-    }
-
-    pub fn new_for_field(limb_size: usize, intermediate_limb_capacity: usize, num_binary_limbs:usize) -> Self {
-        let default_strategy = RangeConstraintInfo {
-            minimal_multiple: 2,
-            optimal_multiple: 8,
-            multiples_per_gate: 4,
-            linear_terms_used: 4,
-            strategy: RangeConstraintStrategy::CustomTwoBitGate
-        };
-
-        Self::new_for_field_with_strategy(limb_size, intermediate_limb_capacity, num_binary_limbs, default_strategy, false)
-    }
-
-    pub fn new_for_field_with_strategy(
-        limb_size: usize, 
-        intermediate_limb_capacity: usize, 
-        num_binary_limbs:usize,
-        strategy: RangeConstraintInfo,
-        prefer_single_limb_allocation: bool
-    ) -> Self {
-        let binary_limbs_params = LimbedRepresentationParameters::new(limb_size, intermediate_limb_capacity);
-
-        let minimal_multiple = strategy.minimal_multiple;
-        assert!(limb_size % minimal_multiple == 0, "limb size is not a multiple of range check quant");
-
-        let base_field_modulus = repr_to_biguint::<E::Fr>(&E::Fr::char());
-        let binary_modulus = BigUint::from(1u64) << (num_binary_limbs * limb_size);
-        let binary_representation_max_value = binary_modulus.clone() - BigUint::from(1u64);
-
-        let represented_field_modulus = repr_to_biguint::<F>(&F::char());
-
-        let represented_modulo_base = biguint_to_fe(repr_to_biguint::<F>(&F::char()) % &base_field_modulus);
-
-        let represented_modulus_negated_modulo_binary = binary_modulus.clone() - &represented_field_modulus;
-
-        let mask = BigUint::from(1u64) << limb_size;
-
-        let mut binary_limbs_max_bits_if_in_field = Vec::with_capacity(num_binary_limbs);
-        let mut binary_limbs_max_values_if_in_field = Vec::with_capacity(num_binary_limbs);
-        let mut tmp = represented_field_modulus.clone();
-
-        use num_traits::Zero;
-
-        let mut num_limbs_for_in_field_representation = 0;
-
-        let mut freshly_allocated_max_value = BigUint::from(0u64);
-        let mut shift = 0;
-
-        for _ in 0..num_binary_limbs {
-            if tmp.is_zero() {
-                binary_limbs_max_bits_if_in_field.push(0);
-                binary_limbs_max_values_if_in_field.push(BigUint::from(0u64));
-            } else {
-                let current_bits = tmp.bits() as usize;
-                tmp >>= limb_size;
-                if tmp.is_zero() {
-                    // this is a last limb
-                    let _remainder = current_bits % minimal_multiple;
-                    // if remainder != 0 {
-                    //     current_bits += minimal_multiple - remainder;
-                    // }
-                    binary_limbs_max_bits_if_in_field.push(current_bits);
-                    let max_value = (BigUint::from(1u64) << current_bits) - BigUint::from(1u64);
-
-                    freshly_allocated_max_value += &max_value << shift;
-                    binary_limbs_max_values_if_in_field.push(max_value);
-
-                    shift += current_bits;
-                } else {
-                    binary_limbs_max_bits_if_in_field.push(binary_limbs_params.limb_size_bits);
-                    binary_limbs_max_values_if_in_field.push(binary_limbs_params.limb_max_value.clone());
-                    freshly_allocated_max_value += &binary_limbs_params.limb_max_value << shift;
-
-                    shift += binary_limbs_params.limb_size_bits;
-                }
-                num_limbs_for_in_field_representation += 1;
-            }
-        }
-
-        let mut modulus_limbs = vec![];
-        let mut tmp = represented_field_modulus.clone();
-
-        for _ in 0..num_binary_limbs {
-            let chunk = tmp.clone() % &mask;
-            let fe = biguint_to_fe::<E::Fr>(chunk);
-            modulus_limbs.push(fe);
-            tmp >>= limb_size;
-        }
-
-        let mut tmp = represented_modulus_negated_modulo_binary.clone();
-
-        let mut negated_modulus_chunks_bit_width = vec![];
-        let mut negated_modulus_chunks = vec![];
-        let mut represented_field_modulus_negated_limbs = vec![];
-
-        for _ in 0..num_binary_limbs {
-            let chunk = tmp.clone() % &mask;
-            negated_modulus_chunks_bit_width.push(chunk.bits() as usize);
-            negated_modulus_chunks.push(chunk.clone());
-            let fe = biguint_to_fe::<E::Fr>(chunk);
-            represented_field_modulus_negated_limbs.push(fe);
-            tmp >>= limb_size;
-        }
-
-        let repr_modulus_negated = base_field_modulus.clone() - (represented_field_modulus.clone() % &base_field_modulus.clone());
-        let repr_modulus_negated = biguint_to_fe(repr_modulus_negated);
-
-        let new = Self {
-            binary_limbs_params,
-            num_binary_limbs,
-            binary_modulus,
-            base_field_modulus: base_field_modulus.clone(),
-            num_limbs_for_in_field_representation,
-            binary_representation_max_value,
-            represented_field_modulus,
-            binary_limbs_bit_widths: binary_limbs_max_bits_if_in_field.clone(),
-            binary_limbs_max_values: binary_limbs_max_values_if_in_field.clone(),
-            represented_field_modulus_negated_limbs_biguints : negated_modulus_chunks,
-            represented_field_modulus_limbs: modulus_limbs,
-            represented_field_modulus_negated_limbs,
-            represented_field_modulus_negated_in_base_field: repr_modulus_negated,
-            range_check_info: strategy,
-            prefer_single_limb_allocation: prefer_single_limb_allocation,
-            prefer_single_limb_carry_propagation: false,
-            represented_field_modulus_in_base_field: represented_modulo_base,
-
-            _marker: std::marker::PhantomData
-        };
-
-        if freshly_allocated_max_value >= new.max_representable_value() {
-            panic!("Newly allocated value will have limit of {} ({} bits) that is larger than max intermediate value {} ({} bits) before forced reduction",
-            &freshly_allocated_max_value, freshly_allocated_max_value.bits(), new.max_representable_value(), new.max_representable_value().bits());
-        }
-
-        assert!(
-            &new.max_representable_value() >= &new.represented_field_modulus, 
-            "not sufficient capacity to represent modulus: RNS max value < p^2", 
-        );
-
-        if new.can_allocate_from_double_limb_witness() {
-            assert!(E::Fr::CAPACITY as usize >= limb_size * 2, "double limb size must not overflow the capacity");
-        }
-
-        new
-    }
-
-    pub fn can_allocate_from_double_limb_witness(&self) -> bool {
-        if self.prefer_single_limb_allocation == true {
-            return false;
-        }
-
-        if self.range_check_info.strategy.can_access_minimal_multiple_quants() {
-            true
-        } else {
-            self.prefer_single_limb_allocation == false && self.binary_limbs_params.limb_size_bits % self.range_check_info.optimal_multiple == 0
-        }
-    }
-
-    pub fn set_prefer_single_limb_allocation(&mut self, new_value: bool) {
-        self.prefer_single_limb_allocation = new_value;
-    }
-
-    pub fn set_prefer_double_limb_carry_propagation(&mut self, value: bool) {
-        self.prefer_single_limb_carry_propagation = !value;
-    }
-
-    pub fn propagate_carries_using_double_limbs(&self) -> bool {
-        !self.prefer_single_limb_carry_propagation
+    pub fn new(limb_size: usize, limb_capacity: usize) -> Self {
     }
 }
+
+
+
 
 #[derive(Clone, Debug)]
 pub struct FieldElement<'a, E: Engine, F: PrimeField>{
@@ -524,7 +288,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     /// Use limb witnesses from some other source to cast them into field element.
     /// Caller must ensure that witnesses are properly range constrainted
     #[track_caller]
-    pub fn from_single_limb_witnesses_unchecked<CS: ConstraintSystem<E>>(
+    pub fn from_limbs_unchecked<CS: ConstraintSystem<E>>(
         cs: &mut CS,
         witnesses: &[Num<E>],
         params: &'a RnsParameters<E, F>
@@ -1105,7 +869,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok(new)
     }
 
-    pub fn new_constant(
+    pub fn constant(
         v: F,
         params: &'a RnsParameters<E, F>
     ) -> Self {

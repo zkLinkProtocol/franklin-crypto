@@ -2,7 +2,6 @@ use crate::bellman::pairing::ff::*;
 use crate::bellman::pairing::*;
 use crate::bellman::SynthesisError;
 use crate::plonk::circuit::bigint::{split_into_slices, split_some_into_slices};
-use crate::plonk::circuit::bigint::constraint_num_bits;
 use super::allocated_num::*;
 use super::linear_combination::*;
 use super::boolean::Boolean;

@@ -1,42 +1,12 @@
-use crate::bellman::pairing::{
-    Engine,
-    GenericCurveAffine,
-    GenericCurveProjective,
-};
-
-use crate::bellman::pairing::ff::{
-    Field,
-    PrimeField,
-    PrimeFieldRepr,
-    BitIterator,
-    ScalarEngine
-};
-
-use crate::bellman::{
-    SynthesisError,
-};
-
+use crate::bellman::pairing::{Engine, GenericCurveAffine, GenericCurveProjective};
+use crate::bellman::pairing::ff::{Field, PrimeField, PrimeFieldRepr, BitIterator, ScalarEngine};
+use crate::bellman::SynthesisError;
 use crate::bellman::plonk::better_better_cs::cs::{
-    Variable, 
-    ConstraintSystem,
-    ArithmeticTerm,
-    MainGateTerm,
-    Width4MainGateWithDNext,
-    MainGate,
-    GateInternal,
-    Gate,
-    LinearCombinationOfTerms,
-    PolynomialMultiplicativeTerm,
-    PolynomialInConstraint,
-    TimeDilation,
-    Coefficient,
-    PlonkConstraintSystemParams,
-    TrivialAssembly,
-    PlonkCsWidth4WithNextStepParams,
+    Variable, ConstraintSystem, ArithmeticTerm, MainGateTerm, Width4MainGateWithDNext, MainGate, GateInternal, Gate,
+    LinearCombinationOfTerms, PolynomialMultiplicativeTerm, PolynomialInConstraint, TimeDilation, Coefficient,
+    PlonkConstraintSystemParams, TrivialAssembly, PlonkCsWidth4WithNextStepParams,
 };
-
 use crate::plonk::circuit::Assignment;
-
 use super::super::allocated_num::{AllocatedNum, Num};
 use super::super::linear_combination::LinearCombination;
 use super::super::simple_term::Term;
@@ -44,7 +14,6 @@ use super::super::boolean::{Boolean, AllocatedBit};
 
 use num_bigint::BigUint;
 use num_integer::Integer;
-
 use super::super::bigint::field::*;
 use super::super::bigint::bigint::*;
 
@@ -887,6 +856,13 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
 }
 
 impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
+    // In order to reduce the number of constraints in the scalar multiplication s * X, r * Q and hash * G
+    // we use the endomorphism trick. More precisely:
+    // we are going to use endomorphism here as well!
+    // let enodmorphism parameter be r:
+    // hence we may decompose by p = x r + y, where both x and y can be both positive and negative!
+
+
     #[track_caller]
     pub fn mul<CS: ConstraintSystem<E>>(
         self,

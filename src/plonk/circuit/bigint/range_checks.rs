@@ -1,8 +1,7 @@
-use bellman::LinearCombination;
-
 use super::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::plonk::circuit::linear_combination::*;
 
 
 pub static NUM_RANGE_CHECK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -40,7 +39,7 @@ pub fn print_stats() {
 
 
 pub enum DecompositionType<E: Engine> {
-    BitDecomposition(Vec<AllocatedBit<E>>),
+    BitDecomposition(Vec<AllocatedBit>),
     ChunkDecomposition(Vec<AllocatedNum<E>>),
 }
 
@@ -73,13 +72,33 @@ pub fn constraint_num_bits<E: Engine, CS: ConstraintSystem<E>>(
 }
 
 
+pub fn allocate_gate_with_linear_only_terms<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, vars: &[Variable], coefs: &[E::Fr], d_next_coef: &E::Fr
+) -> Result<(), SynthesisError> {
+    let dummy = CS::get_dummy_variable();
+    let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
+    let next_row_term_idx = CS::MainGate::range_of_next_step_linear_terms().last().unwrap();
+    
+    let gate_term = MainGateTerm::new();
+    let (_, mut local_coeffs) = CS::MainGate::format_term(gate_term, dummy)?;
+    for (i, idx) in range_of_linear_terms.enumerate() {
+        local_coeffs[idx] = coefs[i].clone();
+    } 
+    local_coeffs[next_row_term_idx] = d_next_coef.clone();
+
+    let mg = CS::MainGate::default();
+    let local_vars = Vec::from_iterator(vars.iter());
+    cs.new_single_gate_for_trace_step(&mg, &local_coeffs, &local_vars, &[])?;
+}
+
+
 // enforce that bitlength(var * shift) <= num_bits using naive approach which is the following:
 // we decompose var * shift into single bits [f0, f1, ..., fn], for each f_i we enforce that f_i is actually a bit
 // by f_i * (f_i - 1) == 0
 // and then construct the long linear combination: var * shift = \sum 2^i * f_i
 pub fn enforce_range_check_using_naive_approach<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, var: &AllocatedNum<E>, shift: E::Fr, num_bits: usize
-) -> Result<(), SynthesisError> {
+) -> Result<RangeCheckDecomposition<E>, SynthesisError> {
     increment_invocation_count();
     // count all constraints of the form f * (f - 1) == 0
     increment_total_gates_count(num_bits);
@@ -112,73 +131,160 @@ pub fn enforce_range_check_using_naive_approach<E: Engine, CS: ConstraintSystem<
     let allocated_bits : Vec<AllocatedBit> = bits.into_iter().map(|bit| {
         let t = if has_value { Some(bit) } else { None };
         AllocatedBit::alloc(cs, t)
-    )}.collect::<Result<Vec<_>>>()?;
-
-    if num_bits <= 3 {
-        let mut lc = LinearCombination::zero();
-    }
+    }).collect::<Result<Vec<_>>>()?;
 
     let mut minus_one = E::Fr::one();
     minus_one.negate();
-    let dummy = AllocatedNum::zero(cs);
-    let mut loc_vars = Vec::with_capacity(STATE_WIDTH);
-    let mut loc_coefs = Vec::with_capacity(STATE_WIDTH);
-    let mut coef = E::Fr::one();
-        
-    for bit in allocated_bits.into_iter() {
-        if loc_vars.len() < STATE_WIDTH {
-            loc_vars.push(bit);
-            loc_coefs.push(coef.clone());
-            coef.double();    
-        }
-        else {
-            // we have filled in the whole vector!
-            loc_coefs.reverse();
-            loc_vars.reverse();
 
-            let temp = AllocatedNum::quartic_lc(cs, &loc_coefs[..], &loc_vars[..])?;
-            loc_coefs = vec![E::Fr::one(), coef.clone()];
-            loc_vars = vec![temp, var.clone()];
+    if num_bits <= 3 {
+        let mut lc = LinearCombination::zero();
+        let mut coef = E::Fr::one();
+        for bit in allocated_bits.iter() {
+            lc.add_assign_bit_with_coeff(bit, coef.clone());
+            coef.double();
         }
+        lc.add_assign_variable_with_coeff(var, minus_one)
+    }
+    else {
+        let mut coef = E::Fr::one();
+        let first_gate_allocated_bits = allocated_bits.split_off(CS::Params::STATE_WIDTH);
+        //let first_gate_vars : Vec<Variable> = first_gate_allocated_bits
     }
 
-        if loc_vars.len() == STATE_WIDTH {
-            loc_coefs.reverse();
-            loc_vars.reverse();
-            
-            match use_d_next {
-                true => {
-                    AllocatedNum::quartic_lc_eq(cs, &loc_coefs[..], &loc_vars[..], &total)?;
-                    return Ok(true)
-                },
-                false => {
-                    // we have filled in the whole vector again!
-                    let temp = AllocatedNum::quartic_lc(cs, &loc_coefs[..], &loc_vars[..])?;
-                    loc_coefs = vec![E::Fr::one()];
-                    loc_vars = vec![temp];
-                }
-            }
-
-        }
-        
-        // pad with dummy variables
-        for _i in loc_vars.len()..(STATE_WIDTH-1) {
-            loc_vars.push(dummy.clone());
-            loc_coefs.push(E::Fr::zero());
-        }
-
-        loc_vars.push(total.clone());
-        loc_coefs.push(minus_one);
-        loc_coefs.reverse();
-        loc_vars.reverse();
-
-        AllocatedNum::general_lc_gate(cs, &loc_coefs[..], &loc_vars[..], &E::Fr::zero(), &E::Fr::zero(), &dummy)?;
-        Ok(false)
-
+    Ok(RangeCheckDecomposition
+    {
+        chunks_bitlength: 1,
+        decomposition: DecompositionType::BitDecomposition(bits),
+    })
 }
 
 
-// enforce via custom gate of the form
+// enforce bitlength(var * shift) <= num_bits via custom gate of the form:
+// { d_next - 4a /in [0, 3], a - 4b /in [0, 3], b - 4c /in [0, 3], c - 4d /in [0, 3]
+pub fn enforce_range_check_using_custom_gate<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, var: &AllocatedNum<E>, shift: E::Fr, num_bits: usize
+) -> Result<RangeCheckDecomposition<E>, SynthesisError>
+assert!(num_bits > 0);
+    assert!(num_bits & 1 == 0);
+    assert_eq!(CS::Params::STATE_WIDTH, 4, "this only works for a state of width 4 for now");
+    if let Some(v) = to_constraint.get_value() {
+        let t = self::bigint::fe_to_biguint(&v);
+        assert!(t.bits() as usize <= num_bits, "value is {} that is {} bits, while expected {} bits", t.to_str_radix(16), t.bits(), num_bits);
+    }
+    let num_elements = num_bits / 2;
+    let mut slices: Vec<Option<E::Fr>> = if let Some(v) = to_constraint.get_value() {
+        split_into_bit_constraint_slices(&v, 2, num_elements).into_iter().map(|el| Some(el)).collect()
+    } else {
+        vec![None; num_elements]
+    };
+
+    let last_val = slices.pop().unwrap();
+    if let Some(last_val) = last_val {
+        if let Some(v) = to_constraint.get_value() {
+            assert_eq!(last_val, v);
+        }
+    }
+    
+    let mut result = vec![];
+    for v in slices.into_iter() {
+        let a = AllocatedNum::alloc(
+            cs, 
+            || {
+                Ok(*v.get()?)
+            }
+        )?;
+
+        result.push(a);
+    }
+
+    // last element is actually an element we want to constraint
+    result.push(to_constraint.clone());
+
+    let mut num_gates = num_bits / 8;
+    if num_gates % 8 != 0 {
+        num_gates += 1;
+    }
+
+    let mut raw_variables = Vec::with_capacity(result.len() + 1);
+    // let zero_var = AllocatedNum::zero(cs).get_variable();
+    // raw_variables.push(zero_var);
+    raw_variables.push(cs.get_explicit_zero()?);
+    // we start at D(x) with 0
+    for el in result.iter() {
+        raw_variables.push(el.get_variable());
+    }
+
+    if raw_variables.len() % 4 != 1 {
+        let to_add = (5 - (raw_variables.len() % 4)) % 4;
+
+        let mut four = E::Fr::one();
+        four.double();
+        four.double();
+
+        let four = Some(four);
+
+        use crate::plonk::circuit::SomeField;
+
+        let mut previous_value = to_constraint.get_value();
+
+        for _ in 0..to_add {
+            let new_value = previous_value.mul(&four);
+            let padding = cs.alloc(
+                || {
+                    Ok(*new_value.get()?)
+                }
+            )?;
+
+            raw_variables.push(padding);
+
+            previous_value = new_value;
+        }
+    }
+
+    assert_eq!(raw_variables.len() % 4, 1, "variables len = {}", raw_variables.len());
+
+    let mut rows = raw_variables.chunks_exact(4);
+
+    let gate = TwoBitDecompositionRangecheckCustomGate::default();
+
+    for row in &mut rows {
+        let mut row = row.to_vec();
+        row.reverse();
+        cs.new_single_gate_for_trace_step(
+            &gate, 
+            &[], 
+            &row, 
+            &[]
+        )?;
+    }
+
+    let last = rows.remainder();
+    assert!(last.len() == 1);
+
+    let last = last[0];
+
+    let dummy = CS::get_dummy_variable();
+
+    // cause we touch D_Next place an empty gate to the next row
+
+    let (mut variables, coeffs) = CS::MainGate::format_term(MainGateTerm::new(), dummy)?;
+    *variables.last_mut().unwrap() = last;
+
+    cs.new_single_gate_for_trace_step(
+        &CS::MainGate::default(), 
+        &coeffs, 
+        &variables, 
+        &[]
+    )?;
+
+    RANGE_GATES_COUNTER.fetch_add(num_gates+1, Ordering::SeqCst);
+
+    Ok(result)
+}
+
+
+
+
 
 
 // enforces that this value is either `num_bits` long or a little longer 
@@ -306,7 +412,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable<E: Engine, CS: Con
 }
 
 
-pub fn alloc_from_biguint<CS: ConstraintSystem<E>>(
+pub fn enforce_range_check_using_bitop_table(cs, var, shift, num_bits)<CS: ConstraintSystem<E>>(
     cs: &mut CS,
     value: Option<BigUint>,
     alloc_full: bool

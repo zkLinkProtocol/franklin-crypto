@@ -1,27 +1,20 @@
 use super::*;
-use crate::plonk::circuit::boolean::Boolean;
+use crate::bellman::pairing::ff::{BitIterator, Field, PrimeField, PrimeFieldRepr};
+use crate::bellman::pairing::Engine;
 use crate::bellman::plonk::better_better_cs::cs::*;
 use crate::bellman::SynthesisError;
-use crate::bellman::pairing::Engine;
-use crate::bellman::pairing::ff::{
-    Field,
-    PrimeField,
-    PrimeFieldRepr,
-    BitIterator
-};
-use crate::plonk::circuit::linear_combination::{
-    LinearCombination
-};
+use crate::plonk::circuit::boolean::Boolean;
+use crate::plonk::circuit::linear_combination::LinearCombination;
 
 pub fn smart_or<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS,
-    bools: &[Boolean]
+    bools: &[Boolean],
 ) -> Result<Boolean, SynthesisError> {
     const LIMIT: usize = 6;
     if bools.len() == 0 {
-        return Ok(Boolean::constant(false))
+        return Ok(Boolean::constant(false));
     }
-    
+
     if bools.len() == 1 {
         return Ok(bools[0]);
     }
@@ -29,7 +22,7 @@ pub fn smart_or<E: Engine, CS: ConstraintSystem<E>>(
     if bools.len() == 2 {
         // 1 gate
         let result = Boolean::or(cs, &bools[0], &bools[1])?;
-        return Ok(result)
+        return Ok(result);
     }
 
     // 1 gate for 2,
@@ -41,7 +34,7 @@ pub fn smart_or<E: Engine, CS: ConstraintSystem<E>>(
         for b in bools[2..].iter() {
             result = Boolean::or(cs, &result, &b)?;
         }
-        return Ok(result)
+        return Ok(result);
     }
 
     // 1 gate for 3
@@ -64,10 +57,9 @@ pub fn smart_or<E: Engine, CS: ConstraintSystem<E>>(
     Ok(all_false.not())
 }
 
-
 pub fn smart_and<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS,
-    bools: &[Boolean]
+    bools: &[Boolean],
 ) -> Result<Boolean, SynthesisError> {
     const LIMIT: usize = 6;
     assert!(bools.len() > 0);
@@ -78,7 +70,7 @@ pub fn smart_and<E: Engine, CS: ConstraintSystem<E>>(
     if bools.len() == 2 {
         // 1 gate
         let result = Boolean::and(cs, &bools[0], &bools[1])?;
-        return Ok(result)
+        return Ok(result);
     }
 
     // 1 gate for 2,
@@ -90,7 +82,7 @@ pub fn smart_and<E: Engine, CS: ConstraintSystem<E>>(
         for b in bools[2..].iter() {
             result = Boolean::and(cs, &result, &b)?;
         }
-        return Ok(result)
+        return Ok(result);
     }
 
     // 1 gate for 3

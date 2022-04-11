@@ -71,11 +71,12 @@ pub fn split_some_into_slices<F: PrimeField>(
 pub enum RangeConstraintStrategy {
     NaiveSingleBit,
     CustomTwoBitGate,
-    WithBitwiseOpTable    
+    WithBitwiseOpTable(usize) // parameter here is the chunk width    
 }
 
 pub fn get_optimal_strategy<E: Engine, CS: ConstraintSystem<E>>(cs: &CS) -> RangeConstraintStrategy {
-    if let Ok(single) = cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME) {
+    if let Ok(table) = cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME) {
+        let width = crate::log2_floor(table.size())/2;
         return RangeConstraintStrategy::WithBitwiseOpTable;
     }  
     if CS::Params::STATE_WIDTH == 4 && CS::Params::HAS_CUSTOM_GATES {

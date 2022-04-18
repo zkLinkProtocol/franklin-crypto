@@ -477,8 +477,17 @@ impl<E: Engine> LookupTableInternal<E> for BooleanityTable<E> {
         values.iter().all(|x| check_booleanity(x))
     }
 
-    fn query(&self, _keys: &[E::Fr]) -> Result<Vec<E::Fr>, SynthesisError> {
-        Err(SynthesisError::Unsatisfiable)
+    fn query(&self, keys: &[E::Fr]) -> Result<Vec<E::Fr>, SynthesisError> {
+        assert!(keys.len() == self.num_keys());
+
+        for set in self.table_entries.iter() {
+            if &set[..] == keys {
+                return Ok(vec![])
+            }
+        }
+
+        panic!("Invalid input into table {}: {:?}", self.name(), keys);
+        // Err(SynthesisError::Unsatisfiable)
     }
 }
 

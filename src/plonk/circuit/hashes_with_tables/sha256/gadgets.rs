@@ -142,7 +142,7 @@ impl Add for OverflowTracker {
 }
 
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct NumWithTracker<E: Engine> {
     num: Num<E>,
     overflow_tracker: OverflowTracker,
@@ -189,6 +189,7 @@ pub struct SparseMajValue<E: Engine> {
     rot22: Num<E>,
 }
 
+#[derive(Clone, Copy)]
 pub struct Sha256Registers<E: Engine> {
     a : NumWithTracker<E>,
     b : NumWithTracker<E>,
@@ -245,8 +246,21 @@ pub struct Sha256Gadget<E: Engine> {
     round_constants: [E::Fr; 64],
 }
 
-
 impl<E: Engine> Sha256Gadget<E> {
+    pub fn iv() -> [E::Fr; 8] {
+        [ 
+            u64_to_ff(0x6a09e667), u64_to_ff(0xbb67ae85), u64_to_ff(0x3c6ef372), u64_to_ff(0xa54ff53a),
+            u64_to_ff(0x510e527f), u64_to_ff(0x9b05688c), u64_to_ff(0x1f83d9ab), u64_to_ff(0x5be0cd19),
+        ]
+    }
+
+    pub fn iv_as_nums() -> [Num<E>; 8] {
+        let iv = Self::iv();
+        use std::convert::TryInto;
+
+        iv.iter().map(|&el| Num::Constant(el)).collect::<Vec<_>>().try_into().unwrap()
+    }
+
     pub fn new<CS: ConstraintSystem<E>>(
         cs: &mut CS, 
         ch_base_num_of_chunks: Option<usize>,
@@ -266,91 +280,133 @@ impl<E: Engine> Sha256Gadget<E> {
             PolyIdentifier::VariablesPolynomial(2)
         ];
 
+        use plonk::circuit::hashes_with_tables::get_or_create_table;
+
         let name1: &'static str = "sha256_base7_rot6_table";
-        let sha256_base7_rot6_table = LookupTableApplication::new(
+        let sha256_base7_rot6_table = get_or_create_table(
+            cs,
             name1,
-            SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 6, 0, SHA256_CHOOSE_BASE, name1),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_base7_rot6_table = cs.add_table(sha256_base7_rot6_table)?;
+            || {
+                LookupTableApplication::new(
+                    name1,
+                    SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 6, 0, SHA256_CHOOSE_BASE, name1),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
 
         let name2 : &'static str = "sha256_base7_rot3_extr10_table";
-        let sha256_base7_rot3_extr10_table = LookupTableApplication::new(
+        let sha256_base7_rot3_extr10_table = get_or_create_table(
+            cs,
             name2,
-            SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 3, SHA256_GADGET_CHUNK_SIZE-1, SHA256_CHOOSE_BASE, name2),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_base7_rot3_extr10_table = cs.add_table(sha256_base7_rot3_extr10_table)?;
+            || {
+                LookupTableApplication::new(
+                    name2,
+                    SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 3, SHA256_GADGET_CHUNK_SIZE-1, SHA256_CHOOSE_BASE, name2),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
 
         let name3 : &'static str = "sha256_base4_rot2_table";
-        let sha256_base4_rot2_table = LookupTableApplication::new(
+        let sha256_base4_rot2_table = get_or_create_table(
+            cs,
             name3,
-            SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 2, 0, SHA256_MAJORITY_SHEDULER_BASE, name3),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_base4_rot2_table  = cs.add_table(sha256_base4_rot2_table)?;
+            || {
+                LookupTableApplication::new(
+                    name3,
+                    SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 2, 0, SHA256_MAJORITY_SHEDULER_BASE, name3),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
         
         let name4 : &'static str = "sha256_base4_rot2_width10_table";
-        let sha256_base4_rot2_width10_table = LookupTableApplication::new(
+        let sha256_base4_rot2_width10_table = get_or_create_table(
+            cs,
             name4,
-            SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE - 1, 2, 0, SHA256_MAJORITY_SHEDULER_BASE, name4),
-            columns3.clone(),
-            None,
-            true,
-        );
-        let sha256_base4_rot2_width10_table = cs.add_table(sha256_base4_rot2_width10_table)?;
+            || {
+                LookupTableApplication::new(
+                    name4,
+                    SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE - 1, 2, 0, SHA256_MAJORITY_SHEDULER_BASE, name4),
+                    columns3.clone(),
+                    None,
+                    true,
+                )
+            } 
+        )?;
 
         let xor_f = | x | { x & 1};
         let ch_f = | x | { ch_u64_normalizer(x) };
         let maj_f = | x | { maj_u64_normalizer(x) };
         
         let name5 : &'static str = "sha256_ch_normalization_table";
-        let sha256_ch_normalization_table = LookupTableApplication::new(
+        let sha256_ch_normalization_table = get_or_create_table(
+            cs,
             name5,
-            MultiBaseNormalizationTable::new(ch_num_of_chunks, SHA256_CHOOSE_BASE, BINARY_BASE, BINARY_BASE, ch_f, xor_f, name5),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_ch_normalization_table = cs.add_table(sha256_ch_normalization_table)?;
+            || {
+                LookupTableApplication::new(
+                    name5,
+                    MultiBaseNormalizationTable::new(ch_num_of_chunks, SHA256_CHOOSE_BASE, BINARY_BASE, BINARY_BASE, ch_f, xor_f, name5),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
 
         let name6 : &'static str = "sha256_maj_normalization_table";
-        let sha256_maj_sheduler_normalization_table = LookupTableApplication::new(
+        let sha256_maj_sheduler_normalization_table = get_or_create_table(
+            cs,
             name6,
-            MultiBaseNormalizationTable::new(
-                maj_and_sheduler_num_of_chunks, SHA256_MAJORITY_SHEDULER_BASE, BINARY_BASE, BINARY_BASE, maj_f, xor_f, name6
-            ),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_maj_sheduler_normalization_table = cs.add_table(sha256_maj_sheduler_normalization_table)?;
+            || {
+                LookupTableApplication::new(
+                    name6,
+                    MultiBaseNormalizationTable::new(
+                        maj_and_sheduler_num_of_chunks, SHA256_MAJORITY_SHEDULER_BASE, BINARY_BASE, BINARY_BASE, maj_f, xor_f, name6
+                    ),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
 
         let name7 : &'static str = "sha256_base4_rot7_table";
-        let sha256_base4_rot7_table = LookupTableApplication::new(
+        let sha256_base4_rot7_table = get_or_create_table(
+            cs,
             name7,
-            SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 7, 0, SHA256_MAJORITY_SHEDULER_BASE, name7),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_base4_rot7_table = cs.add_table(sha256_base4_rot7_table)?;
+            || {
+                LookupTableApplication::new(
+                    name7,
+                    SparseRotateTable::new(SHA256_GADGET_CHUNK_SIZE, 7, 0, SHA256_MAJORITY_SHEDULER_BASE, name7),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
         
         let name8 : &'static str = "sha256_sheduler_helper_table";
-        let sha256_sheduler_helper_table = LookupTableApplication::new(
+        let sha256_sheduler_helper_table = get_or_create_table(
+            cs,
             name8,
-            Sha256ShedulerHelperTable::new(name8),
-            columns3.clone(),
-            None,
-            true
-        );
-        let sha256_sheduler_helper_table = cs.add_table(sha256_sheduler_helper_table)?;
+            || {
+                LookupTableApplication::new(
+                    name8,
+                    Sha256ShedulerHelperTable::new(name8),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        )?;
     
         // Initialize IV values:
         // (first 32 bits of the fractional parts of the square roots of the first 8 primes 2..19):
@@ -1672,7 +1728,7 @@ impl<E: Engine> Sha256Gadget<E> {
 
     /// expects well formed and padded input, outputs 32 bit words
     /// Can be used when we perform something like sha256(truncate(sha256(a)), truncate(sha256(b)))
-    // to fit hashing of truncated outputs into the single round
+    /// to fit hashing of truncated outputs into the single round
     pub fn sha256<CS: ConstraintSystem<E>>(&self, cs: &mut CS, message: &[Num<E>]) -> Result<[Num<E>; 8]>
     {    
         // we assume that input is already well-padded
@@ -1689,7 +1745,6 @@ impl<E: Engine> Sha256Gadget<E> {
             h: Num::Constant(self.iv[7].clone()).into(),
         };
 
-
         for block in message.chunks(16) {
             let expanded_block = self.message_expansion(cs, block)?;
             regs = self.sha256_inner_block(cs, regs, &expanded_block[..], &self.round_constants)?;
@@ -1704,6 +1759,58 @@ impl<E: Engine> Sha256Gadget<E> {
             self.extact_32_bits_from_tracked_num(cs, regs.f)?,
             self.extact_32_bits_from_tracked_num(cs, regs.g)?,
             self.extact_32_bits_from_tracked_num(cs, regs.h)?,
+        ];
+
+        Ok(res)
+    }
+
+    pub fn empty_state() -> Sha256Registers<E> {
+        let iv = Self::iv();
+        let regs = Sha256Registers {
+            a: Num::Constant(iv[0].clone()).into(),
+            b: Num::Constant(iv[1].clone()).into(),
+            c: Num::Constant(iv[2].clone()).into(),
+            d: Num::Constant(iv[3].clone()).into(),
+            e: Num::Constant(iv[4].clone()).into(),
+            f: Num::Constant(iv[5].clone()).into(),
+            g: Num::Constant(iv[6].clone()).into(),
+            h: Num::Constant(iv[7].clone()).into(),
+        };
+
+        regs
+    }
+
+    pub fn empty_state_as_nums() -> [Num<E>; 8] {
+        Self::iv_as_nums()
+    }
+
+    /// expects inner state as 8 32-bit words and input as 16 32-bit words, and outputs and updated state
+    pub fn sha256_round_function<CS: ConstraintSystem<E>>(&self, cs: &mut CS, inner_state: [Num<E>; 8], round_input: &[Num<E>; 16]) -> Result<[Num<E>; 8]>
+    {            
+
+        let state = Sha256Registers {
+            a: inner_state[0].into(),
+            b: inner_state[1].into(),
+            c: inner_state[2].into(),
+            d: inner_state[3].into(),
+            e: inner_state[4].into(),
+            f: inner_state[5].into(),
+            g: inner_state[6].into(),
+            h: inner_state[7].into(),
+        };
+    
+        let expanded_block = self.message_expansion(cs, round_input)?;
+        let state = self.sha256_inner_block(cs, state, &expanded_block[..], &self.round_constants)?;
+
+        let res = [
+            self.extact_32_bits_from_tracked_num(cs, state.a)?,
+            self.extact_32_bits_from_tracked_num(cs, state.b)?,
+            self.extact_32_bits_from_tracked_num(cs, state.c)?,
+            self.extact_32_bits_from_tracked_num(cs, state.d)?,
+            self.extact_32_bits_from_tracked_num(cs, state.e)?,
+            self.extact_32_bits_from_tracked_num(cs, state.f)?,
+            self.extact_32_bits_from_tracked_num(cs, state.g)?,
+            self.extact_32_bits_from_tracked_num(cs, state.h)?,
         ];
 
         Ok(res)

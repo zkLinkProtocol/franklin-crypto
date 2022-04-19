@@ -83,7 +83,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable<E: Engine, CS: Con
     to_constraint: &AllocatedNum<E>, 
     shift: E::Fr,
     num_bits: usize
-) -> Result<(), SynthesisError> {
+) -> Result<Vec<Num<E>>, SynthesisError> {
     // we ensure that var * shift <= N bits
     let strategies = get_range_constraint_info(&*cs);
     assert_eq!(CS::Params::STATE_WIDTH, 4);
@@ -98,12 +98,14 @@ pub fn enforce_using_single_column_table_for_shifted_variable<E: Engine, CS: Con
     assert_eq!(width_per_gate, minimal_per_gate);
 
     if num_bits <= width_per_gate {
-        return enforce_shorter_range_into_single_gate_for_shifted_variable(
+        let chunk = enforce_shorter_range_into_single_gate_for_shifted_variable(
             cs,
             to_constraint,
             shift,
             num_bits
-        );
+        )?;
+
+        return Ok(vec![chunk])
     }
 
     increment_invocation_count();
@@ -150,6 +152,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable<E: Engine, CS: Con
     let mut cur_value = to_constraint.clone();
     let mut coeffs = [minus_one, E::Fr::zero(), E::Fr::zero(), shift];
 
+    let mut chunks = vec![];
     while let Some(slice_fr) = it.next() {
         let d_next_coef = if it.peek().is_some() {
             table_width_shift_negated
@@ -158,7 +161,8 @@ pub fn enforce_using_single_column_table_for_shifted_variable<E: Engine, CS: Con
         };
 
         let slice = AllocatedNum::alloc(cs, || slice_fr.grab())?;
-        let vars = [slice.get_variable(), dummy_var, dummy_var, cur_value.get_variable()];  
+        let vars = [slice.get_variable(), dummy_var, dummy_var, cur_value.get_variable()];
+        chunks.push(Num::Variable(slice));
 
         cs.begin_gates_batch_for_step()?;
         cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
@@ -197,7 +201,8 @@ pub fn enforce_using_single_column_table_for_shifted_variable<E: Engine, CS: Con
     }
       
     increment_total_gates_count(num_gates_for_coarse_constraint + (remainder_bits != 0) as usize);
-    Ok(())
+
+    Ok(chunks)
 }
 
 // enforces that this value is either `num_bits` long or a little longer 
@@ -207,7 +212,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized<E: Engin
     to_constraint: &AllocatedNum<E>, 
     shift: E::Fr,
     num_bits: usize
-) -> Result<(), SynthesisError> {
+) -> Result<Vec<Num<E>>, SynthesisError> {
     // we ensure that var * shift <= N bits
     let strategies = get_range_constraint_info(&*cs);
     assert_eq!(CS::Params::STATE_WIDTH, 4);
@@ -222,12 +227,14 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized<E: Engin
     assert_eq!(width_per_gate, minimal_per_gate);
 
     if num_bits <= width_per_gate {
-        return enforce_shorter_range_into_single_gate_for_shifted_variable(
+        let short_enforced = enforce_shorter_range_into_single_gate_for_shifted_variable(
             cs,
             to_constraint,
             shift,
             num_bits
-        );
+        )?;
+
+        return Ok(vec![short_enforced]);
     }
 
     // now check if we can further shift the variable to make it multiple or if it's already a multiple
@@ -295,6 +302,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized<E: Engin
 
     let table = cs.get_table(RANGE_CHECK_SINGLE_APPLICATION_TABLE_NAME)?;
 
+    let mut chunks = vec![];
     for full_gate_idx in 0..num_gates_for_coarse_constraint {
         let is_last = full_gate_idx == num_gates_for_coarse_constraint - 1;
         if next_step_value.is_none() {
@@ -306,6 +314,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized<E: Engin
         let chunk_allocated = AllocatedNum::alloc(cs, || {
             Ok(*value.get()?)
         })?;
+        chunks.push(Num::Variable(chunk_allocated));
         last_allocated_var = Some(chunk_allocated.clone());
         let scaled = value.mul(&Some(current_term_coeff));
         next_step_value = next_step_value.add(&scaled);
@@ -363,27 +372,28 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized<E: Engin
     if remainder_bits != 0 {
         // constraint the last segment
         let to_constraint = last_allocated_var.unwrap();
-        enforce_shorter_range_into_single_gate(
+        let short_enforced = enforce_shorter_range_into_single_gate(
             cs,
             &to_constraint,
             remainder_bits
         )?;
+
+        chunks.push(short_enforced);
     }
 
     increment_total_gates_count(num_gates_for_coarse_constraint + (remainder_bits != 0) as usize);
     
-    Ok(())
+    Ok(chunks)
 }
 
 
-// enforces that this value is either `num_bits` long or a little longer 
-// up to a single range constraint width from the table
+/// enforces that variable is range checked and bit width is a multiple of the table
 pub fn enforce_using_single_column_table_for_shifted_variable_optimized_for_multiple_of_table<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, 
     to_constraint: &AllocatedNum<E>, 
     shift: E::Fr,
     num_bits: usize
-) -> Result<(), SynthesisError> {
+) -> Result<Vec<Num<E>>, SynthesisError> {
     // we ensure that var * shift <= N bits
     let strategies = get_range_constraint_info(&*cs);
     assert_eq!(CS::Params::STATE_WIDTH, 4);
@@ -398,13 +408,16 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized_for_mult
     assert_eq!(width_per_gate, minimal_per_gate);
 
     if num_bits <= width_per_gate {
-        return enforce_shorter_range_into_single_gate_for_shifted_variable(
-            cs,
-            to_constraint,
-            shift,
-            num_bits
-        );
+        unreachable!("should be caught by other functions");
+        // return enforce_shorter_range_into_single_gate_for_shifted_variable(
+        //     cs,
+        //     to_constraint,
+        //     shift,
+        //     num_bits
+        // );
     }
+
+    assert!(num_bits % width_per_gate == 0);
 
     increment_invocation_count();
 
@@ -412,6 +425,8 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized_for_mult
     // - place initial variable into -d (or shift initial variable)
     // - make it a * 2^k + d - d_next = 0, this zeroes particular bit ranges
     // - range constraint that a has width W
+
+    let mut chunks = vec![];
 
     let explicit_zero_var = cs.get_explicit_zero()?;
     let dummy_var = CS::get_dummy_variable();
@@ -458,6 +473,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized_for_mult
         let chunk_allocated = AllocatedNum::alloc(cs, || {
             Ok(*value.get()?)
         })?;
+        chunks.push(Num::Variable(chunk_allocated));
         let scaled = value.mul(&Some(current_term_coeff));
         next_step_value = next_step_value.add(&scaled);
 
@@ -508,7 +524,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized_for_mult
 
     increment_total_gates_count(num_gates_for_coarse_constraint + (remainder_bits != 0) as usize);
     
-    Ok(())
+    Ok(chunks)
 }
 
 // enforces that this value is either `num_bits` long or a little longer 
@@ -517,7 +533,7 @@ pub fn enforce_using_single_column_table<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, 
     to_constraint: &AllocatedNum<E>, 
     num_bits: usize
-) -> Result<(), SynthesisError> {
+) -> Result<Vec<Num<E>>, SynthesisError> {
     enforce_using_single_column_table_for_shifted_variable(
         cs,
         to_constraint,
@@ -532,7 +548,7 @@ pub fn enforce_using_single_column_table_optimized<E: Engine, CS: ConstraintSyst
     cs: &mut CS, 
     to_constraint: &AllocatedNum<E>, 
     num_bits: usize
-) -> Result<(), SynthesisError> {
+) -> Result<Vec<Num<E>>, SynthesisError> {
     enforce_using_single_column_table_for_shifted_variable_optimized(
         cs,
         to_constraint,
@@ -548,7 +564,7 @@ fn enforce_shorter_range_into_single_gate_for_shifted_variable<E: Engine, CS: Co
     to_constraint: &AllocatedNum<E>, 
     shift: E::Fr,
     num_bits: usize
-) -> Result<(), SynthesisError> {
+) -> Result<Num<E>, SynthesisError> {
     // var * shift <= num bits
     increment_invocation_count();
     increment_short_checks_count();
@@ -609,7 +625,7 @@ fn enforce_shorter_range_into_single_gate_for_shifted_variable<E: Engine, CS: Co
 
     cs.end_gates_batch_for_step()?;
     
-    Ok(())
+    Ok(Num::Variable(*to_constraint))
 }
 
 
@@ -618,7 +634,7 @@ fn enforce_shorter_range_into_single_gate<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, 
     to_constraint: &AllocatedNum<E>, 
     num_bits: usize
-) -> Result<(), SynthesisError> {
+) -> Result<Num<E>, SynthesisError> {
     enforce_shorter_range_into_single_gate_for_shifted_variable(
         cs,
         to_constraint,
@@ -635,7 +651,7 @@ fn enforce_range_into_single_gate_for_shifted_variable<E: Engine, CS: Constraint
     to_constraint: &AllocatedNum<E>, 
     shift: E::Fr,
     num_bits: usize
-) -> Result<(), SynthesisError> {
+) -> Result<Num<E>, SynthesisError> {
     let strategies = get_range_constraint_info(&*cs);
     assert_eq!(CS::Params::STATE_WIDTH, 4);
     assert!(strategies.len() > 0);

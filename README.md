@@ -1,6 +1,6 @@
-# franklin-crypto: "Community edition" of the sapling-crypto gadget library
+# franklin-crypto: Gadget library for PLONK/Plookup
 
-This repository contains an original implementation of Zcash's "Sapling" cryptography with extensions from us for Ethereum curves and some sugar functions.
+This repository contains only the gadgets for PLONK proofs system (to be used together with `dev` branch of our Bellman repo) including embedded curve/EcDSA support, RNS based field math, non-algebraic hashes via lookup tables, and base primitives.
 
 ## Security Warnings
 

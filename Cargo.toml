@@ -40,6 +40,7 @@ blake2-rfc_bellman_edition = "0.0.1"
 
 blake2s_simd = { version = "0.5" }
 hex = "0.4"
+arr_macro = { version = "0.1" }
 
 
 [dev-dependencies]

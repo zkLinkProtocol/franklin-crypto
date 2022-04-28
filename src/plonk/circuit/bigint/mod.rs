@@ -74,15 +74,38 @@ pub enum RangeConstraintStrategy {
     WithBitwiseOpTable(usize) // parameter here is the chunk width    
 }
 
+impl RangeConstraintStrategy {
+    pub fn get_range_check_granularity(&self) -> usize {
+        match self {
+            RangeConstraintStrategy::NaiveSingleBit => 1,
+            RangeConstraintStrategy::CustomTwoBitGate => 2,
+            RangeConstraintStrategy::WithBitwiseOpTable(n) => *n,
+        }
+    } 
+}
+
 pub fn get_optimal_strategy<E: Engine, CS: ConstraintSystem<E>>(cs: &CS) -> RangeConstraintStrategy {
     if let Ok(table) = cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME) {
         let width = crate::log2_floor(table.size())/2;
-        return RangeConstraintStrategy::WithBitwiseOpTable;
+        return RangeConstraintStrategy::WithBitwiseOpTable(width as usize);
     }  
     if CS::Params::STATE_WIDTH == 4 && CS::Params::HAS_CUSTOM_GATES {
         return RangeConstraintStrategy::CustomTwoBitGate
     }
     RangeConstraintStrategy::NaiveSingleBit
+}
+
+
+pub(crate) fn compute_shifts<F: PrimeField>() -> Vec<F> {
+    let mut result = Vec::with_capacity(F::CAPACITY as usize);
+    let mut el = F::one();
+    result.push(el);
+    for _ in 1..F::CAPACITY {
+        el.double();
+        result.push(el);
+    }
+
+    result
 }
 
 

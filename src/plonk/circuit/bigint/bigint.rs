@@ -2,16 +2,10 @@ use crate::bellman::pairing::Engine;
 use crate::bellman::pairing::ff::{Field, PrimeField, PrimeFieldRepr, BitIterator};
 use crate::bellman::SynthesisError;
 use crate::bellman::plonk::better_better_cs::cs::ConstraintSystem;
-//     Variable, ConstraintSystem, ArithmeticTerm, MainGateTerm, Width4MainGateWithDNext, MainGate, GateInternal, Gate, 
-//     LinearCombinationOfTerms, PolynomialMultiplicativeTerm, PolynomialInConstraint, TimeDilation, Coefficient,
-//     PlonkConstraintSystemParams
-// };
 use num_bigint::BigUint;
 use super::super::allocated_num::{AllocatedNum, Num};
 use super::super::linear_combination::LinearCombination;
 use super::super::simple_term::Term;
-
-
 
 
 pub fn repr_to_biguint<F: PrimeField>(repr: &F::Repr) -> BigUint {
@@ -20,7 +14,6 @@ pub fn repr_to_biguint<F: PrimeField>(repr: &F::Repr) -> BigUint {
         b <<= 64;
         b += BigUint::from(limb)
     }
-
     b
 }
 
@@ -134,7 +127,10 @@ pub fn split_into_fixed_width_limbs(mut fe: BigUint, bits_per_limb: usize) -> Ve
 }
 
 #[track_caller]
-pub fn split_some_into_fixed_number_of_limbs(fe: Option<BigUint>, bits_per_limb: usize, num_limbs: usize) -> Vec<Option<BigUint>> {
+pub fn split_some_into_fixed_number_of_limbs(
+    fe: Option<BigUint>, bits_per_limb: usize, num_limbs: usize
+) -> Vec<Option<BigUint>> 
+{
     if let Some(fe) = fe {
         let mut fe = fe;
         assert!(fe.bits() as usize <= bits_per_limb * num_limbs);
@@ -167,66 +163,4 @@ pub fn split_into_fixed_number_of_limbs(mut fe: BigUint, bits_per_limb: usize, n
     }
 
     limbs
-}
-
-#[track_caller]
-pub fn split_some_into_limbs_of_variable_width(fe: Option<BigUint>, bits_per_limb: &[usize]) -> Vec<Option<BigUint>> {
-    if let Some(fe) = fe {
-        let mut fe = fe;
-        let full_width = bits_per_limb.iter().sum();
-        assert!(fe.bits() as usize <= full_width, "can fit {} bits maximum, but got {}", full_width, fe.bits());
-        let mut limbs = Vec::with_capacity(bits_per_limb.len());
-
-        for &width in bits_per_limb.iter() {
-            let modulus = BigUint::from(1u64) << width;
-            let limb = fe.clone() % &modulus;
-            limbs.push(Some(limb));
-            fe >>= width;
-        }
-
-        limbs
-    } else {
-        vec![None; bits_per_limb.len()]
-    }
-}
-
-pub fn slice_into_limbs_of_max_size(value: Option<BigUint>, max_width: usize, limb_width: usize) -> (Vec<Option<BigUint>>, Vec<usize>) {
-    let mut limb_sizes = vec![];
-    let mut tmp = max_width;
-    loop {
-        if tmp > limb_width {
-            tmp -= limb_width;
-            limb_sizes.push(limb_width);
-        } else {
-            limb_sizes.push(tmp);
-            break;
-        }
-    }
-
-    let mask = BigUint::from(1u64) << limb_width;
-
-    let limb_values = if let Some(value) = value {
-        let mut values = Vec::with_capacity(limb_sizes.len());
-        let mut tmp = value.clone();
-        for _ in 0..limb_sizes.len() {
-            let value = tmp.clone() % &mask;
-            values.push(Some(value));
-            tmp >>= limb_width;
-        }
-
-        values
-    } else {
-        vec![None; limb_sizes.len()]
-    };
-
-    (limb_values, limb_sizes)
-}
-
-pub(crate) fn make_multiple(mut value: usize, multiple_of: usize) -> usize {
-    let remainder = value % multiple_of;
-    if remainder != 0 {
-        value += multiple_of - remainder;
-    }
-
-    value
 }

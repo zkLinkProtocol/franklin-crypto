@@ -19,6 +19,9 @@ extern crate blake2;
 #[macro_use]
 extern crate lazy_static;
 
+#[macro_use]
+extern crate arr_macro;
+
 #[cfg(test)]
 #[macro_use]
 extern crate hex_literal;

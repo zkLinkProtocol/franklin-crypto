@@ -7,6 +7,7 @@ use super::linear_combination::*;
 use super::boolean::Boolean;
 use super::utils::*;
 use crate::plonk::circuit::Assignment;
+use crate::plonk::circuit::bigint::constraint_num_bits;
 
 use crate::bellman::plonk::better_better_cs::cs::{
     Variable, 
@@ -65,7 +66,7 @@ impl<E: Engine> Byte<E> {
             }
         )?;
         let num = Num::Variable(var);
-        constraint_num_bits(cs, &num, 8)?;
+        constraint_num_bits(cs, &var, 8)?;
 
         Ok(
             Self {
@@ -86,8 +87,11 @@ impl<E: Engine> Byte<E> {
     }
 
     pub fn from_num<CS: ConstraintSystem<E>>(cs: &mut CS, value: Num<E>) -> Result<Self, SynthesisError> {
-        constraint_num_bits(cs, &value, 8)?;
-        
+        if value.is_constant() {
+            let var = value.get_variable();
+            constraint_num_bits(cs, &var, 8)?;
+        }
+       
         Ok(
             Self {
                 inner: value

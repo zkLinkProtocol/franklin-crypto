@@ -155,6 +155,26 @@ impl<E: Engine> Num<E> {
         }
     }
 
+    pub fn from_boolean_is(boolean: Boolean) -> Self {
+        match boolean {
+            Boolean::Is(_) => {
+                let allocated_num = AllocatedNum::from_boolean_is(boolean);
+
+                Num::Variable(allocated_num)
+            },
+            Boolean::Constant(constant_value) => {
+                if constant_value {
+                    Num::Constant(E::Fr::one())
+                } else {
+                    Num::Constant(E::Fr::zero())
+                }
+            },
+            _ => {
+                panic!("Can not boolean NOT")
+            }
+        }
+    }
+
     #[track_caller]
     pub fn enforce_equal<CS: ConstraintSystem<E>>(
         &self,
@@ -1278,7 +1298,7 @@ impl<E: Engine> AllocatedNum<E> {
                 }
             },
             _ => {
-                panic!("Can not convert boolean constant or boolean NOT")
+                panic!("Can not boolean NOT")
             }
         }
     }

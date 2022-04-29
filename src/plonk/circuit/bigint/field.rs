@@ -129,6 +129,10 @@ impl<E: Engine> Limb<E> {
         some_fe_to_biguint(&self.term.get_value())
     }
 
+    pub fn get_value(&self) -> Option<E::Fr> {
+        self.term.get_value()
+    }
+
     pub fn zero() -> Self {
         Limb::<E> {
             term: Term::<E>::zero(),
@@ -226,6 +230,53 @@ pub fn slice_into_limbs_non_exact(
     let limbs = split_some_into_fixed_number_of_limbs(value, limb_width, num_limbs);
     
     (limbs, highest_limb_bit_width, most_significant_limb_max_value)
+}
+
+
+// given previous overflow prev_of and current unreduced_limb computes the reduction of the limb 
+// and the next propagated overflow, i.e:
+// old_of + unreduced_limb = reduced_limb + new_of, 
+// where reduced limb bitlength should be in range [min_limb_width, max_limb_width] and shift = 1 << limb_width
+// Roughly, the algorithm is the following:
+//      1) calculate the bitlen l of maximal stored value in x = old_of + unreduced_limb
+//      2) if l is already in range [min_limb_width, max_limb_width] then no further reduction is needed and new_of = 0
+//      3) otherwise, split x as [ x_high | x_low ] where x_low is min_limb_width (the reasoning is the following: 
+//         if we have to split x in any case, why not to aim for the reduced_value to have bitlength closer to 
+//         minimal bound?)
+#[track_caller]
+fn propagate_of<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, unreduced_limb: &Limb<E>, prev_of: &Limb<E>, min_limb_width: usize, max_limb_width: usize, shift: E::Fr
+) -> Result<(Limb<E>, Limb<E>), SynthesisError> {
+    debug_assert_eq!(BigUint::one() << min_limb_width, fe_to_biguint(shift));
+    
+    let reduced_val_estimate = BigUint::one() << min_limb_width - 1;
+    let max_val = unreduced_limb.max_value() + prev_of.max_value();
+    let max_val_bitlength = max_val.bits();
+    let (reduced_limb_max_val, new_of_max_val, should_reduce) = if max_val_bitlength <= max_limb_width {
+        (max_val_bitlength, BigUint::zero(), true)
+    } else {
+        (reduced_val_estimate, max_val - reduced_val_estimate, false)
+    };
+
+    let unreduced_limb_wit = unreduced_limb.get_value_as_biguint();
+    let prev_of_wit = prev_of.get_value_as_biguint();
+    let (reduced_limb_witness, new_of_witness) = match (unreduced_limb_wit, prev_of_wit) {
+        (Some(x), Some(of)) => {
+            let tmp = unreduced_limb_wit + prev_of_wit;
+            tmp.add_assign(&x);
+
+        }
+    }
+    unreduced_limb.get_value().map(|x| {
+        let mut tmp  = x;
+        let c = result.clone() % (BigUint::from(1u64) << 256);
+        use num_traits::identities::Zero;
+        let of = !((result >> 256u32).is_zero());
+        (Some(c), Some(of))
+
+    });
+    let new_of_witness = ;
+
 }
 
 
@@ -482,7 +533,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     pub fn is_zero<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<(Boolean, Self), SynthesisError> 
     {
         let params = self.representation_params.clone();
-        let mut x = self.reduce_if_necessary(cs)?;
+        let mut x = self.reduce_strict(cs)?;
        
         // after reduction the value of x is in interval [0; 2*F) and all limbs occupy exactly limb_width bits
         // (i.e. capacity bits are not involved)
@@ -516,17 +567,29 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok((is_zero, x))
     }
 
-    // we call value to be reduced if it's value fits in [0, 2 * F::char) range and all binary limbs
-    // do not overflow (i.e. do not exploit additionally capacity bits)
-    fn needs_reduction(&self) -> bool {
+    // we call value to be reduced if all binary limbs do not overflow, where the precise meaning of "overflow" 
+    // depends on is_strict flag: if it is set than all binary bits should not explot capacity bits and additionally
+    // total value should fit in [0, 2 * F::char) range 
+    // if strict_flag is false than all binary fields may occupy full limb_capacity and there are no additional
+    // restrictions on total value
+    fn needs_reduction(&self, is_strict: bool) -> bool {
         if self.is_constant() {
             return false;
         }
 
-        let max_value = self.get_maximal_possible_stored_value();
-        let mut needs_reduction = max_value > self.representation_params.represented_field_modulus;
+        let mut needs_reduction = if is_strict {
+            let max_value = self.get_maximal_possible_stored_value() * 2u64;
+            max_value > self.representation_params.represented_field_modulus
+        } else {
+            false
+        };
 
-        let limb_max_value = self.representation_params.limb_max_value_on_alloc.clone();
+        let limb_max_value = if is_strict {
+            self.representation_params.limb_max_value_on_alloc.clone()
+        } else {
+            self.representation_params.limb_max_value.clone()
+        };
+
         for binary_limb in self.binary_limbs.iter() {
             needs_reduction = needs_reduction || (binary_limb.max_value() > limb_max_value);
         }
@@ -535,307 +598,287 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     }
 
     #[track_caller]
-    pub fn reduce_if_necessary<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        if self.is_constant() {
-            return Ok(self);
+    pub fn reduce_strict<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        if self.needs_reduction(true) {
+            return self.reduction_impl(cs, true);
         }
-        // if self.needs_reduction() {
-        //     return self.reduction_impl(cs);
-        // }
-
         Ok(self)
     }
 
-//     #[track_caller]
-//     fn reduction_impl<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<Self, SynthesisError> {
-//         let params = self.representation_params;
-//         let mut binary_limbs_allocated = Vec::with_capacity(params.num_binary_limbs);
-//         let shift_constant = params.shift_left_by_limb_constant;
-//         let mut of = Num::zero();
+    #[track_caller]
+    pub fn reduce_loose<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        if self.needs_reduction(false) {
+            return self.reduction_impl(cs, false);
+        }
+        Ok(self)
+    }
+
+    #[track_caller]
+    fn reduction_impl<CS: ConstraintSystem<E>>(self, cs: &mut CS, is_strict: bool) -> Result<Self, SynthesisError> {
+        let params = self.representation_params;
+        let mut binary_limbs_allocated = Vec::with_capacity(params.num_binary_limbs);
+        let shift_constant = params.shift_left_by_limb_constant;
+        let reduced_limb_width
+
+        let mut of = Limb::zero();
+        let 
         
-//         for limb in self.binary_limbs.iter() {
-//             // 
-//         }
+        for unreduced_limb in self.binary_limbs.iter() {
+            // 
+           
+
+            let (reduced_limb, new_of ) = if unreduced_limb.is_constant() && of.is_constant() {} 
+        }
             
-//         for (_is_first, is_last, value) in limb_values.into_iter().identify_first_last() 
-//         {
-//             let value_as_fe = some_biguint_to_fe::<E::Fr>(&value);
-//             let a = AllocatedNum::alloc(
-//                 cs, 
-//                 || {
-//                     Ok(*value_as_fe.get()?)
-//                 }
-//             )?;
-
-//             let max_value = if is_last { most_significant_limb_max_val } else { params.limb_max_value_on_alloc.clone() };
-//             let bitlength = if is_last { most_significant_limb_width } else { params.binary_limb_width };
-//             let decomposition = constraint_num_bits_ext_with_strategy(cs, &a, bitlength, params.range_check_strategy)?; 
-//             decompositions.push(decomposition);
+        for (_is_first, is_last, value) in limb_values.into_iter().identify_first_last() 
+        {
+            let value_as_fe = some_biguint_to_fe::<E::Fr>(&value);
+            let a = AllocatedNum::alloc(
+                cs, 
+                || {
+                    Ok(*value_as_fe.get()?)
+                }
+            )?;
+
+            let max_value = if is_last { most_significant_limb_max_val } else { params.limb_max_value_on_alloc.clone() };
+            let bitlength = if is_last { most_significant_limb_width } else { params.binary_limb_width };
+            let decomposition = constraint_num_bits_ext_with_strategy(cs, &a, bitlength, params.range_check_strategy)?; 
+            decompositions.push(decomposition);
+
+            let term = Term::<E>::from_allocated_num(a.clone());
+            let limb = Limb::<E>::new(term, max_value);
+
+            binary_limbs_allocated.push(limb);
+
+            base_field_lc.add_assign_variable_with_coeff(&a, current_constant);
+            current_constant.mul_assign(&shift_constant);
+        }
+        binary_limbs_allocated.resize(params.num_binary_limbs, Self::zero_limb());
+    }
+
+    #[track_caller]
+    pub fn add<CS: ConstraintSystem<E>>(self, cs: &mut CS, other: Self) -> Result<Self, SynthesisError> {
+        let params = self.representation_params;
+        // perform addition without reduction, so it will eventually be reduced later on
+
+        let mut new_binary_limbs = vec![];
+        for (l, r) in self.binary_limbs.iter().zip(other.binary_limbs.iter()) 
+        {
+            let new_term = l.term.add(cs, &r.term)?;
+            let new_max_value = l.max_value.clone() + &r.max_value;
+            let limb = Limb::<E>::new(new_term, new_max_value);
+            new_binary_limbs.push(limb);
+        }
+        let new_base_limb = self.base_field_limb.add(cs, &other.base_field_limb)?;
+        let new_value = self.get_field_value().add(&other.get_field_value());
+
+        let new = Self {
+            binary_limbs: new_binary_limbs,
+            base_field_limb: new_base_limb,
+            value: new_value,
+            representation_params: params
+        };
+        new.reduce_loose(cs)
+    }
 
-//             let term = Term::<E>::from_allocated_num(a.clone());
-//             let limb = Limb::<E>::new(term, max_value);
-
-//             binary_limbs_allocated.push(limb);
+    pub fn double<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        let params = self.representation_params;
+        let mut two = E::Fr::one();
+        two.double();
 
-//             base_field_lc.add_assign_variable_with_coeff(&a, current_constant);
-//             current_constant.mul_assign(&shift_constant);
-//         }
-//         binary_limbs_allocated.resize(params.num_binary_limbs, Self::zero_limb());
+        let mut new_binary_limbs = vec![];
+        for l in self.binary_limbs.iter()
+        {
+            let mut new_term = l.term.clone();
+            new_term.scale(&two);
+            let new_max_value = l.max_value.clone() * BigUint::from(2u64);
+
+            let limb = Limb::<E>::new(new_term, new_max_value);
+            new_binary_limbs.push(limb);
+        }
+        let mut new_base_limb = self.base_field_limb.clone();
+        new_base_limb.scale(&two);
+        let new_value = self.get_field_value().add(&self.get_field_value());
+
+        let new = Self {
+            binary_limbs: new_binary_limbs,
+            base_field_limb: new_base_limb,
+            value: new_value,
+            representation_params: params
+        };
+        new.reduce_loose(cs)
+    }
+
+    pub fn sub<CS: ConstraintSystem<E>>(self, cs: &mut CS, other: Self) -> Result<Self, SynthesisError> {
+        let params = self.representation_params;
+
+        // subtraction is a little more involved
 
-//     }
+        // first do the constrant propagation
+        if self.is_constant() && other.is_constant() {
+            let tmp = self.get_field_value().sub(&other.get_field_value());
+
+            let new = Self::new_constant(tmp.unwrap(), params);
+
+            return Ok((new, (self, other)));
+        }
+
+        if other.is_constant() {
+            let tmp = other.get_field_value().negate();
+
+            let other_negated = Self::new_constant(tmp.unwrap(), params);
+
+            // do the constant propagation in addition
+
+            let (result, (this, _)) = self.add(cs, other_negated)?;
 
-//     pub fn add<CS: ConstraintSystem<E>>(
-//         self,
-//         cs: &mut CS,
-//         other: Self
-//     ) -> Result<(Self, (Self, Self)), SynthesisError> {
-//         let params = self.representation_params;
+            return Ok((result, (this, other)));
+        }
 
-//         let this = self.reduce_if_necessary(cs)?;
-//         let other = other.reduce_if_necessary(cs)?;
+        let this = self.reduce_if_necessary(cs)?;
+        let other = other.reduce_if_necessary(cs)?;
 
-//         // perform addition without reduction, so it will eventually be reduced later on
+        // keep track for potential borrows and subtract binary limbs
 
-//         let mut new_binary_limbs = vec![];
+        // construct data on from what positions we would borrow
 
-//         for (l, r) in this.binary_limbs.iter()
-//                         .zip(other.binary_limbs.iter()) 
-//         {
-//             let new_term = l.term.add(cs, &r.term)?;
-//             let new_max_value = l.max_value.clone() + &r.max_value;
+        let mut borrow_max_values = vec![];
+        let mut borrow_bit_widths = vec![];
 
-//             let limb = Limb::<E>::new(new_term, new_max_value);
-//             new_binary_limbs.push(limb);
-//         }
+        let mut previous = None;
 
-//         let new_base_limb = this.base_field_limb.add(cs, &other.base_field_limb)?;
+        // let mut max_subtracted = BigUint::from(0u64);
 
-//         let new_value = this.get_field_value().add(&other.get_field_value());
+        for l in other.binary_limbs.iter() {
+            let mut max_value = l.max_value();
+            if let Some(previous_shift) = previous.take() {
+                max_value += BigUint::from(1u64) << (previous_shift - params.binary_limbs_params.limb_size_bits);
+            }
 
-//         let new = Self {
-//             binary_limbs: new_binary_limbs,
-//             base_field_limb: new_base_limb,
-//             value: new_value,
-//             representation_params: params
-//         };
+            let borrow_bits = std::cmp::max(params.binary_limbs_params.limb_size_bits, (max_value.bits() as usize) + 1);
 
-//         Ok((new, (this, other)))
-//     }
+            borrow_max_values.push(max_value);
+            borrow_bit_widths.push(borrow_bits);
 
-//     pub fn double<CS: ConstraintSystem<E>>(
-//         self,
-//         cs: &mut CS,
-//     ) -> Result<(Self, Self), SynthesisError> {
-//         let params = self.representation_params;
+            previous = Some(borrow_bits);
+        }
 
-//         let this = self.reduce_if_necessary(cs)?;
+        // now we can determine how many moduluses of the represented field 
+        // we have to add to never underflow
 
-//         // perform addition without reduction, so it will eventually be reduced later on
+        let shift = params.binary_limbs_params.limb_size_bits * (params.num_binary_limbs - 1);
 
-//         let mut two = E::Fr::one();
-//         two.double();
+        let mut multiples_to_add_at_least = borrow_max_values.last().unwrap().clone() << shift;
+        multiples_to_add_at_least = multiples_to_add_at_least / &params.represented_field_modulus;
 
-//         let mut new_binary_limbs = vec![];
+        let mut multiples = multiples_to_add_at_least * &params.represented_field_modulus;
 
-//         for l in this.binary_limbs.iter()
-//         {
-//             let mut new_term = l.term.clone();
-//             new_term.scale(&two);
-//             let new_max_value = l.max_value.clone() * BigUint::from(2u64);
+        let mut loop_limit = 100;
 
-//             let limb = Limb::<E>::new(new_term, new_max_value);
-//             new_binary_limbs.push(limb);
-//         }
+        loop {
+            let start = params.binary_limbs_params.limb_size_bits * (params.num_binary_limbs - 1);
+            let end = start + params.binary_limbs_params.limb_size_bits;
 
-//         let mut new_base_limb = this.base_field_limb.clone();
-//         new_base_limb.scale(&two);
+            let slice = get_bit_slice(
+                multiples.clone(), 
+                start, 
+                end
+            );
 
-//         let new_value = this.get_field_value().add(&this.get_field_value());
+            if &slice < borrow_max_values.last().unwrap() {
+                multiples += &params.represented_field_modulus;
+            } else {
+                break;
+            }
+            loop_limit -= 1;
+            if loop_limit == 0 {
+                panic!();
+            }
+        }
 
-//         let new = Self {
-//             binary_limbs: new_binary_limbs,
-//             base_field_limb: new_base_limb,
-//             value: new_value,
-//             representation_params: params
-//         };
+        let multiple_slices = split_into_fixed_number_of_limbs(
+            multiples.clone(), 
+            params.binary_limbs_params.limb_size_bits, 
+            params.num_binary_limbs
+        );
 
-//         Ok((new, this))
-//     }
+        // create new limbs
 
-//     pub fn sub<CS: ConstraintSystem<E>>(
-//         self,
-//         cs: &mut CS,
-//         other: Self
-//     ) -> Result<(Self, (Self, Self)), SynthesisError> {
-//         let params = self.representation_params;
+        let mut previous = None;
 
-//         // subtraction is a little more involved
+        let last_idx = this.binary_limbs.len() - 1;
 
-//         // first do the constrant propagation
-//         if self.is_constant() && other.is_constant() {
-//             let tmp = self.get_field_value().sub(&other.get_field_value());
+        let mut new_binary_limbs = vec![];
 
-//             let new = Self::new_constant(tmp.unwrap(), params);
+        let mut new_multiple = BigUint::from(0u64);
 
-//             return Ok((new, (self, other)));
-//         }
+        for (idx, (((l, r), &bits), multiple)) in this.binary_limbs.iter()
+                                            .zip(other.binary_limbs.iter())
+                                            .zip(borrow_bit_widths.iter())
+                                            .zip(multiple_slices.iter())
+                                            .enumerate()
+        {
+            let mut tmp = BigUint::from(1u64) << bits;
+            if let Some(previous_bits) = previous.take() {
+                if idx != last_idx {
+                    tmp -= BigUint::from(1u64) << (previous_bits - params.binary_limbs_params.limb_size_bits);
+                } else {
+                    tmp = BigUint::from(1u64) << (previous_bits - params.binary_limbs_params.limb_size_bits);
+                }
+            }
+            let constant = if idx != last_idx {
+                tmp + multiple
+            } else {
+                multiple.clone() - tmp
+            };
 
-//         if other.is_constant() {
-//             let tmp = other.get_field_value().negate();
+            new_multiple += constant.clone() << (params.binary_limbs_params.limb_size_bits * idx);
 
-//             let other_negated = Self::new_constant(tmp.unwrap(), params);
+            let constant_as_fe = biguint_to_fe::<E::Fr>(constant.clone());
 
-//             // do the constant propagation in addition
+            let mut tmp = l.term.clone();
+            tmp.add_constant(&constant_as_fe);
 
-//             let (result, (this, _)) = self.add(cs, other_negated)?;
+            let mut other_negated = r.term.clone();
+            other_negated.negate();
 
-//             return Ok((result, (this, other)));
-//         }
+            let r = tmp.add(cs, &other_negated)?;
 
-//         let this = self.reduce_if_necessary(cs)?;
-//         let other = other.reduce_if_necessary(cs)?;
+            let new_max_value = l.max_value() + constant;
 
-//         // keep track for potential borrows and subtract binary limbs
+            let limb = Limb::<E>::new(
+                r,
+                new_max_value
+            );
 
-//         // construct data on from what positions we would borrow
+            new_binary_limbs.push(limb);
 
-//         let mut borrow_max_values = vec![];
-//         let mut borrow_bit_widths = vec![];
+            previous = Some(bits);
+        }
 
-//         let mut previous = None;
+        // let residue_to_add = multiples % &params.base_field_modulus;
+        let residue_to_add = new_multiple % &params.base_field_modulus;
+        let constant_as_fe = biguint_to_fe::<E::Fr>(residue_to_add.clone());
 
-//         // let mut max_subtracted = BigUint::from(0u64);
+        let mut tmp = this.base_field_limb.clone();
+        tmp.add_constant(&constant_as_fe);
 
-//         for l in other.binary_limbs.iter() {
-//             let mut max_value = l.max_value();
-//             if let Some(previous_shift) = previous.take() {
-//                 max_value += BigUint::from(1u64) << (previous_shift - params.binary_limbs_params.limb_size_bits);
-//             }
+        let mut other_negated = other.base_field_limb.clone();
+        other_negated.negate();
 
-//             let borrow_bits = std::cmp::max(params.binary_limbs_params.limb_size_bits, (max_value.bits() as usize) + 1);
+        let new_base_limb = tmp.add(cs, &other_negated)?;
 
-//             borrow_max_values.push(max_value);
-//             borrow_bit_widths.push(borrow_bits);
+        let new_value = this.get_field_value().sub(&other.get_field_value());
 
-//             previous = Some(borrow_bits);
-//         }
+        let new = Self {
+            binary_limbs: new_binary_limbs,
+            base_field_limb: new_base_limb,
+            value: new_value,
+            representation_params: params
+        };
 
-//         // now we can determine how many moduluses of the represented field 
-//         // we have to add to never underflow
-
-//         let shift = params.binary_limbs_params.limb_size_bits * (params.num_binary_limbs - 1);
-
-//         let mut multiples_to_add_at_least = borrow_max_values.last().unwrap().clone() << shift;
-//         multiples_to_add_at_least = multiples_to_add_at_least / &params.represented_field_modulus;
-
-//         let mut multiples = multiples_to_add_at_least * &params.represented_field_modulus;
-
-//         let mut loop_limit = 100;
-
-//         loop {
-//             let start = params.binary_limbs_params.limb_size_bits * (params.num_binary_limbs - 1);
-//             let end = start + params.binary_limbs_params.limb_size_bits;
-
-//             let slice = get_bit_slice(
-//                 multiples.clone(), 
-//                 start, 
-//                 end
-//             );
-
-//             if &slice < borrow_max_values.last().unwrap() {
-//                 multiples += &params.represented_field_modulus;
-//             } else {
-//                 break;
-//             }
-//             loop_limit -= 1;
-//             if loop_limit == 0 {
-//                 panic!();
-//             }
-//         }
-
-//         let multiple_slices = split_into_fixed_number_of_limbs(
-//             multiples.clone(), 
-//             params.binary_limbs_params.limb_size_bits, 
-//             params.num_binary_limbs
-//         );
-
-//         // create new limbs
-
-//         let mut previous = None;
-
-//         let last_idx = this.binary_limbs.len() - 1;
-
-//         let mut new_binary_limbs = vec![];
-
-//         let mut new_multiple = BigUint::from(0u64);
-
-//         for (idx, (((l, r), &bits), multiple)) in this.binary_limbs.iter()
-//                                             .zip(other.binary_limbs.iter())
-//                                             .zip(borrow_bit_widths.iter())
-//                                             .zip(multiple_slices.iter())
-//                                             .enumerate()
-//         {
-//             let mut tmp = BigUint::from(1u64) << bits;
-//             if let Some(previous_bits) = previous.take() {
-//                 if idx != last_idx {
-//                     tmp -= BigUint::from(1u64) << (previous_bits - params.binary_limbs_params.limb_size_bits);
-//                 } else {
-//                     tmp = BigUint::from(1u64) << (previous_bits - params.binary_limbs_params.limb_size_bits);
-//                 }
-//             }
-//             let constant = if idx != last_idx {
-//                 tmp + multiple
-//             } else {
-//                 multiple.clone() - tmp
-//             };
-
-//             new_multiple += constant.clone() << (params.binary_limbs_params.limb_size_bits * idx);
-
-//             let constant_as_fe = biguint_to_fe::<E::Fr>(constant.clone());
-
-//             let mut tmp = l.term.clone();
-//             tmp.add_constant(&constant_as_fe);
-
-//             let mut other_negated = r.term.clone();
-//             other_negated.negate();
-
-//             let r = tmp.add(cs, &other_negated)?;
-
-//             let new_max_value = l.max_value() + constant;
-
-//             let limb = Limb::<E>::new(
-//                 r,
-//                 new_max_value
-//             );
-
-//             new_binary_limbs.push(limb);
-
-//             previous = Some(bits);
-//         }
-
-//         // let residue_to_add = multiples % &params.base_field_modulus;
-//         let residue_to_add = new_multiple % &params.base_field_modulus;
-//         let constant_as_fe = biguint_to_fe::<E::Fr>(residue_to_add.clone());
-
-//         let mut tmp = this.base_field_limb.clone();
-//         tmp.add_constant(&constant_as_fe);
-
-//         let mut other_negated = other.base_field_limb.clone();
-//         other_negated.negate();
-
-//         let new_base_limb = tmp.add(cs, &other_negated)?;
-
-//         let new_value = this.get_field_value().sub(&other.get_field_value());
-
-//         let new = Self {
-//             binary_limbs: new_binary_limbs,
-//             base_field_limb: new_base_limb,
-//             value: new_value,
-//             representation_params: params
-//         };
-
-//         Ok((new, (this, other)))
-//     }
+        Ok((new, (this, other)))
+    }
 
 //     pub fn mul<CS: ConstraintSystem<E>>(
 //         self,

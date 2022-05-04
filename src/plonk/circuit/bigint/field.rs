@@ -567,6 +567,324 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok((is_zero, x))
     }
 
+    #[track_caller]
+    pub fn select<CS>(cs: &mut CS, flag: &Boolean, first: Self, second: Self) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        match flag {
+            Boolean::Constant(c) => {
+                if *c { return Ok(first.clone()) } else { return Ok(second.clone()) };
+            },
+            _ => {},
+        };
+
+        // flag * a + (1-flag)*b = flag * (a-b) + b
+        let flag_as_term = Term::<E>::from_boolean(flag);
+        let mut new_binary_limbs = vec![];
+
+        for (l, r) in first.binary_limbs.iter().zip(second.binary_limbs.iter()) 
+        {
+            let mut minus_b = r.term.clone();
+            minus_b.negate();
+            let a_minus_b = l.term.add(cs, &minus_b)?;
+            let n = Term::<E>::fma(cs, &flag_as_term, &a_minus_b, &r.term)?;
+            let new_max = std::cmp::max(l.max_value(), r.max_value());
+            let new_limb = Limb::new(n, new_max);
+
+            new_binary_limbs.push(new_limb);
+        }
+
+        let mut minus_b = second.base_field_limb.clone();
+        minus_b.negate();
+        let a_minus_b = first.base_field_limb.add(cs, &minus_b)?;
+        let new_base_limb = Term::<E>::fma(cs, &flag_as_term, &a_minus_b, &second.base_field_limb)?;
+
+        let new_value = if let Some(f) = flag.get_value() {
+            if f { first.get_field_value() } else { second.get_field_value() }
+        } else {
+            None
+        };
+
+        let new = Self {
+            binary_limbs: new_binary_limbs,
+            base_field_limb: new_base_limb,
+            value: new_value,
+            representation_params: first.representation_params
+        };
+        Ok(new)
+    }
+
+    pub fn negate<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        Self::zero(&self.representation_params).sub(cs, self)
+    }
+
+    #[track_caller]
+    // negates if true
+    pub fn conditional_negation<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        if let Some(f) = flag.get_value() {
+            if *f { return self.negate(cs) } else { return Ok(self.clone()) }
+        };
+        let negated = self.negate(cs)?;
+        Self::select(cs, flag, negated, self.clone())
+    }
+
+        /// check that element is in a field and is strictly less
+    /// than modulus
+    pub fn enforce_is_normalized<CS: ConstraintSystem<E>>(
+        self,
+        cs: &mut CS,
+    ) -> Result<Self, SynthesisError> {
+        if self.is_constant() {
+            return Ok(self);
+        }
+
+        let params = self.representation_params;
+
+        let this = self.reduce_if_necessary(cs)?;
+
+        let modulus_limbs = split_into_fixed_number_of_limbs(
+            params.represented_field_modulus.clone(), 
+            params.binary_limbs_params.limb_size_bits, 
+            params.num_binary_limbs
+        ); 
+
+        let borrow_witnesses = if let Some(v) = this.get_value() {
+            let value_limbs = split_into_fixed_number_of_limbs(
+                v, 
+                params.binary_limbs_params.limb_size_bits, 
+                params.num_binary_limbs
+            ); 
+            let mut wit = Vec::with_capacity(params.num_binary_limbs - 1);
+
+            let mut previous = None;
+
+            for (m, v) in modulus_limbs.iter().zip(value_limbs.into_iter()).rev().skip(1).rev() {
+                let mut v = v;
+                if let Some(p) = previous.take() {
+                    v -= p;
+                }
+                if &v > m {
+                    wit.push(Some(true));
+                    previous = Some(BigUint::from(1u64));
+                } else {
+                    wit.push(Some(false));
+                    previous = Some(BigUint::from(0u64));
+                }
+            }
+
+            assert_eq!(wit.len(), params.num_binary_limbs - 1);
+
+            wit
+        } else {
+            vec![None; params.num_binary_limbs - 1]
+        };
+
+        let mut modulus_limbs_as_fe = Vec::with_capacity(modulus_limbs.len());
+        for m in modulus_limbs.into_iter() {
+            let m = biguint_to_fe::<E::Fr>(m);
+            modulus_limbs_as_fe.push(m);
+        }
+
+        let mut borrow_bits = vec![];
+        for w in borrow_witnesses.into_iter() {
+            let b = Boolean::from(AllocatedBit::alloc(
+                cs,
+                w
+            )?);
+            borrow_bits.push(b)
+        }
+
+        let mut previous = None;
+
+        let mut results = Vec::with_capacity(params.num_binary_limbs);
+
+        for ((l, b), m) in this.binary_limbs.iter()
+                            .zip(borrow_bits.into_iter())
+                            .zip(modulus_limbs_as_fe.iter()) 
+        {
+            let mut tmp = l.term.clone();
+            tmp.negate();
+            tmp.add_constant(m);
+
+            let mut this_borrow = Term::<E>::from_boolean(&b);
+            this_borrow.scale(&params.binary_limbs_params.shift_left_by_limb_constant);
+
+            if let Some(p) = previous {
+                let mut previous_borrow = Term::<E>::from_boolean(&p);
+                previous_borrow.negate();
+
+                let r = tmp.add_multiple(cs, &[this_borrow, previous_borrow])?;
+                results.push(r);
+            } else {
+                let r = tmp.add(cs, &this_borrow)?;
+                results.push(r);
+            }
+
+            previous = Some(b);
+        }
+
+        assert!(previous.is_some());
+
+        let p = previous.unwrap();
+
+        let mut tmp = this.binary_limbs.last().unwrap().term.clone();
+        tmp.negate();
+        tmp.add_constant(modulus_limbs_as_fe.last().unwrap());
+
+        let mut previous_borrow = Term::<E>::from_boolean(&p);
+        previous_borrow.negate();
+        let r = tmp.add(cs, &previous_borrow)?;
+        results.push(r);
+
+        for r in results.into_iter() {
+            let el = r.collapse_into_num(cs)?;
+            let el = el.get_variable();
+            let expected_width = params.binary_limbs_params.limb_size_bits;
+            match params.range_check_info.strategy {
+                RangeConstraintStrategy::MultiTable => {
+                    self::range_constraint_functions::coarsely_enforce_using_multitable(cs, &el, expected_width)?;
+                },
+                RangeConstraintStrategy::SingleTableInvocation => {
+                    self::single_table_range_constraint::enforce_using_single_column_table(cs, &el, expected_width)?;
+                },
+                RangeConstraintStrategy::CustomTwoBitGate => {
+                    let _ = create_range_constraint_chain(cs, &el, expected_width)?;
+                }
+                _ => {unimplemented!("range constraint strategies other than multitable, single table or custom gate are not yet handled")}
+            }
+        }
+
+        Ok(this)
+    }
+
+//     #[track_caller]
+//     pub fn enforce_equal<CS: ConstraintSystem<E>>(
+//         cs: &mut CS,
+//         this: Self,
+//         other: Self
+//     ) -> Result<(), SynthesisError> {
+//         match (this.is_constant(), other.is_constant()) {
+//             (true, true) => {
+//                 let a = this.get_field_value().unwrap();
+//                 let b = other.get_field_value().unwrap();
+//                 assert!(a == b);
+
+//                 return Ok(())
+//             },
+//             _ => {
+
+//             }
+//         };
+
+//         let before = cs.get_current_step_number();
+
+//         let this = this.force_reduce_close_to_modulus(cs)?.enforce_is_normalized(cs)?;
+//         let other = other.force_reduce_close_to_modulus(cs)?.enforce_is_normalized(cs)?;
+
+//         for (a, b) in this.binary_limbs.iter().zip(other.binary_limbs.iter()) {
+//             let a = a.term.into_num();
+//             let b = b.term.into_num();
+//             a.enforce_equal(cs, &b)?;
+//         }
+
+//         let a = this.base_field_limb.into_num();
+//         let b = other.base_field_limb.into_num();
+
+//         a.enforce_equal(cs, &b)?;
+
+//         crate::plonk::circuit::counter::increment_counter_by(cs.get_current_step_number() - before);
+
+//         Ok(())
+//     }
+        
+//     #[track_caller]
+//     pub fn equals<CS: ConstraintSystem<E>>(
+//         cs: &mut CS,
+//         this: Self,
+//         other: Self
+//     ) -> Result<(Boolean, (Self, Self)), SynthesisError> {
+//         match (this.is_constant(), other.is_constant()) {
+//             (true, true) => {
+//                 let a = this.get_field_value().unwrap();
+//                 let b = other.get_field_value().unwrap();
+
+//                 return Ok((Boolean::constant(a == b), (this, other)));
+//             },
+//             _ => {
+
+//             }
+//         };
+
+//         let before = cs.get_current_step_number();
+
+//         let this = this.force_reduce_close_to_modulus(cs)?;
+//         let other = other.force_reduce_close_to_modulus(cs)?;
+
+//         let result = Self::equals_assuming_reduced(cs, this.clone(), other.clone())?;
+
+//         crate::plonk::circuit::counter::increment_counter_by(cs.get_current_step_number() - before);
+
+//         Ok((result, (this, other)))
+//     }
+
+//     #[track_caller]
+//     pub fn equals_assuming_reduced<CS: ConstraintSystem<E>>(
+//         cs: &mut CS,
+//         first: Self,
+//         second: Self
+//     ) -> Result<Boolean, SynthesisError> {
+//         match (first.is_constant(), second.is_constant()) {
+//             (true, true) => {
+//                 let a = first.get_field_value().unwrap();
+//                 let b = second.get_field_value().unwrap();
+
+//                 return Ok(Boolean::constant(a == b));
+//             },
+//             _ => {
+
+//             }
+//         };
+
+//         let mut lc = LinearCombination::zero();
+
+//         let this = first.enforce_is_normalized(cs)?;
+//         let other = second.enforce_is_normalized(cs)?;
+
+//         for (a, b) in this.binary_limbs.iter().zip(other.binary_limbs.iter()) {
+//             let a = a.term.collapse_into_num(cs)?;
+//             let b = b.term.collapse_into_num(cs)?;
+//             let not_equal = Num::equals(cs, &a, &b)?.not();
+//             lc.add_assign_boolean_with_coeff(&not_equal, E::Fr::one());
+//         }
+
+//         let a = this.base_field_limb.collapse_into_num(cs)?;
+//         let b = other.base_field_limb.collapse_into_num(cs)?;
+//         let not_equal = Num::equals(cs, &a, &b)?.not();
+//         lc.add_assign_boolean_with_coeff(&not_equal, E::Fr::one());
+
+//         let as_num = lc.into_num(cs)?;
+//         // if any of the terms was not equal then lc != 0
+//         let equal = as_num.is_zero(cs)?;
+
+//         Ok(equal)
+//     }
+
+//     #[track_caller]
+//     pub fn enforce_not_equal<CS: ConstraintSystem<E>>(
+//         cs: &mut CS,
+//         this: Self,
+//         other: Self
+//     ) -> Result<(Self, Self), SynthesisError> {
+//         let this = this.force_reduce_close_to_modulus(cs)?;
+//         let other = other.force_reduce_close_to_modulus(cs)?;
+//         let equal = Self::equals_assuming_reduced(cs, this.clone(), other.clone())?;
+//         Boolean::enforce_equal(cs, &equal, &Boolean::constant(false))?;
+
+//         Ok((this, other))
+//     }
+
     // we call value to be reduced if all binary limbs do not overflow, where the precise meaning of "overflow" 
     // depends on is_strict flag: if it is set than all binary bits should not explot capacity bits and additionally
     // total value should fit in [0, 2 * F::char) range 
@@ -616,45 +934,52 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     #[track_caller]
     fn reduction_impl<CS: ConstraintSystem<E>>(self, cs: &mut CS, is_strict: bool) -> Result<Self, SynthesisError> {
         let params = self.representation_params;
-        let mut binary_limbs_allocated = Vec::with_capacity(params.num_binary_limbs);
-        let shift_constant = params.shift_left_by_limb_constant;
-        let reduced_limb_width
+        let shift = params.shift_left_by_limb_constant;
+        let min_limb_width = params.binary_limb_width;
+        let max_limb_width = if is_strict { params.binary_limb_width } else { params.binary_limb_capacity };
 
+        let mut binary_limbs_allocated = Vec::with_capacity(params.num_binary_limbs);
         let mut of = Limb::zero();
-        let 
         
         for unreduced_limb in self.binary_limbs.iter() {
-            // 
-           
-
-            let (reduced_limb, new_of ) = if unreduced_limb.is_constant() && of.is_constant() {} 
-        }
-            
-        for (_is_first, is_last, value) in limb_values.into_iter().identify_first_last() 
-        {
-            let value_as_fe = some_biguint_to_fe::<E::Fr>(&value);
-            let a = AllocatedNum::alloc(
-                cs, 
-                || {
-                    Ok(*value_as_fe.get()?)
-                }
-            )?;
-
-            let max_value = if is_last { most_significant_limb_max_val } else { params.limb_max_value_on_alloc.clone() };
-            let bitlength = if is_last { most_significant_limb_width } else { params.binary_limb_width };
-            let decomposition = constraint_num_bits_ext_with_strategy(cs, &a, bitlength, params.range_check_strategy)?; 
-            decompositions.push(decomposition);
-
-            let term = Term::<E>::from_allocated_num(a.clone());
-            let limb = Limb::<E>::new(term, max_value);
-
-            binary_limbs_allocated.push(limb);
-
-            base_field_lc.add_assign_variable_with_coeff(&a, current_constant);
-            current_constant.mul_assign(&shift_constant);
+            let (reduced_limb, new_of) = propagate_of(cs, unreduced_limb, of, min_limb_width, max_limb_width, shift)?;
+            of = new_of;
+            binary_limbs_allocated.push(reduced_limb);
         }
         binary_limbs_allocated.resize(params.num_binary_limbs, Self::zero_limb());
+            
+        let last_of = of.term.collapse_into_num(cs)?;
+        let mut coef = biguint_to_fe::<E::Fr>(shift.pow(params.num_binary_limbs));
+        coef.negate();
+
+        let mut base_field_lc = LinearCombination::zero();
+        base_field_lc.add_assign() 
+        base_field_lc.add_assign_variable_with_coeff(&a, current_constant);
+            current_constant.mul_assign(&shift_constant);
+        }
+
+        let total_value = raw_limbs.iter().rev().fold(Some(BigUint::zero()), |acc, &x| {
+            match (acc, x.get_value()) {
+                (Some(mut acc), Some(fr)) => {
+                    acc <<= params.binary_limb_width;
+                    acc += fe_to_biguint(&fr);
+                    Some(acc)
+                },
+                (_, _) => None,
+            }
+        }).map(|x| biguint_to_fe::<F>(x));
+        
+        let new = Self {
+            binary_limbs: binary_limbs_allocated,
+            base_field_limb: base_field_term,
+            representation_params: params,
+            value: total_value,
+        };
+        
+        Ok(new)     
     }
+
+    
 
     #[track_caller]
     pub fn add<CS: ConstraintSystem<E>>(self, cs: &mut CS, other: Self) -> Result<Self, SynthesisError> {
@@ -1250,345 +1575,11 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 //         Ok((result_wit, (reduced_nums, den)))
 //     }
 
-//     // returns first if true and second if false
-//     pub fn select<CS: ConstraintSystem<E>>(
-//         cs: &mut CS,
-//         flag: &Boolean,
-//         first: Self,
-//         second: Self
-//     ) -> Result<(Self, (Self, Self)), SynthesisError> {
-//         match flag {
-//             Boolean::Constant(c) => {
-//                 if *c {
-//                     return Ok((first.clone(), (first, second)));
-//                 } else {
-//                     return Ok((second.clone(), (first, second)));
-//                 }
-//             },
-//             _ => {}
-//         }
 
-//         let first = first.reduce_if_necessary(cs)?;
-//         let second = second.reduce_if_necessary(cs)?;
 
-//         let flag_as_term = Term::<E>::from_boolean(flag);
 
-//         // flag * a + (1-flag)*b = flag * (a-b) + b
 
-//         let mut new_binary_limbs = vec![];
 
-//         for (l, r) in first.binary_limbs.iter()
-//                     .zip(second.binary_limbs.iter()) 
-//         {
-//             let mut minus_b = r.term.clone();
-//             minus_b.negate();
-//             let a_minus_b = l.term.add(cs, &minus_b)?;
-
-//             let n = Term::<E>::fma(cs, &flag_as_term, &a_minus_b, &r.term)?;
-
-//             let new_max = std::cmp::max(l.max_value(), r.max_value());
-
-//             let new_limb = Limb::new(
-//                 n,
-//                 new_max
-//             );
-
-//             new_binary_limbs.push(new_limb);
-//         }
-
-//         let mut minus_b = second.base_field_limb.clone();
-//         minus_b.negate();
-//         let a_minus_b = first.base_field_limb.add(cs, &minus_b)?;
-
-//         let new_base_limb = Term::<E>::fma(cs, &flag_as_term, &a_minus_b, &second.base_field_limb)?;
-
-//         let new_value = if let Some(f) = flag.get_value() {
-//             if f {
-//                 first.get_field_value()
-//             } else {
-//                 second.get_field_value()
-//             }
-//         } else {
-//             None
-//         };
-
-//         let new = Self {
-//             binary_limbs: new_binary_limbs,
-//             base_field_limb: new_base_limb,
-//             value: new_value,
-//             representation_params: first.representation_params
-//         };
-
-//         Ok((new, (first, second)))
-//     }
-
-//     // negates if true
-//     pub fn conditional_negation<CS: ConstraintSystem<E>>(
-//         cs: &mut CS,
-//         flag: &Boolean,
-//         this: Self,
-//     ) -> Result<(Self, (Self, Self)), SynthesisError> {
-//         let (negated, this) = this.negated(cs)?;
-
-//         let (selected, (negated, this)) = Self::select(cs, flag, negated, this)?;
-
-//         Ok((selected, (this, negated)))
-//     }
-
-//     /// check that element is in a field and is strictly less
-//     /// than modulus
-//     pub fn enforce_is_normalized<CS: ConstraintSystem<E>>(
-//         self,
-//         cs: &mut CS,
-//     ) -> Result<Self, SynthesisError> {
-//         if self.is_constant() {
-//             return Ok(self);
-//         }
-
-//         let params = self.representation_params;
-
-//         let this = self.reduce_if_necessary(cs)?;
-
-//         let modulus_limbs = split_into_fixed_number_of_limbs(
-//             params.represented_field_modulus.clone(), 
-//             params.binary_limbs_params.limb_size_bits, 
-//             params.num_binary_limbs
-//         ); 
-
-//         let borrow_witnesses = if let Some(v) = this.get_value() {
-//             let value_limbs = split_into_fixed_number_of_limbs(
-//                 v, 
-//                 params.binary_limbs_params.limb_size_bits, 
-//                 params.num_binary_limbs
-//             ); 
-//             let mut wit = Vec::with_capacity(params.num_binary_limbs - 1);
-
-//             let mut previous = None;
-
-//             for (m, v) in modulus_limbs.iter().zip(value_limbs.into_iter()).rev().skip(1).rev() {
-//                 let mut v = v;
-//                 if let Some(p) = previous.take() {
-//                     v -= p;
-//                 }
-//                 if &v > m {
-//                     wit.push(Some(true));
-//                     previous = Some(BigUint::from(1u64));
-//                 } else {
-//                     wit.push(Some(false));
-//                     previous = Some(BigUint::from(0u64));
-//                 }
-//             }
-
-//             assert_eq!(wit.len(), params.num_binary_limbs - 1);
-
-//             wit
-//         } else {
-//             vec![None; params.num_binary_limbs - 1]
-//         };
-
-//         let mut modulus_limbs_as_fe = Vec::with_capacity(modulus_limbs.len());
-//         for m in modulus_limbs.into_iter() {
-//             let m = biguint_to_fe::<E::Fr>(m);
-//             modulus_limbs_as_fe.push(m);
-//         }
-
-//         let mut borrow_bits = vec![];
-//         for w in borrow_witnesses.into_iter() {
-//             let b = Boolean::from(AllocatedBit::alloc(
-//                 cs,
-//                 w
-//             )?);
-//             borrow_bits.push(b)
-//         }
-
-//         let mut previous = None;
-
-//         let mut results = Vec::with_capacity(params.num_binary_limbs);
-
-//         for ((l, b), m) in this.binary_limbs.iter()
-//                             .zip(borrow_bits.into_iter())
-//                             .zip(modulus_limbs_as_fe.iter()) 
-//         {
-//             let mut tmp = l.term.clone();
-//             tmp.negate();
-//             tmp.add_constant(m);
-
-//             let mut this_borrow = Term::<E>::from_boolean(&b);
-//             this_borrow.scale(&params.binary_limbs_params.shift_left_by_limb_constant);
-
-//             if let Some(p) = previous {
-//                 let mut previous_borrow = Term::<E>::from_boolean(&p);
-//                 previous_borrow.negate();
-
-//                 let r = tmp.add_multiple(cs, &[this_borrow, previous_borrow])?;
-//                 results.push(r);
-//             } else {
-//                 let r = tmp.add(cs, &this_borrow)?;
-//                 results.push(r);
-//             }
-
-//             previous = Some(b);
-//         }
-
-//         assert!(previous.is_some());
-
-//         let p = previous.unwrap();
-
-//         let mut tmp = this.binary_limbs.last().unwrap().term.clone();
-//         tmp.negate();
-//         tmp.add_constant(modulus_limbs_as_fe.last().unwrap());
-
-//         let mut previous_borrow = Term::<E>::from_boolean(&p);
-//         previous_borrow.negate();
-//         let r = tmp.add(cs, &previous_borrow)?;
-//         results.push(r);
-
-//         for r in results.into_iter() {
-//             let el = r.collapse_into_num(cs)?;
-//             let el = el.get_variable();
-//             let expected_width = params.binary_limbs_params.limb_size_bits;
-//             match params.range_check_info.strategy {
-//                 RangeConstraintStrategy::MultiTable => {
-//                     self::range_constraint_functions::coarsely_enforce_using_multitable(cs, &el, expected_width)?;
-//                 },
-//                 RangeConstraintStrategy::SingleTableInvocation => {
-//                     self::single_table_range_constraint::enforce_using_single_column_table(cs, &el, expected_width)?;
-//                 },
-//                 RangeConstraintStrategy::CustomTwoBitGate => {
-//                     let _ = create_range_constraint_chain(cs, &el, expected_width)?;
-//                 }
-//                 _ => {unimplemented!("range constraint strategies other than multitable, single table or custom gate are not yet handled")}
-//             }
-//         }
-
-//         Ok(this)
-//     }
-
-//     #[track_caller]
-//     pub fn enforce_equal<CS: ConstraintSystem<E>>(
-//         cs: &mut CS,
-//         this: Self,
-//         other: Self
-//     ) -> Result<(), SynthesisError> {
-//         match (this.is_constant(), other.is_constant()) {
-//             (true, true) => {
-//                 let a = this.get_field_value().unwrap();
-//                 let b = other.get_field_value().unwrap();
-//                 assert!(a == b);
-
-//                 return Ok(())
-//             },
-//             _ => {
-
-//             }
-//         };
-
-//         let before = cs.get_current_step_number();
-
-//         let this = this.force_reduce_close_to_modulus(cs)?.enforce_is_normalized(cs)?;
-//         let other = other.force_reduce_close_to_modulus(cs)?.enforce_is_normalized(cs)?;
-
-//         for (a, b) in this.binary_limbs.iter().zip(other.binary_limbs.iter()) {
-//             let a = a.term.into_num();
-//             let b = b.term.into_num();
-//             a.enforce_equal(cs, &b)?;
-//         }
-
-//         let a = this.base_field_limb.into_num();
-//         let b = other.base_field_limb.into_num();
-
-//         a.enforce_equal(cs, &b)?;
-
-//         crate::plonk::circuit::counter::increment_counter_by(cs.get_current_step_number() - before);
-
-//         Ok(())
-//     }
-        
-//     #[track_caller]
-//     pub fn equals<CS: ConstraintSystem<E>>(
-//         cs: &mut CS,
-//         this: Self,
-//         other: Self
-//     ) -> Result<(Boolean, (Self, Self)), SynthesisError> {
-//         match (this.is_constant(), other.is_constant()) {
-//             (true, true) => {
-//                 let a = this.get_field_value().unwrap();
-//                 let b = other.get_field_value().unwrap();
-
-//                 return Ok((Boolean::constant(a == b), (this, other)));
-//             },
-//             _ => {
-
-//             }
-//         };
-
-//         let before = cs.get_current_step_number();
-
-//         let this = this.force_reduce_close_to_modulus(cs)?;
-//         let other = other.force_reduce_close_to_modulus(cs)?;
-
-//         let result = Self::equals_assuming_reduced(cs, this.clone(), other.clone())?;
-
-//         crate::plonk::circuit::counter::increment_counter_by(cs.get_current_step_number() - before);
-
-//         Ok((result, (this, other)))
-//     }
-
-//     #[track_caller]
-//     pub fn equals_assuming_reduced<CS: ConstraintSystem<E>>(
-//         cs: &mut CS,
-//         first: Self,
-//         second: Self
-//     ) -> Result<Boolean, SynthesisError> {
-//         match (first.is_constant(), second.is_constant()) {
-//             (true, true) => {
-//                 let a = first.get_field_value().unwrap();
-//                 let b = second.get_field_value().unwrap();
-
-//                 return Ok(Boolean::constant(a == b));
-//             },
-//             _ => {
-
-//             }
-//         };
-
-//         let mut lc = LinearCombination::zero();
-
-//         let this = first.enforce_is_normalized(cs)?;
-//         let other = second.enforce_is_normalized(cs)?;
-
-//         for (a, b) in this.binary_limbs.iter().zip(other.binary_limbs.iter()) {
-//             let a = a.term.collapse_into_num(cs)?;
-//             let b = b.term.collapse_into_num(cs)?;
-//             let not_equal = Num::equals(cs, &a, &b)?.not();
-//             lc.add_assign_boolean_with_coeff(&not_equal, E::Fr::one());
-//         }
-
-//         let a = this.base_field_limb.collapse_into_num(cs)?;
-//         let b = other.base_field_limb.collapse_into_num(cs)?;
-//         let not_equal = Num::equals(cs, &a, &b)?.not();
-//         lc.add_assign_boolean_with_coeff(&not_equal, E::Fr::one());
-
-//         let as_num = lc.into_num(cs)?;
-//         // if any of the terms was not equal then lc != 0
-//         let equal = as_num.is_zero(cs)?;
-
-//         Ok(equal)
-//     }
-
-//     #[track_caller]
-//     pub fn enforce_not_equal<CS: ConstraintSystem<E>>(
-//         cs: &mut CS,
-//         this: Self,
-//         other: Self
-//     ) -> Result<(Self, Self), SynthesisError> {
-//         let this = this.force_reduce_close_to_modulus(cs)?;
-//         let other = other.force_reduce_close_to_modulus(cs)?;
-//         let equal = Self::equals_assuming_reduced(cs, this.clone(), other.clone())?;
-//         Boolean::enforce_equal(cs, &equal, &Boolean::constant(false))?;
-
-//         Ok((this, other))
-//     }
 // }
 
 // pub mod test {

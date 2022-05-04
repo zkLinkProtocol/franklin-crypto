@@ -98,8 +98,9 @@ pub fn constraint_num_bits_ext_with_strategy<E: Engine, CS: ConstraintSystem<E>>
         RangeConstraintStrategy::CustomTwoBitGate => {
             enforce_range_check_using_custom_gate(cs, var, num_bits)
         },
-        RangeConstraintStrategy::WithBitwiseOpTable(_table_width) => {           
-            enforce_range_check_using_bitop_table(cs, var, num_bits)
+        RangeConstraintStrategy::WithBitwiseOpTable(_table_width) => {  
+            let table = cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME).expect("should found a valid table");         
+            enforce_range_check_using_bitop_table(cs, var, num_bits, table)
         }    
     }
 }
@@ -444,10 +445,9 @@ pub fn apply_range_table_gate<E: Engine, CS: ConstraintSystem<E>>(
 
 
 pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>(
-    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize
+    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, table: Arc<LookupTableApplication<E>>
 ) -> Result<RangeCheckDecomposition<E>, SynthesisError> 
 {
-    let table = cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME).expect("should found a valid table");
     let chunk_width = (crate::log2_floor(table.size()) / 2) as usize;
     let num_chunks = num_bits / chunk_width;
     let should_enforce_for_shifted_chunk = (num_bits % chunk_width) != 0;

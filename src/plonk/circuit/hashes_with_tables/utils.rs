@@ -2,7 +2,7 @@ use crate::bellman::pairing::ff::*;
 use crate::bellman::SynthesisError;
 use crate::num_bigint::BigUint;
 use crate::num_traits::cast::ToPrimitive;
-use crate::num_traits::{ Zero, One };
+use crate::num_traits::{ Zero, One, PrimInt };
 use std::{ iter, mem };
 
 
@@ -179,6 +179,12 @@ pub fn func_normalizer<Fr: PrimeField, T: Fn(u64) -> u64>(fr : Fr, input_base: u
 pub fn round_up(a: usize, b : usize) -> usize {
     let additional_chunks : usize = if a % b > 0 {1} else {0};
     a/b + additional_chunks
+}
+
+
+pub fn num_bits<T: PrimInt>(x: T) -> usize {
+    const BITS_PER_BYTE: usize = 8;
+    BITS_PER_BYTE * std::mem::size_of::<T>() - (x.leading_zeros() as usize)
 }
 
 

@@ -13,12 +13,12 @@ use super::boolean::*;
 use std::iter::FromIterator;
 
 pub mod bigint;
-pub mod field;
+//pub mod field;
 pub mod range_check_custom_gate;
 pub mod range_checks;
 
 pub use self::bigint::*;
-pub use self::field::*;
+//pub use self::field::*;
 pub use self::range_check_custom_gate::*;
 pub use self::range_checks::*;
 

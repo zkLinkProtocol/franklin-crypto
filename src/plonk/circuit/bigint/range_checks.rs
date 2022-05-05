@@ -90,7 +90,6 @@ impl<E: Engine> RangeCheckDecomposition<E> {
 pub fn constraint_num_bits_ext_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, range_check_strategy: RangeConstraintStrategy
 ) -> Result<RangeCheckDecomposition<E>, SynthesisError> {
-    let range_check_strategy = get_optimal_strategy(cs);
     match range_check_strategy {
         RangeConstraintStrategy::NaiveSingleBit => {
             enforce_range_check_using_naive_approach(cs, var, num_bits)
@@ -103,6 +102,13 @@ pub fn constraint_num_bits_ext_with_strategy<E: Engine, CS: ConstraintSystem<E>>
             enforce_range_check_using_bitop_table(cs, var, num_bits, table)
         }    
     }
+}
+
+pub fn constraint_num_bits_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, range_check_strategy: RangeConstraintStrategy
+) -> Result<(), SynthesisError> {
+    let _decomposition = constraint_num_bits_ext_with_strategy(cs, var, num_bits, range_check_strategy)?;
+    Ok(())
 }
 
 // enforces that bitlength(var) <= shift and returns the decomposition of var into smaller chunks

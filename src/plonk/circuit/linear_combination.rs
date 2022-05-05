@@ -224,6 +224,13 @@ impl<E: Engine> LinearCombination<E> {
         self.add_assign_constant(term.constant_term);
         self.add_assign_number_with_coeff(&term.num, term.coeff);
     }
+
+    pub fn add_assign_term_with_coeff(&mut self, term: &Term<E>, coeff: E::Fr)
+    {
+        let mut scaled_term = term.clone();
+        scaled_term.scale(&coeff);
+        self.add_assign_term(&scaled_term)
+    }
    
     pub fn add_assign_boolean_with_coeff(
         &mut self,

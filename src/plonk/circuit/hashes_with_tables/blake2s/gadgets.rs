@@ -1633,9 +1633,9 @@ impl<E: Engine> Blake2sGadget<E> {
 
     pub fn round_function<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, hash_state: [Num<E>; BLAKE2S_STATE_WIDTH / 2], 
-        round_input: &[Num<E>; BLAKE2S_STATE_WIDTH], total_len: Num<E>, mut max_total_len: u64,
+        round_input: &[Num<E>; BLAKE2S_STATE_WIDTH], total_len: Num<E>, max_total_len: u64,
         is_first_chunk: Boolean, is_last_chunk: Boolean
-    ) -> Result<([Num<E>; BLAKE2S_STATE_WIDTH / 2], Num<E>, u64)> 
+    ) -> Result<([Num<E>; BLAKE2S_STATE_WIDTH / 2], Num<E>)> 
     {            
         let mut raw_hash_state = HashState(Vec::with_capacity(BLAKE2S_STATE_WIDTH / 2));
         for (i, cur_state_elem) in hash_state.iter().enumerate() {
@@ -1647,7 +1647,6 @@ impl<E: Engine> Blake2sGadget<E> {
 
         let block_size_as_num = Num::Constant(u64_to_ff(64));
         let total_len_incremented = total_len.add(cs, &block_size_as_num)?;
-        max_total_len += 64;
         let selected_total_len = Num::conditionally_select(
             cs, &is_first_chunk, &block_size_as_num, &total_len_incremented
         )?;
@@ -1662,6 +1661,6 @@ impl<E: Engine> Blake2sGadget<E> {
         for (in_elem, out) in raw_hash_state.0.drain(0..(BLAKE2S_STATE_WIDTH / 2)).zip(res.iter_mut()) {
             *out = in_elem.full;
         }
-        Ok((res, selected_total_len, max_total_len))
+        Ok((res, selected_total_len))
     }
 }

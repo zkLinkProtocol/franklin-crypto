@@ -109,9 +109,11 @@ pub(crate) fn compute_shifts<F: PrimeField>() -> Vec<F> {
 }
 
 
-pub(crate) round_up
-let rem = min_additional_capacity_bits % range_check_granularity;
-        let additional_capacity_bits = if rem == 0 { 0 } else { range_check_granularity - rem };
-        let capacity_width = min_additional_capacity_bits + additional_capacity_bits + range_check_granularity;
+pub(crate) fn round_up(x: usize, granularity: usize) -> usize {
+    let rem = x % granularity;
+    let to_add = if rem == 0 { 0 } else { granularity - rem };
+    x + to_add
+}
+
 
 

@@ -236,7 +236,7 @@ impl<E: Engine> Blake2sGadget<E> {
             Num::Constant(fr) => self.u64_to_reg(ff_to_u64(&fr)),
             Num::Variable(var) => {
                 let table = self.xor_table.clone();
-                let x = enforce_range_check_using_bitop_table(cs, &var, 32, table)?;
+                let x = enforce_range_check_using_bitop_table(cs, &var, 32, table, false)?;
                 let dcmps = x.get_vars();
                 Reg {
                     full: num.clone(), 
@@ -262,7 +262,7 @@ impl<E: Engine> Blake2sGadget<E> {
         let bitlens = [num_bits::<u64>(max_low_val), num_bits::<u64>(max_high_val)];
         
         if bitlens[1] == 0 {
-            let x = enforce_range_check_using_bitop_table(cs, &var, bitlens[0], table.clone())?;
+            let x = enforce_range_check_using_bitop_table(cs, &var, bitlens[0], table.clone(), false)?;
             let dcmps = x.get_vars();
             let low = Reg {
                 full: Num::Variable(var.clone()), 
@@ -282,7 +282,7 @@ impl<E: Engine> Blake2sGadget<E> {
             let fr = some_biguint_to_fe::<E::Fr>(&wit);
             if *bitlen > 0 {
                 let var = AllocatedNum::alloc(cs, || fr.grab())?;
-                let x = enforce_range_check_using_bitop_table(cs, &var, *bitlen, table.clone())?;
+                let x = enforce_range_check_using_bitop_table(cs, &var, *bitlen, table.clone(), false)?;
                 let dcmps = x.get_vars();
 
                 let reg = Reg {

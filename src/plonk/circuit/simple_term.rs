@@ -47,6 +47,17 @@ impl<E: Engine> std::fmt::Display for Term<E> {
 }
 
 impl<E: Engine> Term<E> {
+    pub fn circuit_eq(&self, other: &Self) -> bool {
+        match (self.is_constant(), other.is_constant()) {
+            (true, true) => self.get_value() == other.get_value(),
+            (true, false) | (false, true) => false,
+            (false, false) => {
+                self.get_variable().get_variable() == other.get_variable().get_variable() &&
+                self.coeff == other.coeff && self.constant_term == other.constant_term 
+            },
+        }
+    }
+
     pub fn is_constant(&self) -> bool {
         match self.num {
             Num::Constant(..) => true,

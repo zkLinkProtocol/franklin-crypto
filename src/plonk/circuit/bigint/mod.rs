@@ -81,7 +81,7 @@ impl RangeConstraintStrategy {
             RangeConstraintStrategy::CustomTwoBitGate => 2,
             RangeConstraintStrategy::WithBitwiseOpTable(n) => *n,
         }
-    } 
+    }
 }
 
 pub fn get_optimal_strategy<E: Engine, CS: ConstraintSystem<E>>(cs: &CS) -> RangeConstraintStrategy {
@@ -107,5 +107,11 @@ pub(crate) fn compute_shifts<F: PrimeField>() -> Vec<F> {
 
     result
 }
+
+
+pub(crate) round_up
+let rem = min_additional_capacity_bits % range_check_granularity;
+        let additional_capacity_bits = if rem == 0 { 0 } else { range_check_granularity - rem };
+        let capacity_width = min_additional_capacity_bits + additional_capacity_bits + range_check_granularity;
 
 

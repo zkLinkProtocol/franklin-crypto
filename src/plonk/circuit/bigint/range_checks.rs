@@ -87,19 +87,20 @@ impl<E: Engine> RangeCheckDecomposition<E> {
 }
 
 
+// if coarsely flag is set that we constraint bit length up to range check granularity
 pub fn constraint_num_bits_ext_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
-    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, range_check_strategy: RangeConstraintStrategy
+    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, strategy: RangeConstraintStrategy, coarsely: bool
 ) -> Result<RangeCheckDecomposition<E>, SynthesisError> {
-    match range_check_strategy {
+    match strategy {
         RangeConstraintStrategy::NaiveSingleBit => {
             enforce_range_check_using_naive_approach(cs, var, num_bits)
         },
         RangeConstraintStrategy::CustomTwoBitGate => {
-            enforce_range_check_using_custom_gate(cs, var, num_bits)
+            enforce_range_check_using_custom_gate(cs, var, num_bits, coarsely)
         },
         RangeConstraintStrategy::WithBitwiseOpTable(_table_width) => {  
             let table = cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME).expect("should found a valid table");         
-            enforce_range_check_using_bitop_table(cs, var, num_bits, table)
+            enforce_range_check_using_bitop_table(cs, var, num_bits, table, coarsely)
         }    
     }
 }
@@ -107,7 +108,14 @@ pub fn constraint_num_bits_ext_with_strategy<E: Engine, CS: ConstraintSystem<E>>
 pub fn constraint_num_bits_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, range_check_strategy: RangeConstraintStrategy
 ) -> Result<(), SynthesisError> {
-    let _decomposition = constraint_num_bits_ext_with_strategy(cs, var, num_bits, range_check_strategy)?;
+    let _decomposition = constraint_num_bits_ext_with_strategy(cs, var, num_bits, range_check_strategy, false)?;
+    Ok(())
+}
+
+pub fn coarsely_constraint_num_bits_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, range_check_strategy: RangeConstraintStrategy
+) -> Result<(), SynthesisError> {
+    let _decomposition = constraint_num_bits_ext_with_strategy(cs, var, num_bits, range_check_strategy, true)?;
     Ok(())
 }
 
@@ -117,7 +125,7 @@ pub fn constraint_num_bits_ext<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize
 ) -> Result<RangeCheckDecomposition<E>, SynthesisError> {
     let range_check_strategy = get_optimal_strategy(cs);
-    constraint_num_bits_ext_with_strategy(cs, var, num_bits, range_check_strategy)
+    constraint_num_bits_ext_with_strategy(cs, var, num_bits, range_check_strategy, false)
 }
 
 pub fn constraint_num_bits<E: Engine, CS: ConstraintSystem<E>>(
@@ -297,10 +305,12 @@ fn split_into_bit_constraint_slices<F: PrimeField>(el: &F, slice_width: usize, n
 // enforce bitlength(var * shift) <= num_bits via custom gate of the form:
 // { d_next - 4a /in [0, 3], a - 4b /in [0, 3], b - 4c /in [0, 3], c - 4d /in [0, 3]
 pub fn enforce_range_check_using_custom_gate<E: Engine, CS: ConstraintSystem<E>>(
-    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize
+    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, _coarsely: bool
 ) -> Result<RangeCheckDecomposition<E>, SynthesisError> 
 {
     assert!(num_bits > 0);
+    // TODO: there should be additional logic for num_bits &1 != 0
+    // for now every such allocation is automatically coarse on 2 bit granularity
     assert!(num_bits & 1 == 0);
     assert_eq!(CS::Params::STATE_WIDTH, 4, "this only works for a state of width 4 for now");
     const NUM_BITS_PER_GATE: usize = 8;
@@ -451,12 +461,12 @@ pub fn apply_range_table_gate<E: Engine, CS: ConstraintSystem<E>>(
 
 
 pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>(
-    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, table: Arc<LookupTableApplication<E>>
+    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, table: Arc<LookupTableApplication<E>>, coarsely: bool
 ) -> Result<RangeCheckDecomposition<E>, SynthesisError> 
 {
     let chunk_width = (crate::log2_floor(table.size()) / 2) as usize;
     let num_chunks = num_bits / chunk_width;
-    let should_enforce_for_shifted_chunk = (num_bits % chunk_width) != 0;
+    let should_enforce_for_shifted_chunk = (num_bits % chunk_width) != 0 && !coarsely;
 
     increment_invocation_count();
     if (num_chunks == 1 && should_enforce_for_shifted_chunk) || (num_chunks <= 2 && !should_enforce_for_shifted_chunk) 
@@ -573,7 +583,7 @@ mod test {
                     }
                 ).unwrap();
         
-                let _ = enforce_range_check_using_custom_gate(cs, &num, 18)?;
+                let _ = enforce_range_check_using_custom_gate(cs, &num, 18, false)?;
 
                 Ok(())
             }

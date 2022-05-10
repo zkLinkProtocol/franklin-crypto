@@ -1669,6 +1669,26 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok(witnesses)
     }
 
+    // pub fn simple_add<CS: ConstraintSystem<E>>(
+    //     self,
+    //     cs: &mut CS,
+    //     other: Self,
+    // )-> Result<(Self, (Self, Self)), SynthesisError>{
+    //     let params = self.representation_params;
+
+    //     let mut new_binary_limbs = vec![];
+
+    //     for (l, r) in this.binary_limbs.iter().zip(other.binary_limbs.iter()) {
+    //         let new_term = l.term.add(cs, &r.term)?;
+    //         let new_max_value = l.max_value.clone() + &r.max_value;
+
+    //         let limb = Limb::<E>::new(new_term, new_max_value);
+    //         new_binary_limbs.push(limb);
+    //     }
+
+    //     todo!();
+    // }
+
     pub fn add<CS: ConstraintSystem<E>>(
         self,
         cs: &mut CS,
@@ -1919,6 +1939,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         Ok((new, (this, other)))
     }
+
 
     pub fn mul<CS: ConstraintSystem<E>>(
         self,
@@ -3604,6 +3625,78 @@ mod test {
     use super::*;
     use crate::plonk::circuit::*;
 
+    fn test_mul_witnesses<
+        E: Engine,
+        F: PrimeField,
+        P: PlonkConstraintSystemParams<E>,
+        I: Fn() -> TrivialAssembly<E, P, Width4MainGateWithDNext>,
+    >(
+        params: &RnsParameters<E, F>,
+        init: &I,
+    ) {
+        use rand::{Rng, SeedableRng, XorShiftRng};
+        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+
+        for i in 0..1 {
+            let mut cs = init();
+
+            let a_f: F = rng.gen();
+            let b_f: F = rng.gen();
+            let a = FieldElement::new_allocated(&mut cs, Some(a_f), &params).unwrap();
+
+            let a_base = biguint_to_fe::<E::Fr>(
+                fe_to_biguint(&a_f) % repr_to_biguint::<E::Fr>(&E::Fr::char()),
+            );
+            assert_eq!(a_base, a.base_field_limb.get_value().unwrap());
+
+            let b = FieldElement::new_allocated(&mut cs, Some(b_f), &params).unwrap();
+
+            let b_base = biguint_to_fe::<E::Fr>(
+                fe_to_biguint(&b_f) % repr_to_biguint::<E::Fr>(&E::Fr::char()),
+            );
+            assert_eq!(b_base, b.base_field_limb.get_value().unwrap());
+
+            let (result, (a, b)) = a.mul(&mut cs, b).unwrap();
+
+            assert!(cs.is_satisfied());
+
+            let mut m = a_f;
+            m.mul_assign(&b_f);
+
+            assert_eq!(result.value.unwrap(), m);
+
+            assert_eq!(result.get_value().unwrap(), fe_to_biguint(&m));
+
+            if i == 0 {
+                let a = a.reduce_if_necessary(&mut cs).unwrap();
+                let _b = b.reduce_if_necessary(&mut cs).unwrap();
+                let base = cs.n();
+                use std::sync::atomic::Ordering;
+                let k = super::super::RANGE_GATES_COUNTER.load(Ordering::SeqCst);
+                let _ = result.mul(&mut cs, a).unwrap();
+                let k = super::super::RANGE_GATES_COUNTER.load(Ordering::SeqCst) - k;
+                println!("Single multiplication taken {} gates", cs.n() - base);
+                println!("Range checks take {} gates", k);
+                println!("Multiplication taken {} gates", cs.n());
+            }
+        }
+    }
+
+
+    fn test_number_of_gates() {
+
+        use crate::bellman::pairing::bn256::{Bn256, Fq, Fr};
+
+        let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
+        let init_function = move || {
+            let cs =
+                TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+
+            cs
+        };
+        
+    }
+
     #[test]
     fn test_bn_254() {
         use crate::bellman::pairing::bn256::{Bn256, Fq, Fr};
@@ -3617,20 +3710,20 @@ mod test {
             cs
         };
 
-        test_allocation_on_random_witnesses(&params, &init_function);
+        // test_allocation_on_random_witnesses(&params, &init_function);
         test_add_on_random_witnesses(&params, &init_function);
         test_sub_on_random_witnesses(&params, &init_function);
         test_mul_on_random_witnesses(&params, &init_function);
-        test_square_on_random_witnesses(&params, &init_function);
-        test_negation_on_random_witnesses(&params, &init_function);
-        test_equality_on_random_witnesses(&params, &init_function);
-        test_non_equality_on_random_witnesses(&params, &init_function);
-        test_select_on_random_witnesses(&params, &init_function);
-        test_conditional_negation_on_random_witnesses(&params, &init_function);
-        test_long_addition_chain_on_random_witnesses(&params, &init_function);
-        test_long_negation_chain_on_random_witnesses(&params, &init_function);
-        test_long_subtraction_chain_on_random_witnesses(&params, &init_function);
-        test_inv_mul_on_random_witnesses(&params, &init_function);
+        // test_square_on_random_witnesses(&params, &init_function);
+        // test_negation_on_random_witnesses(&params, &init_function);
+        // test_equality_on_random_witnesses(&params, &init_function);
+        // test_non_equality_on_random_witnesses(&params, &init_function);
+        // test_select_on_random_witnesses(&params, &init_function);
+        // test_conditional_negation_on_random_witnesses(&params, &init_function);
+        // test_long_addition_chain_on_random_witnesses(&params, &init_function);
+        // test_long_negation_chain_on_random_witnesses(&params, &init_function);
+        // test_long_subtraction_chain_on_random_witnesses(&params, &init_function);
+        // test_inv_mul_on_random_witnesses(&params, &init_function);
     }
 
     #[test]
@@ -3747,11 +3840,11 @@ mod test {
         use rand::{Rng, SeedableRng, XorShiftRng};
         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
-        for i in 0..100 {
+        for i in 0..1 {
             let mut cs = init();
 
-            let a_f: F = rng.gen();
-            let b_f: F = rng.gen();
+            let a_f= F::from_str("1").unwrap();
+            let b_f = F::from_str("0").unwrap();
             let a = FieldElement::new_allocated(&mut cs, Some(a_f), &params).unwrap();
 
             let a_base = biguint_to_fe::<E::Fr>(
@@ -3787,6 +3880,7 @@ mod test {
                 let k = super::super::RANGE_GATES_COUNTER.load(Ordering::SeqCst) - k;
                 println!("Single multiplication taken {} gates", cs.n() - base);
                 println!("Range checks take {} gates", k);
+                println!("Multiplication taken {} gates", cs.n());
             }
         }
     }
@@ -3994,11 +4088,11 @@ mod test {
         use rand::{Rng, SeedableRng, XorShiftRng};
         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
-        for i in 0..100 {
+        for i in 0..1 {
             let mut cs = init();
 
-            let a_f: F = rng.gen();
-            let b_f: F = rng.gen();
+            let a_f= F::from_str("1").unwrap();
+            let b_f = F::from_str("0").unwrap();
             let a = FieldElement::new_allocated(&mut cs, Some(a_f), &params).unwrap();
 
             let b = FieldElement::new_allocated(&mut cs, Some(b_f), &params).unwrap();
@@ -4025,18 +4119,19 @@ mod test {
 
             assert_eq!(result.value.unwrap(), m);
 
-            // let mut ab_in_base_field = a_base;
-            // ab_in_base_field.add_assign(&b_base);
+            let mut ab_in_base_field = a_base;
+            ab_in_base_field.add_assign(&b_base);
 
-            // assert_eq!(result.base_field_limb.get_value().unwrap(), ab_in_base_field);
+            assert_eq!(result.base_field_limb.get_value().unwrap(), ab_in_base_field);
 
             if i == 0 {
-                let t0 = a.reduce_if_necessary(&mut cs).unwrap();
-                let t1 = result.reduce_if_necessary(&mut cs).unwrap();
-                assert!(t0.needs_reduction() == false);
-                assert!(t1.needs_reduction() == false);
+                // let t0 = a.reduce_if_necessary(&mut cs).unwrap();
+                // let t1 = result.reduce_if_necessary(&mut cs).unwrap();
+                // assert!(t0.needs_reduction() == false);
+                // assert!(t1.needs_reduction() == false);
                 let base = cs.n();
-                let _ = t0.add(&mut cs, t1).unwrap();
+                println!("addition taken {} gates", base);
+                // let _ = t0.add(&mut cs, t1).unwrap();
                 println!("Single addition taken {} gates", cs.n() - base);
             }
         }

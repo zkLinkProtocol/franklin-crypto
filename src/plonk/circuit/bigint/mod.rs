@@ -75,12 +75,12 @@ pub fn constraint_num_bits<E: Engine, CS: ConstraintSystem<E>>(
 #[track_caller]
 pub fn split_into_slices<F: PrimeField>(el: &F, slice_width: usize, num_slices: usize) -> Vec<F> {
     let mut repr = el.into_repr();
-    assert!(
-        repr.num_bits() as usize <= slice_width * num_slices,
-        "limit is {} bits, got {}",
-        slice_width * num_slices,
-        repr.num_bits()
-    );
+    // assert!(
+    //     repr.num_bits() as usize <= slice_width * num_slices,
+    //     "limit is {} bits, got {}",
+    //     slice_width * num_slices,
+    //     repr.num_bits()
+    // );
     let mut slices = Vec::with_capacity(num_slices);
     if slice_width < 64 {
         let mask = (1u64 << slice_width) - 1u64;

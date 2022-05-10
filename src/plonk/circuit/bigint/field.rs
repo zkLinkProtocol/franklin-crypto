@@ -407,11 +407,20 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok((new, total_decomposition))
     }
 
+    // coarsely means that most significant limb may overflow a little (up to range constraint granularity)
     #[track_caller]
-    pub fn alloc<CS: ConstraintSystem<E>>(
+    pub fn alloc_coarsely<CS: ConstraintSystem<E>>(
         cs: &mut CS, value: Option<F>, params: &'a RnsParameters<E, F>
     ) -> Result<Self, SynthesisError> {
         let (new, _decomposition) = Self::alloc_ext(cs, value, params, true)?;
+        Ok(new)
+    }
+
+    #[track_caller]
+    pub fn alloc_exactly<CS: ConstraintSystem<E>>(
+        cs: &mut CS, value: Option<F>, params: &'a RnsParameters<E, F>
+    ) -> Result<Self, SynthesisError> {
+        let (new, _decomposition) = Self::alloc_ext(cs, value, params, false)?;
         Ok(new)
     }
 
@@ -652,27 +661,25 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             return false;
         }
 
+        let params = &self.representation_params;
         let upper_bound = match mode {
-            ReductionMode::Strict => self.representation_params.represented_field_modulus * 2u64,
-            ReductionMode::Normalize => self.representation_params.represented_field_modulus,
-            ReductionMode::Loose => self.representation_params.infty,
+            ReductionMode::Strict => params.represented_field_modulus * 2u64,
+            ReductionMode::Normalize => params.represented_field_modulus,
+            ReductionMode::Loose => params.infty,
         };
         let mut needs_reduction = self.get_maximal_possible_stored_value() > upper_bound;
         
-        let limb_max_value = match mode {
-            ReductionMode::Strict | ReductionMode::Normalize => {
-                self.representation_params.limb_max_value_on_alloc.clone()
+        let (reg_limb_max_bitlen, msl_max_bitlen) = match mode {
+            ReductionMode::Strict | ReductionMode::Normalize => (params.binary_limb_width, params.msl_width),
+            ReductionMode::Loose => {
+                (params.binary_limb_width + params.capacity_width, params.msl_width + params.capacity_width)
             },
-            ReductionMode::Loose => self.representation_params.limb_max_value.clone()
         };
 
-        for binary_limb in self.binary_limbs.iter() {
-            needs_reduction = needs_reduction || (binary_limb.max_value() > limb_max_value);
+        for (_is_first, is_last, binary_limb) in self.binary_limbs.iter().identify_first_last() {
+            let max_width = if is_last { msl_max_bitlen } else { reg_limb_max_bitlen };
+            needs_reduction = needs_reduction || (binary_limb.max_value().bits() as usize > max_width);
         }
-
-        // binary_limb_width: usize,
-        // capacity_width: usize,
-        // msl_width: usize
 
         needs_reduction
     }
@@ -733,7 +740,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         };
 
         let r_fe = some_biguint_to_fe::<F>(&rem);
-        let r_elem = Self::alloc(cs, r_fe, params)?;
+        let r_elem = Self::alloc_exactly(cs, r_fe, params)?;
         assert!(r_elem.needs_reduction(ReductionMode::Normalize) == false);
 
         // perform constraining by implementing multiplication: x = q*p + r
@@ -752,7 +759,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         minus_one.clone();
 
         // msl here stands for Most Significant Limb
-        let (modulus_limbs, msl_width, _) = slice_into_limbs_non_exact(
+        let modulus_limbs = slice_into_limbs_non_exact(
             params.represented_field_modulus.clone(), params.binary_limb_width, params.num_binary_limbs
         ); 
 

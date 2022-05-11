@@ -868,10 +868,18 @@ pub fn simple_mul<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 4
         number += result_rev[i].as_ref().unwrap() * step;
 
     }
+    let two_chunk = split_some_into_fixed_number_of_limbs(Some(number.clone()), 512, 2);
+    let mut number_num: Vec<Num<E>> = vec![];
+    for i in 0..two_chunk.len(){
+        let variable: Option<E::Fr>= some_biguint_to_fe(&two_chunk[i]);
+        number_num.push(Num::Variable(AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap()));
+
+    }
+
     use std::str::FromStr;
     let field_modulus = BigUint::from_str("21888242871839275222246405745257275088696311157297823662689037894645226208583").unwrap();
-    let result = number % field_modulus;
-    let aaa = split_some_into_fixed_number_of_limbs(Some(result), 64, 4);
+    let result = number.clone() % field_modulus.clone();
+    let aaa = split_some_into_fixed_number_of_limbs(Some(result), 256, 2);
     let mut result: Vec<Num<E>> = vec![];
     for i in 0..aaa.len(){
         let variable: Option<E::Fr>= some_biguint_to_fe(&aaa[i]);
@@ -879,6 +887,57 @@ pub fn simple_mul<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 4
 
 
     }
+    use num_integer::Integer;
+    // c = q*p +r; 
+    //a/b = q and a%b = r
+    let (quotient, remainder) = number.div_rem(&field_modulus);
+    let field_chunk = split_some_into_fixed_number_of_limbs(Some(field_modulus), 256, 2);
+    let mut field_mod_num:Vec<Num<E>> = vec![]; 
+    for i in 0..field_chunk.len(){
+        let variable: Option<E::Fr>= some_biguint_to_fe(&field_chunk[i]);
+        field_mod_num.push(Num::Variable(AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap()));
+    }
+
+    let quotient_chunk = split_some_into_fixed_number_of_limbs(Some(quotient), 256, 2);
+    let mut quotient_num:Vec<Num<E>> = vec![]; 
+    for i in 0..quotient_chunk.len(){
+        let variable: Option<E::Fr>= some_biguint_to_fe(&quotient_chunk[i]);
+        quotient_num.push(Num::Variable(AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap()));
+    }
+    let mut lc = LinearCombination::zero();
+    for k in 0..2{
+        
+        for i in 0..2*k + 1 {
+            let j = 2*k - i;
+            if (i < 2) && (j < 2) {
+                let mul_term = quotient_num[i].mul(cs, &field_mod_num[i])?;
+                lc.add_assign_number_with_coeff(&mul_term, E::Fr::one());
+            }
+
+        }
+    
+        for i in 0..(2*k+2) {
+            let j = 2*k + 1 - i;
+            if (i < 2) && (j < 2) {
+                let mul_term = quotient_num[i].mul(cs, &field_mod_num[i])?;
+                lc.add_assign_number_with_coeff(&mul_term, shifts[128].clone());
+            }
+        }
+    }
+    lc.add_assign_number_with_coeff(&result[0], E::Fr::one()); //remainder
+    lc.add_assign_number_with_coeff(&result[1], shifts[128].clone());
+
+    let mut minus_one = E::Fr::one();
+    minus_one.negate();
+    lc.add_assign_number_with_coeff(&number_num[0], minus_one.clone()); // c
+    let two_words_shift = shifts[512].clone();
+    let two_words_shift_right = two_words_shift.inverse().unwrap();
+    lc.add_assign_number_with_coeff(&number_num[1], two_words_shift_right.clone());
+
+    lc.enforce_zero(cs)?;
+
+
+
     Ok(result)
 
 }
@@ -933,7 +992,7 @@ pub fn simple_div<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 8
     let mut c_in_limbs: Vec<Option<BigUint>> = vec![];
     let mut of = Some(BigUint::zero());
     let mut pre_of = Some(BigUint::zero());
-    const NUM_LIMBS_IN_MULTIPLIERS : usize = 4;
+    const NUM_LIMBS_IN_MULTIPLIERS : usize = 8;
     let mut input_carry = Num::<E>::zero();
     for k in 0..8{
         let mut lc = LinearCombination::zero();

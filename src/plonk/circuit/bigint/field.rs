@@ -3710,20 +3710,20 @@ mod test {
             cs
         };
 
-        // test_allocation_on_random_witnesses(&params, &init_function);
+        test_allocation_on_random_witnesses(&params, &init_function);
         test_add_on_random_witnesses(&params, &init_function);
         test_sub_on_random_witnesses(&params, &init_function);
         test_mul_on_random_witnesses(&params, &init_function);
-        // test_square_on_random_witnesses(&params, &init_function);
-        // test_negation_on_random_witnesses(&params, &init_function);
-        // test_equality_on_random_witnesses(&params, &init_function);
-        // test_non_equality_on_random_witnesses(&params, &init_function);
-        // test_select_on_random_witnesses(&params, &init_function);
-        // test_conditional_negation_on_random_witnesses(&params, &init_function);
-        // test_long_addition_chain_on_random_witnesses(&params, &init_function);
-        // test_long_negation_chain_on_random_witnesses(&params, &init_function);
-        // test_long_subtraction_chain_on_random_witnesses(&params, &init_function);
-        // test_inv_mul_on_random_witnesses(&params, &init_function);
+        test_square_on_random_witnesses(&params, &init_function);
+        test_negation_on_random_witnesses(&params, &init_function);
+        test_equality_on_random_witnesses(&params, &init_function);
+        test_non_equality_on_random_witnesses(&params, &init_function);
+        test_select_on_random_witnesses(&params, &init_function);
+        test_conditional_negation_on_random_witnesses(&params, &init_function);
+        test_long_addition_chain_on_random_witnesses(&params, &init_function);
+        test_long_negation_chain_on_random_witnesses(&params, &init_function);
+        test_long_subtraction_chain_on_random_witnesses(&params, &init_function);
+        test_inv_mul_on_random_witnesses(&params, &init_function);
     }
 
     #[test]
@@ -3840,11 +3840,11 @@ mod test {
         use rand::{Rng, SeedableRng, XorShiftRng};
         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
-        for i in 0..1 {
+        for i in 0..100 {
             let mut cs = init();
 
-            let a_f= F::from_str("1").unwrap();
-            let b_f = F::from_str("0").unwrap();
+            let a_f: F = rng.gen();
+            let b_f: F = rng.gen();
             let a = FieldElement::new_allocated(&mut cs, Some(a_f), &params).unwrap();
 
             let a_base = biguint_to_fe::<E::Fr>(
@@ -4088,11 +4088,11 @@ mod test {
         use rand::{Rng, SeedableRng, XorShiftRng};
         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
-        for i in 0..1 {
+        for i in 0..100 {
             let mut cs = init();
 
-            let a_f= F::from_str("1").unwrap();
-            let b_f = F::from_str("0").unwrap();
+            let a_f: F = rng.gen();
+            let b_f: F = rng.gen();
             let a = FieldElement::new_allocated(&mut cs, Some(a_f), &params).unwrap();
 
             let b = FieldElement::new_allocated(&mut cs, Some(b_f), &params).unwrap();
@@ -4125,13 +4125,13 @@ mod test {
             assert_eq!(result.base_field_limb.get_value().unwrap(), ab_in_base_field);
 
             if i == 0 {
-                // let t0 = a.reduce_if_necessary(&mut cs).unwrap();
-                // let t1 = result.reduce_if_necessary(&mut cs).unwrap();
-                // assert!(t0.needs_reduction() == false);
-                // assert!(t1.needs_reduction() == false);
+                let t0 = a.reduce_if_necessary(&mut cs).unwrap();
+                let t1 = result.reduce_if_necessary(&mut cs).unwrap();
+                assert!(t0.needs_reduction() == false);
+                assert!(t1.needs_reduction() == false);
                 let base = cs.n();
                 println!("addition taken {} gates", base);
-                // let _ = t0.add(&mut cs, t1).unwrap();
+                let _ = t0.add(&mut cs, t1).unwrap();
                 println!("Single addition taken {} gates", cs.n() - base);
             }
         }

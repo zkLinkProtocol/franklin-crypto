@@ -3682,50 +3682,352 @@ mod test {
         }
     }
 
+    #[test]
+    fn test_number_of_gates_mul() {
 
-    fn test_number_of_gates() {
+        use super::*;
+        use crate::plonk::circuit::*;
+        use crate::bellman::pairing::bn256::{Bn256};
 
-        use crate::bellman::pairing::bn256::{Bn256, Fq, Fr};
+        type E = crate::bellman::pairing::bn256::Bn256;
+        type Fr = crate::bellman::pairing::bn256::Fr;
+        type Fq = crate::bellman::pairing::bn256::Fq;
 
-        let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
-        let init_function = move || {
-            let cs =
-                TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+        use crate::bellman::plonk::better_better_cs::cs::*;
 
-            cs
-        };
+        let mut cs = TrivialAssembly::<
+                Bn256,
+                PlonkCsWidth4WithNextStepParams,
+                Width4MainGateWithDNext,
+            >::new();
+
+        let over = vec![
+            PolyIdentifier::VariablesPolynomial(0),
+            PolyIdentifier::VariablesPolynomial(1),
+            PolyIdentifier::VariablesPolynomial(2),
+        ];
+        let table = LookupTableApplication::<Bn256>::new_range_table_of_width_3(16, over).unwrap();
+
+        cs.add_table(table).unwrap();
+        let strats = get_range_constraint_info(&cs);
+
+        let params = RnsParameters::<Bn256, Fr>::new_for_field_with_strategy(
+            80, 110, 4, strats[0], true,
+        );
+
+        use rand::{Rng, SeedableRng, XorShiftRng};
+        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+
+        for i in 0..1 {
+
+            let a_f: Fr = rng.gen();
+            let b_f: Fr = rng.gen();
+            let a = FieldElement::new_allocated(&mut cs, Some(a_f), &params).unwrap();
+
+            let a_base = biguint_to_fe::<Fr>(
+                fe_to_biguint(&a_f) % repr_to_biguint::<Fr>(&Fr::char()),
+            );
+            assert_eq!(a_base, a.base_field_limb.get_value().unwrap());
+
+            let b = FieldElement::new_allocated(&mut cs, Some(b_f), &params).unwrap();
+
+            let b_base = biguint_to_fe::<Fr>(
+                fe_to_biguint(&b_f) % repr_to_biguint::<Fr>(&Fr::char()),
+            );
+            assert_eq!(b_base, b.base_field_limb.get_value().unwrap());
+
+            let (result, (a, b)) = a.mul(&mut cs, b).unwrap();
+
+            assert!(cs.is_satisfied());
+
+            let mut m = a_f;
+            m.mul_assign(&b_f);
+
+            assert_eq!(result.value.unwrap(), m);
+
+            assert_eq!(result.get_value().unwrap(), fe_to_biguint(&m));
+
+            if i == 0 {
+                let a = a.reduce_if_necessary(&mut cs).unwrap();
+                let _b = b.reduce_if_necessary(&mut cs).unwrap();
+                let base = cs.n();
+                println!("Multiplication taken {} gates", base);
+                
+            }
+        }
+        
+    }
+    #[test]
+    fn test_number_of_gates_div() {
+
+        use super::*;
+        use crate::plonk::circuit::*;
+        use crate::bellman::pairing::bn256::{Bn256};
+
+        type E = crate::bellman::pairing::bn256::Bn256;
+        type Fr = crate::bellman::pairing::bn256::Fr;
+        type Fq = crate::bellman::pairing::bn256::Fq;
+
+        use crate::bellman::plonk::better_better_cs::cs::*;
+
+        let mut cs = TrivialAssembly::<
+                Bn256,
+                PlonkCsWidth4WithNextStepParams,
+                Width4MainGateWithDNext,
+            >::new();
+
+        let over = vec![
+            PolyIdentifier::VariablesPolynomial(0),
+            PolyIdentifier::VariablesPolynomial(1),
+            PolyIdentifier::VariablesPolynomial(2),
+        ];
+        let table = LookupTableApplication::<Bn256>::new_range_table_of_width_3(16, over).unwrap();
+
+        cs.add_table(table).unwrap();
+        let strats = get_range_constraint_info(&cs);
+
+        let params = RnsParameters::<Bn256, Fr>::new_for_field_with_strategy(
+            80, 110, 4, strats[0], true,
+        );
+
+        use rand::{Rng, SeedableRng, XorShiftRng};
+        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+
+        for i in 0..1 {
+
+            let a_f: Fr = rng.gen();
+            let b_f: Fr = rng.gen();
+            let a = FieldElement::new_allocated(&mut cs, Some(a_f), &params).unwrap();
+
+            let a_base = biguint_to_fe::<Fr>(
+                fe_to_biguint(&a_f) % repr_to_biguint::<Fr>(&Fr::char()),
+            );
+            assert_eq!(a_base, a.base_field_limb.get_value().unwrap());
+
+            let b = FieldElement::new_allocated(&mut cs, Some(b_f), &params).unwrap();
+
+            let b_base = biguint_to_fe::<Fr>(
+                fe_to_biguint(&b_f) % repr_to_biguint::<Fr>(&Fr::char()),
+            );
+            assert_eq!(b_base, b.base_field_limb.get_value().unwrap());
+
+            let (result, _) = a.clone().div(&mut cs, b.clone()).unwrap();
+
+            assert!(cs.is_satisfied());
+
+            let mut m = b_f.inverse().unwrap();
+            m.mul_assign(&a_f);
+
+            assert_eq!(result.value.unwrap(), m);
+
+            assert_eq!(result.get_value().unwrap(), fe_to_biguint(&m));
+
+            if i == 0 {
+                let a = a.reduce_if_necessary(&mut cs).unwrap();
+                let _b = b.reduce_if_necessary(&mut cs).unwrap();
+                let base = cs.n();
+                println!("Division taken {} gates", base);
+                
+            }
+        }
+        
+    }
+    #[test]
+    fn test_number_of_gates_add() {
+
+        use super::*;
+        use crate::plonk::circuit::*;
+        use crate::bellman::pairing::bn256::{Bn256};
+
+        type E = crate::bellman::pairing::bn256::Bn256;
+        type Fr = crate::bellman::pairing::bn256::Fr;
+        type Fq = crate::bellman::pairing::bn256::Fq;
+
+        use crate::bellman::plonk::better_better_cs::cs::*;
+
+        let mut cs = TrivialAssembly::<
+                Bn256,
+                PlonkCsWidth4WithNextStepParams,
+                Width4MainGateWithDNext,
+            >::new();
+
+        let over = vec![
+            PolyIdentifier::VariablesPolynomial(0),
+            PolyIdentifier::VariablesPolynomial(1),
+            PolyIdentifier::VariablesPolynomial(2),
+        ];
+        let table = LookupTableApplication::<Bn256>::new_range_table_of_width_3(16, over).unwrap();
+
+        cs.add_table(table).unwrap();
+        let strats = get_range_constraint_info(&cs);
+
+        let params = RnsParameters::<Bn256, Fr>::new_for_field_with_strategy(
+            80, 110, 4, strats[0], true,
+        );
+
+        use rand::{Rng, SeedableRng, XorShiftRng};
+        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+
+        for i in 0..1 {
+
+            let a_f: Fr = rng.gen();
+            let b_f: Fr = rng.gen();
+            let a = FieldElement::new_allocated(&mut cs, Some(a_f), &params).unwrap();
+
+            let b = FieldElement::new_allocated(&mut cs, Some(b_f), &params).unwrap();
+
+            let a_base = biguint_to_fe::<Fr>(
+                fe_to_biguint(&a_f) % repr_to_biguint::<Fr>(&Fr::char()),
+            );
+            let b_base = biguint_to_fe::<Fr>(
+                fe_to_biguint(&b_f) % repr_to_biguint::<Fr>(&Fr::char()),
+            );
+
+            assert_eq!(a_base, a.base_field_limb.get_value().unwrap());
+            assert_eq!(b_base, b.base_field_limb.get_value().unwrap());
+
+            let (result, (a, _b)) = a.add(&mut cs, b).unwrap();
+
+            assert!(cs.is_satisfied());
+
+            let mut m = a_f;
+            m.add_assign(&b_f);
+
+            let res = result.get_value().unwrap() % repr_to_biguint::<Fr>(&Fr::char());
+            assert_eq!(res, fe_to_biguint(&m));
+
+            assert_eq!(result.value.unwrap(), m);
+
+            let mut ab_in_base_field = a_base;
+            ab_in_base_field.add_assign(&b_base);
+
+            assert_eq!(result.base_field_limb.get_value().unwrap(), ab_in_base_field);
+
+            if i == 0 {
+                let t0 = a.reduce_if_necessary(&mut cs).unwrap();
+                let t1 = result.reduce_if_necessary(&mut cs).unwrap();
+                assert!(t0.needs_reduction() == false);
+                assert!(t1.needs_reduction() == false);
+                let base = cs.n();
+                println!("addition taken {} gates", base);
+                let _ = t0.add(&mut cs, t1).unwrap();
+                println!("Single addition taken {} gates", cs.n() - base);
+            }
+        }
+        
+    }
+    #[test]
+    fn test_number_of_gates_sub() {
+
+        use super::*;
+        use crate::plonk::circuit::*;
+        use crate::bellman::pairing::bn256::{Bn256};
+
+        type E = crate::bellman::pairing::bn256::Bn256;
+        type Fr = crate::bellman::pairing::bn256::Fr;
+        type Fq = crate::bellman::pairing::bn256::Fq;
+
+        use crate::bellman::plonk::better_better_cs::cs::*;
+
+        let mut cs = TrivialAssembly::<
+                Bn256,
+                PlonkCsWidth4WithNextStepParams,
+                Width4MainGateWithDNext,
+            >::new();
+
+        let over = vec![
+            PolyIdentifier::VariablesPolynomial(0),
+            PolyIdentifier::VariablesPolynomial(1),
+            PolyIdentifier::VariablesPolynomial(2),
+        ];
+        let table = LookupTableApplication::<Bn256>::new_range_table_of_width_3(16, over).unwrap();
+
+        cs.add_table(table).unwrap();
+        let strats = get_range_constraint_info(&cs);
+
+        let params = RnsParameters::<Bn256, Fr>::new_for_field_with_strategy(
+            80, 110, 4, strats[0], true,
+        );
+
+        use rand::{Rng, SeedableRng, XorShiftRng};
+        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+
+        for i in 0..1 {
+
+            let a_f: Fr = rng.gen();
+            let b_f: Fr = rng.gen();
+            let a = FieldElement::new_allocated(&mut cs, Some(a_f), &params).unwrap();
+
+            let b = FieldElement::new_allocated(&mut cs, Some(b_f), &params).unwrap();
+
+            let a_base = biguint_to_fe::<Fr>(
+                fe_to_biguint(&a_f) % repr_to_biguint::<Fr>(&Fr::char()),
+            );
+            let b_base = biguint_to_fe::<Fr>(
+                fe_to_biguint(&b_f) % repr_to_biguint::<Fr>(&Fr::char()),
+            );
+
+            assert_eq!(a_base, a.base_field_limb.get_value().unwrap());
+            assert_eq!(b_base, b.base_field_limb.get_value().unwrap());
+
+            let (result, (a, _b)) = a.sub(&mut cs, b).unwrap();
+
+            assert!(cs.is_satisfied());
+
+            let mut m = a_f;
+            m.sub_assign(&b_f);
+
+            let res = result.get_value().unwrap() % repr_to_biguint::<Fr>(&Fr::char());
+            assert_eq!(res, fe_to_biguint(&m));
+
+            assert_eq!(result.value.unwrap(), m);
+
+            let mut ab_in_base_field = a_base;
+            ab_in_base_field.sub_assign(&b_base);
+
+            assert_eq!(result.base_field_limb.get_value().unwrap(), ab_in_base_field);
+
+            if i == 0 {
+                let t0 = a.reduce_if_necessary(&mut cs).unwrap();
+                let t1 = result.reduce_if_necessary(&mut cs).unwrap();
+                assert!(t0.needs_reduction() == false);
+                assert!(t1.needs_reduction() == false);
+                let base = cs.n();
+                println!("Subtraction taken {} gates", base);
+                let _ = t0.sub(&mut cs, t1).unwrap();
+                println!("Single Subtraction taken {} gates", cs.n() - base);
+            }
+        }
         
     }
 
     #[test]
     fn test_bn_254() {
-        use crate::bellman::pairing::bn256::{Bn256, Fq, Fr};
+        use crate::bellman::pairing::bn256::{Fq, Bn256, Fr};
 
         let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
 
         let init_function = move || {
-            let cs =
-                TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+            let cs = TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
 
             cs
         };
 
-        test_allocation_on_random_witnesses(&params, &init_function);
+        // test_allocation_on_random_witnesses(&params, &init_function);
         test_add_on_random_witnesses(&params, &init_function);
-        test_sub_on_random_witnesses(&params, &init_function);
+        // test_sub_on_random_witnesses(&params, &init_function);
         test_mul_on_random_witnesses(&params, &init_function);
-        test_square_on_random_witnesses(&params, &init_function);
-        test_negation_on_random_witnesses(&params, &init_function);
-        test_equality_on_random_witnesses(&params, &init_function);
-        test_non_equality_on_random_witnesses(&params, &init_function);
-        test_select_on_random_witnesses(&params, &init_function);
-        test_conditional_negation_on_random_witnesses(&params, &init_function);
-        test_long_addition_chain_on_random_witnesses(&params, &init_function);
-        test_long_negation_chain_on_random_witnesses(&params, &init_function);
-        test_long_subtraction_chain_on_random_witnesses(&params, &init_function);
-        test_inv_mul_on_random_witnesses(&params, &init_function);
+        // test_square_on_random_witnesses(&params, &init_function);
+        // test_negation_on_random_witnesses(&params, &init_function);
+        // test_equality_on_random_witnesses(&params, &init_function);
+        // test_non_equality_on_random_witnesses(&params, &init_function);
+        // test_select_on_random_witnesses(&params, &init_function);
+        // test_conditional_negation_on_random_witnesses(&params, &init_function);
+        // test_long_addition_chain_on_random_witnesses(&params, &init_function);
+        // test_long_negation_chain_on_random_witnesses(&params, &init_function);
+        // test_long_subtraction_chain_on_random_witnesses(&params, &init_function);
+        // test_inv_mul_on_random_witnesses(&params, &init_function);
     }
-
     #[test]
     fn test_bn_254_with_multitable() {
         use crate::bellman::pairing::bn256::{Bn256, Fq, Fr};
@@ -3832,7 +4134,7 @@ mod test {
         E: Engine,
         F: PrimeField,
         P: PlonkConstraintSystemParams<E>,
-        I: Fn() -> TrivialAssembly<E, P, Width4MainGateWithDNext>,
+        I: Fn() ->TrivialAssembly<E, P, Width4MainGateWithDNext>,
     >(
         params: &RnsParameters<E, F>,
         init: &I,
@@ -3840,7 +4142,7 @@ mod test {
         use rand::{Rng, SeedableRng, XorShiftRng};
         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
-        for i in 0..100 {
+        for i in 0..1 {
             let mut cs = init();
 
             let a_f: F = rng.gen();
@@ -3874,13 +4176,14 @@ mod test {
                 let a = a.reduce_if_necessary(&mut cs).unwrap();
                 let _b = b.reduce_if_necessary(&mut cs).unwrap();
                 let base = cs.n();
+                println!("Multiplication taken {} gates", base);
                 use std::sync::atomic::Ordering;
                 let k = super::super::RANGE_GATES_COUNTER.load(Ordering::SeqCst);
                 let _ = result.mul(&mut cs, a).unwrap();
                 let k = super::super::RANGE_GATES_COUNTER.load(Ordering::SeqCst) - k;
                 println!("Single multiplication taken {} gates", cs.n() - base);
                 println!("Range checks take {} gates", k);
-                println!("Multiplication taken {} gates", cs.n());
+                
             }
         }
     }
@@ -4477,22 +4780,22 @@ mod test {
 
             assert_eq!(result.get_value().unwrap(), fe_to_biguint(&m));
 
-            // let mut ab_in_base_field = a_base;
-            // ab_in_base_field.mul_assign(&b_base);
+        //     let mut ab_in_base_field = a_base;
+        //     ab_in_base_field.mul_assign(&b_base);
 
-            // assert_eq!(result.base_field_limb.get_value().unwrap(), ab_in_base_field);
+        //     assert_eq!(result.base_field_limb.get_value().unwrap(), ab_in_base_field);
 
-            // if i == 0 {
-            //     let a = a.reduce_if_necessary(&mut cs).unwrap();
-            //     let b = b.reduce_if_necessary(&mut cs).unwrap();
-            //     let base = cs.n();
-            //     use std::sync::atomic::Ordering;
-            //     let k = super::super::RANGE_GATES_COUNTER.load(Ordering::SeqCst);
-            //     let _ = result.mul(&mut cs, &result).unwrap();
-            //     let k = super::super::RANGE_GATES_COUNTER.load(Ordering::SeqCst) - k;
-            //     println!("Single multiplication taken {} gates", cs.n() - base);
-            //     println!("Range checks take {} gates", k);
-            // }
+        //     if i == 0 {
+        //         let a = a.reduce_if_necessary(&mut cs).unwrap();
+        //         let b = b.reduce_if_necessary(&mut cs).unwrap();
+        //         let base = cs.n();
+        //         use std::sync::atomic::Ordering;
+        //         let k = super::super::RANGE_GATES_COUNTER.load(Ordering::SeqCst);
+        //         let _ = result.mul(&mut cs, &result).unwrap();
+        //         let k = super::super::RANGE_GATES_COUNTER.load(Ordering::SeqCst) - k;
+        //         println!("Single multiplication taken {} gates", cs.n() - base);
+        //         println!("Range checks take {} gates", k);
+        //     }
         }
     }
 

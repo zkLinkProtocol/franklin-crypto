@@ -382,7 +382,7 @@ pub fn adaptively_coarsely_constraint_multiple_with_two_bit_decomposition<
     let strategies = get_range_constraint_info(&*cs);
     assert_eq!(CS::Params::STATE_WIDTH, 4);
     assert!(strategies.len() > 0);
-    assert!(strategies[0].strategy == RangeConstraintStrategy::CustomTwoBitGate);
+    // assert!(strategies[0].strategy == RangeConstraintStrategy::CustomTwoBitGate);
 
     // decomposition using custom gate has an overhead:
     // - 8 bits would require 2 gates

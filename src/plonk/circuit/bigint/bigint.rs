@@ -738,7 +738,7 @@ pub fn simple_mul<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 4
 
             Num::Variable(var) =>{
                 enforce_using_single_column_table_for_shifted_variable_optimized(cs, &var, E::Fr::one(), 64);
-                let mut w = var.get_value().unwrap();
+                let w = var.get_value().unwrap();
                 v_a = fe_to_biguint(&w);
             }
         }
@@ -750,7 +750,7 @@ pub fn simple_mul<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 4
 
             Num::Variable(var) =>{
                 enforce_using_single_column_table_for_shifted_variable_optimized(cs, &var, E::Fr::one(), 64);
-                let mut w = var.get_value().unwrap();
+                let w = var.get_value().unwrap();
                 v_b = fe_to_biguint(&w);
             }
         }
@@ -820,10 +820,6 @@ pub fn simple_mul<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 4
             }
         }
         mul_term +=pre_of.clone().unwrap();
-        // let fe_mul_term =  some_biguint_to_fe::<E::Fr>(&Some(mul_term.clone()));
-        // let allc_num = AllocatedNum::alloc(cs, || Ok(*fe_mul_term.get()?)).unwrap();
-        // let allocated_term = Num::Variable(allc_num);
-        // lc.add_assign_number_with_coeff(&allocated_term, minus_one.clone());
 
         let modulus = BigUint::from(1u64) << 128u32;
         of = Some((mul_term.clone() % modulus) >> 128u8);
@@ -865,10 +861,10 @@ pub fn simple_mul<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 4
 
     }
 
-    let two_chunk = split_some_into_fixed_number_of_limbs(Some(number.clone()), 128, 4);
+    let four_chunk = split_some_into_fixed_number_of_limbs(Some(number.clone()), 128, 4);
     let mut number_num: Vec<Num<E>> = vec![];
-    for i in 0..two_chunk.len(){
-        let variable: Option<E::Fr>= some_biguint_to_fe(&two_chunk[i]);
+    for i in 0..four_chunk.len(){
+        let variable: Option<E::Fr>= some_biguint_to_fe(&four_chunk[i]);
         number_num.push(Num::Variable(AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap()));
 
     }
@@ -877,12 +873,13 @@ pub fn simple_mul<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 4
     let field_modulus = BigUint::from_str("21888242871839275222246405745257275088696311157297823662689037894645226208583").unwrap();
     let result_uint = number.clone() % field_modulus.clone();
 
-    let aaa = split_some_into_fixed_number_of_limbs(Some(result_uint.clone()), 128, 2);
+    let remainder_uint = split_some_into_fixed_number_of_limbs(Some(result_uint.clone()), 128, 2);
     let mut result: Vec<Num<E>> = vec![];
-    for i in 0..aaa.len(){
-        let variable: Option<E::Fr>= some_biguint_to_fe(&aaa[i]);
-        result.push(Num::Variable(AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap()));
-
+    for i in 0..remainder_uint.len(){
+        let variable: Option<E::Fr>= some_biguint_to_fe(&remainder_uint[i]);
+        let r = AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap();
+        result.push(Num::Variable(r));
+        enforce_using_single_column_table_for_shifted_variable_optimized(cs, &r, E::Fr::one(), 128);
 
     }
 
@@ -891,23 +888,28 @@ pub fn simple_mul<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 4
     //a/b = q and a%b = r
     let (quotient, remainder) = number.div_rem(&field_modulus);
     assert_eq!(remainder.clone(), result_uint.clone());
+
     let field_chunk = split_some_into_fixed_number_of_limbs(Some(field_modulus), 64, 4);
     let mut field_mod_num:Vec<Num<E>> = vec![]; 
     for i in 0..field_chunk.len(){
         let variable: Option<E::Fr>= some_biguint_to_fe(&field_chunk[i]);
-        field_mod_num.push(Num::Variable(AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap()));
+        let m = AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap();
+        field_mod_num.push(Num::Variable(m));
     }
 
     let quotient_chunk = split_some_into_fixed_number_of_limbs(Some(quotient), 64, 4);
     let mut quotient_num:Vec<Num<E>> = vec![]; 
     for i in 0..quotient_chunk.len(){
         let variable: Option<E::Fr>= some_biguint_to_fe(&quotient_chunk[i]);
-        quotient_num.push(Num::Variable(AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap()));
+        let m =AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap();
+        quotient_num.push(Num::Variable(m));
+        enforce_using_single_column_table_for_shifted_variable_optimized(cs, &m, E::Fr::one(), 64);
     }
 
     let mut of = Some(BigUint::zero());
     let mut pre_of = Some(BigUint::zero());
     let mut input_carry = Num::<E>::zero();
+    let mut c_in_limbs: Vec<Option<BigUint>> = vec![];
     for k in 0..4{
         let mut lc = LinearCombination::zero();
 
@@ -941,21 +943,42 @@ pub fn simple_mul<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 4
         if k < 2 {
             lc.add_assign_number_with_coeff(&result[k], E::Fr::one());//remainder
 
-            mul_term_uint +=pre_of.clone().unwrap() + aaa[k].clone().unwrap();
+            mul_term_uint +=pre_of.clone().unwrap() + remainder_uint[k].clone().unwrap();
         }
-        let two_words_shift = shifts[128].clone();
-        let two_words_shift_right = two_words_shift.inverse().unwrap();
-        let mut minus_one = E::Fr::one();
-        minus_one.negate();
-        lc.add_assign_number_with_coeff(&number_num[k], minus_one.clone()); // c
 
-        lc.scale(&two_words_shift_right);
+        let modulus = BigUint::from(1u64) << 128u32;
+        of = Some((mul_term_uint.clone() % modulus) >> 128u8);
+        let fe_of =  some_biguint_to_fe::<E::Fr>(&of);
+        let allc_num = AllocatedNum::alloc(cs, || Ok(*fe_of.get()?)).unwrap();
+        let allocated_of = Num::Variable(allc_num);
+        enforce_using_single_column_table_for_shifted_variable_optimized(cs, &allc_num, E::Fr::one(), 75);
+        lc.add_assign_number_with_coeff(&allocated_of, two_words_shift_right.clone());
+
+        let intermediate_of_witness = Some(!of.as_ref().unwrap().is_zero());
+
+        let mut limbs_for_c= BigUint::zero();
+        if intermediate_of_witness.unwrap() {
+            let shift = BigUint::from(1u64) << 128u32;
+            limbs_for_c = mul_term_uint.clone() - of.as_ref().unwrap()*shift;
+            c_in_limbs.push(Some(limbs_for_c.clone()));
+        }
+        else{
+            limbs_for_c = mul_term_uint.clone();
+            c_in_limbs.push(Some(mul_term_uint));
+        }
+        let fe_c =  some_biguint_to_fe::<E::Fr>(&Some(limbs_for_c));
+        let allc_num = AllocatedNum::alloc(cs, || Ok(*fe_c.get()?)).unwrap();
+        let allocated_c = Num::Variable(allc_num);
+        lc.add_assign_number_with_coeff(&allocated_c, minus_one.clone());
+        enforce_using_single_column_table_for_shifted_variable_optimized(cs, &allc_num, E::Fr::one(), 128);
+
+
         lc.enforce_zero(cs)?;
+        
+        pre_of = of;
+        input_carry = allocated_of;
+
     }
-
-
-
-
 
     Ok(result)
 
@@ -997,6 +1020,12 @@ pub fn simple_div<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 8
     let (quotient, remainder) = big_big_biguint_a.div_rem(&big_big_biguint_b);
 
     let quotient_in_limbs = split_some_into_fixed_number_of_limbs(Some(quotient), 64, 8 );
+    // let mut quotient_in_limbs_num: Vec<Num<E>> = vec![];
+    // for i in 0..quotient_in_limbs.len(){
+    //     let variable: Option<E::Fr>= some_biguint_to_fe(&quotient_in_limbs[i]);
+    //     quotient_in_limbs_num.push(Num::Variable(AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap()));
+
+    // }
     let divisor_in_limbs = split_some_into_fixed_number_of_limbs(Some(big_big_biguint_b), 64, 8 );
     let remainder = split_some_into_fixed_number_of_limbs(Some(remainder), 64, 4 );
 
@@ -1023,31 +1052,34 @@ pub fn simple_div<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 8
         let mut mul_term_2 = BigUint::zero();
         let mut mul_term_2_num = Num::<E>::zero();
 
-        let mut rem_1 = BigUint::zero();
         for i in 0..2*k + 1 {
             let j = 2*k - i;
             if (i < NUM_LIMBS_IN_MULTIPLIERS) && (j < NUM_LIMBS_IN_MULTIPLIERS) {
+
                 let fe_a = some_biguint_to_fe::<E::Fr>(&quotient_in_limbs[i].clone());
                 let allc_num_a = AllocatedNum::alloc(cs, || Ok(*fe_a.get()?)).unwrap();
                 let chunk_a_num = Num::Variable(allc_num_a);
-                let fe_b = some_biguint_to_fe::<E::Fr>(&divisor_in_limbs[i].clone());
+
+                let fe_b = some_biguint_to_fe::<E::Fr>(&divisor_in_limbs[j].clone());
                 let allc_num_b = AllocatedNum::alloc(cs, || Ok(*fe_b.get()?)).unwrap();
                 let chunk_b_num = Num::Variable(allc_num_b);
 
                 mul_term_1_num = chunk_a_num.mul(cs, &chunk_b_num)?;
                 lc.add_assign_number_with_coeff(&mul_term_1_num, E::Fr::one());
 
-                mul_term_1 = quotient_in_limbs[i].clone().unwrap() * divisor_in_limbs[i].clone().unwrap();
+                mul_term_1 = quotient_in_limbs[i].clone().unwrap() * divisor_in_limbs[j].clone().unwrap();
                 mul_term += mul_term_1.clone();
             }
         }
         for i in 0..(2*k+2) {
             let j = 2*k + 1 - i;
             if (i < NUM_LIMBS_IN_MULTIPLIERS) && (j < NUM_LIMBS_IN_MULTIPLIERS) {
+
                 let fe_a = some_biguint_to_fe::<E::Fr>(&quotient_in_limbs[i].clone());
                 let allc_num_a = AllocatedNum::alloc(cs, || Ok(*fe_a.get()?)).unwrap();
                 let chunk_a_num = Num::Variable(allc_num_a);
-                let fe_b = some_biguint_to_fe::<E::Fr>(&divisor_in_limbs[i].clone());
+
+                let fe_b = some_biguint_to_fe::<E::Fr>(&divisor_in_limbs[j].clone());
                 let allc_num_b = AllocatedNum::alloc(cs, || Ok(*fe_b.get()?)).unwrap();
                 let chunk_b_num = Num::Variable(allc_num_b);
 
@@ -1055,7 +1087,7 @@ pub fn simple_div<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 8
                 lc.add_assign_number_with_coeff(&mul_term_2_num, word_shift.clone());
 
 
-                mul_term_2 = quotient_in_limbs[i].clone().unwrap() * divisor_in_limbs[i].clone().unwrap();
+                mul_term_2 = quotient_in_limbs[i].clone().unwrap() * divisor_in_limbs[j].clone().unwrap();
                 mul_term += mul_term_2.clone() * (BigUint::from(1u64) << 64u32);
             }
         }
@@ -1108,13 +1140,132 @@ pub fn simple_div<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, a: [Num<E>; 8
 
     }
 
-    let mut result: Vec<Num<E>> = vec![];
-    for i in 0..c_in_limbs.len(){
-        let variable: Option<E::Fr>= some_biguint_to_fe(&c_in_limbs[i]);
-        result.push(Num::Variable(AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap()));
-
+    // split into one number
+    let mut number = BigUint::zero();
+    for i in 0..quotient_in_limbs.len(){
+        let step = BigUint::from(1u64) << 128u32 * (i as u32);
+        number += quotient_in_limbs[i].as_ref().unwrap() * step;
 
     }
+
+    let four_chunk = split_some_into_fixed_number_of_limbs(Some(number.clone()), 128, 4);
+    let mut number_num: Vec<Num<E>> = vec![];
+    for i in 0..four_chunk.len(){
+        let variable: Option<E::Fr>= some_biguint_to_fe(&four_chunk[i]);
+        number_num.push(Num::Variable(AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap()));
+
+    }
+
+    use std::str::FromStr;
+    let field_modulus = BigUint::from_str("21888242871839275222246405745257275088696311157297823662689037894645226208583").unwrap();
+    let result_uint = number.clone() % field_modulus.clone();
+
+    let remainder_uint = split_some_into_fixed_number_of_limbs(Some(result_uint.clone()), 128, 2);
+    let mut result: Vec<Num<E>> = vec![];
+    for i in 0..remainder_uint.len(){
+        let variable: Option<E::Fr>= some_biguint_to_fe(&remainder_uint[i]);
+        let r = AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap();
+        result.push(Num::Variable(r));
+        enforce_using_single_column_table_for_shifted_variable_optimized(cs, &r, E::Fr::one(), 128);
+
+    }
+
+    // c = q*p +r; 
+    //a/b = q and a%b = r
+    let (quotient, remainder) = number.div_rem(&field_modulus);
+    assert_eq!(remainder.clone(), result_uint.clone());
+
+    let field_chunk = split_some_into_fixed_number_of_limbs(Some(field_modulus), 64, 4);
+    let mut field_mod_num:Vec<Num<E>> = vec![]; 
+    for i in 0..field_chunk.len(){
+        let variable: Option<E::Fr>= some_biguint_to_fe(&field_chunk[i]);
+        let m = AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap();
+        field_mod_num.push(Num::Variable(m));
+    }
+
+    let quotient_chunk = split_some_into_fixed_number_of_limbs(Some(quotient), 64, 4);
+    let mut quotient_num:Vec<Num<E>> = vec![]; 
+    for i in 0..quotient_chunk.len(){
+        let variable: Option<E::Fr>= some_biguint_to_fe(&quotient_chunk[i]);
+        let m =AllocatedNum::alloc(cs, || Ok(*variable.get().unwrap())).unwrap();
+        quotient_num.push(Num::Variable(m));
+        enforce_using_single_column_table_for_shifted_variable_optimized(cs, &m, E::Fr::one(), 64);
+    }
+
+    let mut of = Some(BigUint::zero());
+    let mut pre_of = Some(BigUint::zero());
+    let mut input_carry = Num::<E>::zero();
+    let mut c_in_limbs: Vec<Option<BigUint>> = vec![];
+    for k in 0..4{
+        let mut lc = LinearCombination::zero();
+
+        let mut mul_term_uint = BigUint::zero();
+        let mut mul_term_1 = BigUint::zero();
+        let mut mul_term_2 = BigUint::zero();
+
+        lc.add_assign_number_with_coeff(&input_carry, E::Fr::one()); // pre_of 
+        for i in 0..2*k + 1 {
+            let j = 2*k - i;
+            if (i < 4) && (j < 4) {
+                let mul_term = field_mod_num[i].mul(cs, &quotient_num[j])?;
+                lc.add_assign_number_with_coeff(&mul_term, E::Fr::one());
+
+                mul_term_1 = quotient_chunk[i].clone().unwrap() * field_chunk[j].clone().unwrap();
+                mul_term_uint += mul_term_1.clone();
+            }
+
+        }
+    
+        for i in 0..(2*k+2) {
+            let j = 2*k + 1 - i;
+            if (i < 4) && (j < 4) {
+                let mul_term = field_mod_num[i].mul(cs, &quotient_num[j])?;
+                lc.add_assign_number_with_coeff(&mul_term, shifts[64].clone());
+
+                mul_term_2 = quotient_chunk[i].clone().unwrap() * field_chunk[j].clone().unwrap();
+                mul_term_uint += mul_term_2.clone() * (BigUint::from(1u64) << 64u32);
+            }
+        }
+        if k < 2 {
+            lc.add_assign_number_with_coeff(&result[k], E::Fr::one());//remainder
+
+            mul_term_uint +=pre_of.clone().unwrap() + remainder_uint[k].clone().unwrap();
+        }
+
+        let modulus = BigUint::from(1u64) << 128u32;
+        of = Some((mul_term_uint.clone() % modulus) >> 128u8);
+        let fe_of =  some_biguint_to_fe::<E::Fr>(&of);
+        let allc_num = AllocatedNum::alloc(cs, || Ok(*fe_of.get()?)).unwrap();
+        let allocated_of = Num::Variable(allc_num);
+        enforce_using_single_column_table_for_shifted_variable_optimized(cs, &allc_num, E::Fr::one(), 75);
+        lc.add_assign_number_with_coeff(&allocated_of, two_words_shift_right.clone());
+
+        let intermediate_of_witness = Some(!of.as_ref().unwrap().is_zero());
+
+        let mut limbs_for_c= BigUint::zero();
+        if intermediate_of_witness.unwrap() {
+            let shift = BigUint::from(1u64) << 128u32;
+            limbs_for_c = mul_term_uint.clone() - of.as_ref().unwrap()*shift;
+            c_in_limbs.push(Some(limbs_for_c.clone()));
+        }
+        else{
+            limbs_for_c = mul_term_uint.clone();
+            c_in_limbs.push(Some(mul_term_uint));
+        }
+        let fe_c =  some_biguint_to_fe::<E::Fr>(&Some(limbs_for_c));
+        let allc_num = AllocatedNum::alloc(cs, || Ok(*fe_c.get()?)).unwrap();
+        let allocated_c = Num::Variable(allc_num);
+        lc.add_assign_number_with_coeff(&allocated_c, minus_one.clone());
+        enforce_using_single_column_table_for_shifted_variable_optimized(cs, &allc_num, E::Fr::one(), 128);
+
+
+        lc.enforce_zero(cs)?;
+        
+        pre_of = of;
+        input_carry = allocated_of;
+
+    }
+
     Ok(result)
 
 }
@@ -1152,28 +1303,55 @@ mod test {
         let b_f: Fr = rng.gen();
 
         let a = [Num::alloc(&mut cs, Some(a_f)).unwrap(), Num::default(), Num::default(), Num::default()];
-        // let a = [Num::alloc(&mut cs, Some(a_f)).unwrap(), Num::default(), Num::default(), Num::default(), Num::default(), Num::default(), Num::default(), Num::default()];
         let b = [Num::alloc(&mut cs, Some(b_f)).unwrap(), Num::default(), Num::default(), Num::default()];
 
         // let a = [Num::alloc(&mut cs, Some(Fr::from_str("12").unwrap())).unwrap(), Num::default(), Num::default(), Num::default()];
         // let b = [Num::alloc(&mut cs, Some(Fr::from_str("11").unwrap())).unwrap(), Num::default(), Num::default(), Num::default()];
+        // println!("simple_mul{:?}", simple_mul(&mut cs, a, b));
 
-        // println!("{:?}", simple_mul(&mut cs, a, b));
         let result = simple_mul(&mut cs, a, b).unwrap();
         let base = cs.n();
-        println!("Multiplication taken {} gates", cs.n());
-        // use std::sync::atomic::Ordering;
-        // let k = super::super::RANGE_GATES_COUNTER.load(Ordering::SeqCst);
-        // let mut c:[Num<Bn256>; 4] = [Num::<Bn256>::default(), Num::<Bn256>::default(), Num::<Bn256>::default(), Num::<Bn256>::default()];
-        // for i in 0..4{
-        //     c[i]= result[i];
+        println!("Multiplication taken {} gates", base);
 
-        // }
+    }
+    #[test]
+    fn test_div_uint(){
+        type E = crate::bellman::pairing::bn256::Bn256;
+        type Fr = crate::bellman::pairing::bn256::Fr;
+        type Fq = crate::bellman::pairing::bn256::Fq;
 
-        // let _ = simple_mul(&mut cs, c , a).unwrap();
-        // let k = super::super::RANGE_GATES_COUNTER.load(Ordering::SeqCst) - k;
-        // println!("Single multiplication taken {} gates", cs.n() - base);
-        // println!("Range checks take {} gates", k);
+        use crate::bellman::plonk::better_better_cs::cs::*;
+
+        let mut cs = TrivialAssembly::<
+                Bn256,
+                PlonkCsWidth4WithNextStepParams,
+                Width4MainGateWithDNext,
+            >::new();
+
+        let over = vec![
+            PolyIdentifier::VariablesPolynomial(0),
+            PolyIdentifier::VariablesPolynomial(1),
+            PolyIdentifier::VariablesPolynomial(2),
+        ];
+        let table = LookupTableApplication::<Bn256>::new_range_table_of_width_3(16, over).unwrap();
+
+        cs.add_table(table).unwrap();
+
+        use rand::{Rng, SeedableRng, XorShiftRng};
+        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+        let a_f: Fr = rng.gen();
+        let b_f: Fr = rng.gen();
+
+        let a = [Num::alloc(&mut cs, Some(a_f)).unwrap(), Num::default(), Num::default(), Num::default(), Num::default(), Num::default(), Num::default(), Num::default()];
+        let b = [Num::alloc(&mut cs, Some(b_f)).unwrap(), Num::default(), Num::default(), Num::default()];
+
+        // let a = [Num::alloc(&mut cs, Some(Fr::from_str("132").unwrap())).unwrap(), Num::default(), Num::default(), Num::default(), Num::default(), Num::default(), Num::default(), Num::default()];
+        // let b = [Num::alloc(&mut cs, Some(Fr::from_str("11").unwrap())).unwrap(), Num::default(), Num::default(), Num::default()];
+        // println!("div{:?}", simple_div(&mut cs, a, b));
+
+        let result = simple_div(&mut cs, a, b).unwrap();
+        let base = cs.n();
+        println!("Division taken {} gates", base);
 
     }
     #[test]
@@ -1207,17 +1385,9 @@ mod test {
         let a = [Num::alloc(&mut cs, Some(a_f)).unwrap(), Num::default(), Num::default(), Num::default()];
         let b = [Num::alloc(&mut cs, Some(b_f)).unwrap(), Num::default(), Num::default(), Num::default()];
         let result = simple_add(&mut cs, a, b).unwrap();
-        let mut c:[Num<Bn256>; 4] = [Num::<Bn256>::default(), Num::<Bn256>::default(), Num::<Bn256>::default(), Num::<Bn256>::default()];
-        for i in 0..4{
-            c[i]= result[i];
 
-        }
         let base = cs.n();
-        println!("Addition: {}", base);
-        // let _ = simple_add(&mut cs, c, a).unwrap();
-        // println!("Single addition taken {} gates", cs.n() - base);
-
-
+        println!("Addition taken: {} gates", base);
     }
 
     #[test]
@@ -1252,16 +1422,9 @@ mod test {
         let a = [Num::alloc(&mut cs, Some(a_f)).unwrap(), Num::default(), Num::default(), Num::default()];
         let b = [Num::alloc(&mut cs, Some(b_f)).unwrap(), Num::default(), Num::default(), Num::default()];
         let result = simple_sub(&mut cs, a, b).unwrap();
-        // println!("{:?}", result);
-        let mut c:[Num<Bn256>; 4] = [Num::<Bn256>::default(), Num::<Bn256>::default(), Num::<Bn256>::default(), Num::<Bn256>::default()];
-        for i in 0..4{
-            c[i]= result[i];
-
-        }
         let base = cs.n();
-        println!("Sub: {}", base);
-        let _ = simple_add(&mut cs, c, a).unwrap();
-        println!("Single substraction taken {} gates", cs.n() - base);
+        println!("Substraction taken {} gates", base);
+
 
 
     }

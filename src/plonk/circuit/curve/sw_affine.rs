@@ -874,12 +874,27 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
         let (k_1_mul_r, _) = self.clone().mul(cs, &k1, bit_limit).unwrap();
 
-        //lambda is constanta so let convert to num
-        let num_lambda =  Num::Constant(endomorphism_params.lambda);
-        // Q = ( R * lambda);
-        let (q, _) = self.clone().mul(cs, &num_lambda, bit_limit).unwrap();
+        let beta = FieldElement::new_constant(endomorphism_params.beta_g1, params);
 
-        let (k_2_mul_q, _ )= q.mul(cs, &k2, bit_limit).unwrap();
+
+        let value = self.value;
+        let endo_value = value.map(|el| endomorphism_params.apply_to_g1_point(el));
+
+        let x = self.x.clone();
+        let y = self.y.clone();
+
+        let (x_beta, (x, _)) = x.mul(cs, beta.clone())?;
+        let (y_negated, y) = y.negated(cs)?;
+
+        let p_endo = AffinePoint {
+            x: x_beta,
+            y: y_negated,
+            value: endo_value,
+        };
+        // Q = ( R * lambda);
+        // R * lambda = (beta*x mod p, y)
+
+        let (k_2_mul_q, _ )= p_endo.mul(cs, &k2, bit_limit).unwrap();
 
         let (result, _) = k_1_mul_r.add_unequal(cs, k_2_mul_q).unwrap();
         Ok((result, this_copy))

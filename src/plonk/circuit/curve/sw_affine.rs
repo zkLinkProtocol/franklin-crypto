@@ -18,6 +18,9 @@ use super::super::boolean::{AllocatedBit, Boolean};
 use super::super::linear_combination::LinearCombination;
 use super::super::simple_term::Term;
 
+use plonk::circuit::curve::endomorphism::EndomorphismParameters;
+
+
 use num_bigint::BigUint;
 use num_integer::Integer;
 
@@ -839,6 +842,48 @@ where
 }
 
 impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
+    #[track_caller]
+    pub fn mul_split_scalar<CS: ConstraintSystem<E>>(
+        self,
+        cs: &mut CS,
+        scalar: &Num<E>,
+        bit_limit: Option<usize>,
+        endomorphism_params: EndomorphismParameters<E>
+    ) -> Result<(Self, Self), SynthesisError> {
+
+        if let Some(value) = scalar.get_value() {
+            assert!(
+                !value.is_zero(),
+                "can not multiply by zero in the current approach"
+            );
+        }
+        if scalar.is_constant() {
+            return self.mul_by_fixed_scalar(cs, &scalar.get_value().unwrap());
+        }
+
+        let params = self.x.representation_params;
+        let this_value = self.get_value();
+        let this_copy = self.clone();
+
+        let v = scalar.get_variable();
+
+
+        let (k1, k2) = endomorphism_params.calculate_decomposition_num(cs, *scalar);
+
+        // k*R = k_1 * R + k_2 * (R*lambda);
+
+        let (k_1_mul_r, _) = self.clone().mul(cs, &k1, bit_limit).unwrap();
+
+        //lambda is constanta so let convert to num
+        let num_lambda =  Num::Constant(endomorphism_params.lambda);
+        // Q = ( R * lambda);
+        let (q, _) = self.clone().mul(cs, &num_lambda, bit_limit).unwrap();
+
+        let (k_2_mul_q, _ )= q.mul(cs, &k2, bit_limit).unwrap();
+
+        let (result, _) = k_1_mul_r.add_unequal(cs, k_2_mul_q).unwrap();
+        Ok((result, this_copy))
+    }
     #[track_caller]
     pub fn mul<CS: ConstraintSystem<E>>(
         self,
@@ -2749,5 +2794,89 @@ mod test {
         let _result_recalculated = result_recalculated.into_affine();
 
         assert!(cs.is_satisfied());
+    }
+    #[test]
+    fn test_base_curve_multiplication_by_split_scalar_with_range_table_and_endomorphism() {
+        use crate::plonk::circuit::bigint::single_table_range_constraint::{
+            print_stats, reset_stats,
+        };
+        use crate::plonk::circuit::bigint::*;
+        use crate::plonk::circuit::tables::inscribe_default_range_table_for_bit_width_over_first_three_columns;
+        use rand::{Rng, SeedableRng, XorShiftRng};
+        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+
+        let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
+
+        for i in 0..10 {
+            let mut cs =
+                TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+
+            let a_f: G1Affine = rng.gen();
+            let b_f: Fr = rng.gen();
+
+            let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
+
+            let b = AllocatedNum::alloc(&mut cs, || Ok(b_f)).unwrap();
+
+            let b = Num::Variable(b);
+
+            let endo_parameters = super::super::endomorphism::bn254_endomorphism_parameters();
+
+            let (result, a) = a.mul_split_scalar(&mut cs, &b, None, endo_parameters.clone()).unwrap();
+
+            let result_recalculated = a_f.mul(b_f.into_repr()).into_affine();
+
+            assert!(cs.is_satisfied());
+
+            let x_fe = result.x.get_field_value().unwrap();
+            let y_fe = result.y.get_field_value().unwrap();
+
+            let (x, y) = result.get_value().unwrap().into_xy_unchecked();
+
+            assert_eq!(x_fe, x, "x coords mismatch between value and coordinates");
+            assert_eq!(y_fe, y, "y coords mismatch between value and coordinates");
+
+            let (x, y) = result_recalculated.into_xy_unchecked();
+
+            assert_eq!(
+                x_fe, x,
+                "x coords mismatch between expected result and circuit result"
+            );
+            assert_eq!(
+                y_fe, y,
+                "y coords mismatch between expected result and circuit result"
+            );
+
+            assert_eq!(
+                result.get_value().unwrap(),
+                result_recalculated,
+                "mismatch between expected result and circuit result"
+            );
+
+            let (x, y) = a_f.into_xy_unchecked();
+            assert_eq!(
+                a.x.get_field_value().unwrap(),
+                x,
+                "x coords mismatch, input was mutated"
+            );
+            assert_eq!(
+                a.y.get_field_value().unwrap(),
+                y,
+                "y coords mismatch, input was mutated"
+            );
+
+            if i == 0 {
+                reset_stats();
+                crate::plonk::circuit::counter::reset_counter();
+                let base = cs.n();
+                let _ = a.mul_split_scalar(&mut cs, &b, None, endo_parameters).unwrap();
+                println!("single multiplication taken {} gates", cs.n() - base);
+                println!(
+                    "Affine spent {} gates in equality checks",
+                    crate::plonk::circuit::counter::output_counter()
+                );
+                print_stats();
+            }
+        }
     }
 }

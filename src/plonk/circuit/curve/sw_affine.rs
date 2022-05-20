@@ -2797,11 +2797,6 @@ mod test {
     }
     #[test]
     fn test_base_curve_multiplication_by_split_scalar_with_range_table_and_endomorphism() {
-        use crate::plonk::circuit::bigint::single_table_range_constraint::{
-            print_stats, reset_stats,
-        };
-        use crate::plonk::circuit::bigint::*;
-        use crate::plonk::circuit::tables::inscribe_default_range_table_for_bit_width_over_first_three_columns;
         use rand::{Rng, SeedableRng, XorShiftRng};
         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
@@ -2866,7 +2861,6 @@ mod test {
             );
 
             if i == 0 {
-                reset_stats();
                 crate::plonk::circuit::counter::reset_counter();
                 let base = cs.n();
                 let _ = a.mul_split_scalar(&mut cs, &b, None, endo_parameters).unwrap();
@@ -2875,7 +2869,6 @@ mod test {
                     "Affine spent {} gates in equality checks",
                     crate::plonk::circuit::counter::output_counter()
                 );
-                print_stats();
             }
         }
     }

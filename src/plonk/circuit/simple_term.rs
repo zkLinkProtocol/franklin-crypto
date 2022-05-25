@@ -47,6 +47,36 @@ impl<E: Engine> std::fmt::Display for Term<E> {
 }
 
 impl<E: Engine> Term<E> {
+    fn materialize_as_gate_terms(&self) -> [ArithmeticTerm<E>; 2] {
+        if self.is_constant() {
+            [
+                ArithmeticTerm::constant(self.get_constant_value()), ArithmeticTerm::constant(E::Fr::zero())
+            ]
+        }
+        else {
+            [
+                ArithmeticTerm::from_variable_and_coeff(self.get_variable().get_variable(), self.coeff),
+                ArithmeticTerm::constant(self.constant_term)
+            ]
+        }
+    }
+
+    pub fn enforce_equal<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<(), SynthesisError> {
+        if self.is_constant() || other.is_constant() {
+            assert_eq!(self.get_constant_value(), other.get_constant_value());
+            return Ok(())
+        }
+
+        let mut gate = MainGateTerm::new();
+        for term in std::array::IntoIter::new(self.materialize_as_gate_terms()) {
+            gate.add_assign(term);
+        }
+        for term in std::array::IntoIter::new(other.materialize_as_gate_terms()) {
+            gate.sub_assign(term);
+        }
+        cs.allocate_main_gate(gate)
+    }
+
     pub fn circuit_eq(&self, other: &Self) -> bool {
         match (self.is_constant(), other.is_constant()) {
             (true, true) => self.get_value() == other.get_value(),
@@ -64,6 +94,11 @@ impl<E: Engine> Term<E> {
             _ => false
         }
     }
+
+    pub fn unpack(&self) -> (Variable, E::Fr, E::Fr) {
+        let var = self.num.get_variable().get_variable();
+        (var, self.coeff, self.constant_term)
+    }  
 
     pub fn from_constant(val: E::Fr) -> Self {
         Self {
@@ -151,17 +186,20 @@ impl<E: Engine> Term<E> {
         }
     }
 
-    pub fn into_constant_value(&self) -> E::Fr {
+    pub fn try_into_constant_value(&self) -> Option<E::Fr> {
         match self.num {
             Num::Constant(c) => {
                 let mut tmp = self.coeff;
                 tmp.mul_assign(&c);
                 tmp.add_assign(&self.constant_term);
-
-                tmp
+                Some(tmp)
             },
-            _ => {panic!("variable")}
+            _ => None,
         }
+    }
+
+    pub fn into_constant_value(&self) -> E::Fr {
+        self.try_into_constant_value().expect("term should be constant")
     }
 
     #[track_caller]

@@ -164,3 +164,29 @@ pub fn split_into_fixed_number_of_limbs(mut fe: BigUint, bits_per_limb: usize, n
 
     limbs
 }
+
+#[track_caller]
+pub fn split_some_into_limbs_of_variable_width(fe: Option<BigUint>, bits_per_limb: &[usize]) -> Vec<Option<BigUint>> {
+    if let Some(fe) = fe {
+        let mut fe = fe;
+        let full_width = bits_per_limb.iter().sum();
+        assert!(
+            fe.bits() as usize <= full_width,
+            "can fit {} bits maximum, but got {}",
+            full_width,
+            fe.bits()
+        );
+        let mut limbs = Vec::with_capacity(bits_per_limb.len());
+
+        for &width in bits_per_limb.iter() {
+            let modulus = BigUint::from(1u64) << width;
+            let limb = fe.clone() % &modulus;
+            limbs.push(Some(limb));
+            fe >>= width;
+        }
+
+        limbs
+    } else {
+        vec![None; bits_per_limb.len()]
+    }
+}

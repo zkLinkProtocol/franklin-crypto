@@ -2,20 +2,17 @@ use crate::bellman::pairing::{Engine, GenericCurveAffine, GenericCurveProjective
 use crate::bellman::pairing::ff::{Field, PrimeField, PrimeFieldRepr, BitIterator, ScalarEngine};
 use crate::bellman::SynthesisError;
 use crate::bellman::plonk::better_better_cs::cs::{
-    Variable, ConstraintSystem, ArithmeticTerm, MainGateTerm, Width4MainGateWithDNext, MainGate, GateInternal, Gate,
-    LinearCombinationOfTerms, PolynomialMultiplicativeTerm, PolynomialInConstraint, TimeDilation, Coefficient,
-    PlonkConstraintSystemParams, TrivialAssembly, PlonkCsWidth4WithNextStepParams,
+    Variable, ConstraintSystem, ArithmeticTerm, MainGateTerm, Width4MainGateWithDNext, MainGate, GateInternal,
+    Gate, LinearCombinationOfTerms, PolynomialMultiplicativeTerm, PolynomialInConstraint, TimeDilation,
+    Coefficient, PlonkConstraintSystemParams, PlonkCsWidth4WithNextStepParams, TrivialAssembly
 };
 use crate::plonk::circuit::Assignment;
-use super::super::allocated_num::{AllocatedNum, Num};
-use super::super::linear_combination::LinearCombination;
-use super::super::simple_term::Term;
-use super::super::boolean::{Boolean, AllocatedBit};
-
-use num_bigint::BigUint;
-use num_integer::Integer;
 use super::super::bigint::field::*;
 use super::super::bigint::bigint::*;
+use crate::plonk::circuit::boolean::*;
+use crate::plonk::circuit::allocated_num::*;
+use super::*;
+
 
 #[derive(Clone, Debug)]
 pub struct AffinePoint<'a, E: Engine, G: GenericCurveAffine> where <G as GenericCurveAffine>::Base: PrimeField {
@@ -34,15 +31,12 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     }
 
     pub fn alloc<CS: ConstraintSystem<E>>(
-        cs: &mut CS,
-        value: Option<G>,
-        params: &'a RnsParameters<E, G::Base>
+        cs: &mut CS, value: Option<G>, params: &'a RnsParameters<E, G::Base>
     ) -> Result<Self, SynthesisError> {
         let (x, y) = match value {
             Some(v) => {
                 assert!(!v.is_zero());
                 let (x, y) = v.into_xy_unchecked();
-
                 (Some(x), Some(y))
             },
             None => {
@@ -50,43 +44,14 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
             }
         };
 
-        let x = FieldElement::new_allocated_in_field(
-            cs, 
-            x, 
-            params
-        )?;
+        let x = FieldElement::alloc_exactly(cs, x, params)?;
+        let y = FieldElement::alloc_exactly(cs, y, params)?;
 
-        let y = FieldElement::new_allocated_in_field(
-            cs, 
-            y, 
-            params
-        )?;
-
-        // let x = FieldElement::new_allocated(
-        //     cs, 
-        //     x, 
-        //     params
-        // )?;
-
-        // let y = FieldElement::new_allocated(
-        //     cs, 
-        //     y, 
-        //     params
-        // )?;
-
-        let new = Self {
-            x,
-            y,
-            value
-        };
-
+        let new = Self { x, y, value };
         Ok(new)
     }
 
-    pub fn from_xy_unchecked(
-        x: FieldElement<'a, E, G::Base>,
-        y: FieldElement<'a, E, G::Base>,
-    ) -> Self {
+    pub fn from_xy_unchecked(x: FieldElement<'a, E, G::Base>, y: FieldElement<'a, E, G::Base>) -> Self {
         let value = match (x.get_field_value(), y.get_field_value()) {
             (Some(x), Some(y)) => {
                 Some(G::from_xy_unchecked(x, y))
@@ -96,28 +61,20 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
             }
         };
 
-        let new = Self {
-            x,
-            y,
-            value
-        };
-
+        let new = Self { x, y, value };
         new
     }
 
-    pub fn constant(
-        value: G,
-        params: &'a RnsParameters<E, G::Base>
-    ) -> Self {
+    pub fn constant(value: G, params: &'a RnsParameters<E, G::Base>) -> Self {
         assert!(!value.is_zero());
         let (x, y) = value.into_xy_unchecked();
 
-        let x = FieldElement::new_constant(
+        let x = FieldElement::constant(
             x,
             params
         );
 
-        let y = FieldElement::new_constant(
+        let y = FieldElement::constant(
             y,
             params
         );
@@ -138,12 +95,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let x = FieldElement::zero(params);
         let y = FieldElement::zero(params);
 
-        let new = Self {
-            x,
-            y,
-            value: Some(G::zero())
-        };
-
+        let new = Self { x, y, value: Some(G::zero()) };
         new
     }
 
@@ -161,8 +113,8 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     ) -> Result<Self, SynthesisError> {
         let this_value = self.value;
 
-        let this_x = self.x.force_reduce_close_to_modulus(cs)?;
-        let this_y = self.y.force_reduce_close_to_modulus(cs)?;
+        let this_x = self.x.reduce_strict(cs)?;
+        let this_y = self.y.reduce_strict(cs)?;
 
         let this = Self {
             x: this_x,
@@ -188,8 +140,8 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let other_x = other.x.clone();
         let other_y = other.y.clone();
 
-        let x_check = FieldElement::equals_assuming_reduced(cs, this_x, other_x)?;
-        let y_check = FieldElement::equals_assuming_reduced(cs, this_y, other_y)?;
+        let x_check = FieldElement::equals(cs, this_x, other_x)?;
+        let y_check = FieldElement::equals(cs, this_y, other_y)?;
         let equals = Boolean::and(cs, &x_check, &y_check)?;
 
         Ok((equals, (this, other)))
@@ -204,7 +156,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let this_x = self.x;
         let this_y = self.y;
 
-        let (this_y_negated, this_y) = this_y.negated(cs)?;
+        let this_y_negated = this_y.negate(cs)?;
        
         let new_value = match this_value {
             Some(this) => {
@@ -258,9 +210,8 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let this_x = self.x;
         let this_y = self.y;
 
-        let (this_y_negated, this_y) = this_y.negated(cs)?;
-
-        let (selected_y, (this_y_negated, this_y)) = FieldElement::select(cs, flag, this_y_negated, this_y)?;
+        let this_y_negated = this_y.negate(cs)?;
+        let selected_y = FieldElement::select(cs, flag, &this_y_negated, &this_y)?;
        
         let new = Self {
             x: this_x.clone(),
@@ -313,8 +264,6 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         this.add_unequal_unchecked(cs, other)
     }
 
-
-    #[track_caller]
     pub fn add_unequal_unchecked<CS: ConstraintSystem<E>>(
         self,
         cs: &mut CS,
@@ -345,12 +294,11 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let other_x = other.x;
         let other_y = other.y;
 
-        let (this_y_negated, this_y) = this_y.negated(cs)?;
-        let (this_x_negated, this_x) = this_x.negated(cs)?;
+        let this_y_negated = this_y.negate(cs)?;
+        let this_x_negated = this_x.negate(cs)?;
 
-        let (other_x_minus_this_x, (other_x, this_x_negated)) = other_x.add(cs, this_x_negated)?;
-
-        let (other_x_negated, other_x) = other_x.negated(cs)?;
+        let other_x_minus_this_x = other_x.add(cs, &this_x_negated)?;
+        let other_x_negated = other_x.negate(cs)?;
 
         let (lambda, (mut tmp, _)) = FieldElement::div_from_addition_chain(cs, vec![other_y, this_y_negated], other_x_minus_this_x)?;
 
@@ -430,12 +378,10 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
 
         let (this_x, other_x) = FieldElement::enforce_not_equal(cs, this_x, other_x)?;
 
-        let (this_y_negated, this_y) = this_y.negated(cs)?;
-        let (this_x_negated, this_x) = this_x.negated(cs)?;
-
-        let (other_x_minus_this_x, (other_x, this_x_negated)) = other_x.add(cs, this_x_negated)?;
-
-        let (other_x_negated, other_x) = other_x.negated(cs)?;
+        let this_y_negated = this_y.negate(cs)?;
+        let this_x_negated = this_x.negate(cs)?;
+        let other_x_minus_this_x = other_x.add(cs, this_x_negated)?;
+        let other_x_negated = other_x.negate(cs)?;
 
         let (lambda, (mut tmp, _)) = FieldElement::div_from_addition_chain(cs, vec![other_y, this_y], other_x_minus_this_x)?;
 
@@ -677,6 +623,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         _cs: &mut CS,
         _scalar: &G::Scalar
     ) -> Result<(Self, Self), SynthesisError> {
+        // Possible solution is to use: https://github.com/str4d/addchain/tree/master/src
         unimplemented!()
     }
 
@@ -689,8 +636,8 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
 
         let first_value = first.get_value();
         let second_value = second.get_value();
-        let (x, (first_x, second_x)) = FieldElement::select(cs, flag, first.x, second.x)?;
-        let (y, (first_y, second_y)) = FieldElement::select(cs, flag, first.y, second.y)?;
+        let x = FieldElement::select(cs, flag, &first.x, &second.x)?;
+        let y = FieldElement::select(cs, flag, &first.y, &second.y)?;
 
         let value = match (flag.get_value(), first_value, second_value) {
             (Some(true), Some(p), _) => Some(p),
@@ -958,8 +905,8 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             _ => None
         };
 
-        let (final_acc_x, _) = FieldElement::select(cs, last_entry, with_skew_x, acc_x)?;
-        let (final_acc_y, _) = FieldElement::select(cs, last_entry, with_skew_y, acc_y)?;
+        let (final_acc_x, _) = FieldElement::select(cs, last_entry, &with_skew_x, &acc_x)?;
+        let (final_acc_y, _) = FieldElement::select(cs, last_entry, &with_skew_y, &acc_y)?;
 
         let shift = BigUint::from(1u64) << num_doubles;
         let as_scalar_repr = biguint_to_repr::<E::Fr>(shift);
@@ -1068,8 +1015,8 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
                 _ => None
             };
 
-            let (final_acc_x, _) = FieldElement::select(cs, last_entry, with_skew_x, acc_x)?;
-            let (final_acc_y, _) = FieldElement::select(cs, last_entry, with_skew_y, acc_y)?;
+            let (final_acc_x, _) = FieldElement::select(cs, last_entry, &with_skew_x, &acc_x)?;
+            let (final_acc_y, _) = FieldElement::select(cs, last_entry, &with_skew_y, &acc_y)?;
 
             let result = Self {
                 x: final_acc_x,
@@ -1112,8 +1059,8 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             let x = p.x.clone();
             let y = p.y.clone();
 
-            let (x_beta, (x, _)) = x.mul(cs, beta.clone())?;
-            let (y_negated, y) = y.negated(cs)?;
+            let x_beta = x.mul(cs, beta.clone())?;
+            let y_negated = y.negate(cs)?;
 
             let p = AffinePoint {
                 x,

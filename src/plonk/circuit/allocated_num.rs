@@ -201,6 +201,14 @@ impl<E: Engine> Num<E> {
     pub fn conditionally_enforce_equal<CS>(cs: &mut CS, cond: &Boolean, a: &Self, b: &Self) -> Result<(), SynthesisError>
     where CS: ConstraintSystem<E>
     {
+        match (cond.get_value(), a.get_value(), b.get_value()) {
+            (Some(cond), Some(a), Some(b)) => {
+                if cond {
+                    assert_eq!(a, b);
+                }
+            },
+            _ => {}
+        }
         let masked_a = Num::mask(cs, &a, &cond)?;
         let masked_b = Num::mask(cs, &b, &cond)?;
         masked_a.enforce_equal(cs, &masked_b)

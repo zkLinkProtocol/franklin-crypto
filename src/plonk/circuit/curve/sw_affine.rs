@@ -860,22 +860,8 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         if scalar.is_constant() {
             return self.mul_by_fixed_scalar(cs, &scalar.get_value().unwrap());
         }
-
         let params = self.x.representation_params;
-        let this_value = self.get_value();
-        let this_copy = self.clone();
-
-        let v = scalar.get_variable();
-
-
-        let (k1, k2) = endomorphism_params.calculate_decomposition_num(cs, *scalar);
-
-        // k*R = k_1 * R + k_2 * (R*lambda);
-
-        let (k_1_mul_r, _) = self.clone().mul(cs, &k1, bit_limit).unwrap();
-
         let beta = FieldElement::new_constant(endomorphism_params.beta_g1, params);
-
 
         let value = self.value;
         let endo_value = value.map(|el| endomorphism_params.apply_to_g1_point(el));
@@ -886,18 +872,156 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         let (x_beta, (x, _)) = x.mul(cs, beta.clone())?;
         let (y_negated, y) = y.negated(cs)?;
 
-        let p_endo = AffinePoint {
+        let q_endo = AffinePoint {
             x: x_beta,
             y: y_negated,
             value: endo_value,
         };
+
+        let this_value = self.get_value();
+        let this_copy = self.clone();
+
+        let bit_limit = Some(bit_limit.unwrap()/2);
+        let (k1, k2) = endomorphism_params.calculate_decomposition_num(cs, *scalar);
+
+        let v_1 = k1.get_variable();
+        let v_2 = k2.get_variable();
+
+        let entries_1 = decompose_allocated_num_into_skewed_table(cs, &v_1, bit_limit)?;
+        let entries_2 = decompose_allocated_num_into_skewed_table(cs, &v_2, bit_limit)?;
+
+        let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log::<E>(
+            &crate::constants::MULTIEXP_DST[..],
+            1,
+        )[0];
+
+        let generator = Self::constant(offset_generator, params);
+
+        let (mut acc_1, (this_1, _)) = self.add_unequal(cs, generator.clone())?;
+
+        let mut x_1 = this_1.x;
+        let y_1 = this_1.y;
+
+        let mut x_2 = q_endo.clone().x;
+        let y_2 = q_endo.clone().y;
+
+        let entries_1_without_first_and_last = &entries_1[1..(entries_1.len() - 1)];
+        let entries_2_without_first_and_last = &entries_2[1..(entries_2.len() - 1)];
+
+        let mut num_doubles = 0;
+
+        let (minus_y_1, y_1) = y_1.negated(cs)?;
+        let (minus_y_2, y_2) = y_2.negated(cs)?;
+
+        let (mut acc, (_, _)) = acc_1.add_unequal(cs, q_endo.clone())?;
+
+        for e in entries_1_without_first_and_last.iter().zip(entries_2_without_first_and_last.iter()) {
+            let (selected_y_1, _) = FieldElement::select(cs, e.0, minus_y_1.clone(), y_1.clone())?;
+            let (selected_y_2, _) = FieldElement::select(cs, e.1, minus_y_2.clone(), y_2.clone())?;
+
+            let t_value_1 = match (this_value, e.0.get_value()) {
+                (Some(val), Some(bit)) => {
+                    let mut val = val;
+                    if bit {
+                        val.negate();
+                    }
+
+                    Some(val)
+                }
+                _ => None,
+            };
+            let t_value_2 = match (this_value, e.1.get_value()) {
+                (Some(val), Some(bit)) => {
+                    let mut val = val;
+                    if bit {
+                        val.negate();
+                    }
+
+                    Some(val)
+                }
+                _ => None,
+            };
+
+            let t_1 = Self {
+                x: x_1.clone(),
+                y: selected_y_1,
+                value: t_value_1,
+            };
+            let t_2 = Self {
+                x: x_2.clone(),
+                y: selected_y_2,
+                value: t_value_2,
+            };
+
+            //precompute
+            let (c, (_, _)) = t_1.clone().add_unequal(cs, t_2.clone())?;
+
+            let (new_acc, (_, t)) = acc.clone().double_and_add(cs, c)?;
+
+            num_doubles += 1;
+            acc = new_acc;
+            x_1 = t_1.x;
+            x_2 = t_2.x;
+
+        }
+        let (with_skew, (acc, this)) = acc.sub_unequal(cs, this_copy)?;
+        let (with_skew, (acc, this)) = acc.sub_unequal(cs, q_endo.clone())?;
+        let last_entry_1 = entries_1.last().unwrap();
+        let last_entry_2 = entries_2.last().unwrap();
+
+        let with_skew_value = with_skew.get_value();
+        let with_skew_x = with_skew.x;
+        let with_skew_y = with_skew.y;
+
+        let acc_value = acc.get_value();
+        let acc_x = acc.x;
+        let acc_y = acc.y;
+        let last_entry = last_entry_1.get_value().unwrap() && last_entry_2.get_value().unwrap();
+        let final_value = match (with_skew_value, acc_value, last_entry) {
+            (Some(s_value), Some(a_value), b) => {
+                if b {
+                    Some(s_value)
+                } else {
+                    Some(a_value)
+                }
+            }
+            _ => None,
+        };
+
+        let last_entry = Boolean::and(cs, last_entry_1, last_entry_2)?;
+        let (final_acc_x, _) = FieldElement::select(cs, &last_entry, with_skew_x, acc_x)?;
+        let (final_acc_y, _) = FieldElement::select(cs, &last_entry, with_skew_y, acc_y)?;
+
+        let shift = BigUint::from(1u64) << num_doubles;
+        let as_scalar_repr = biguint_to_repr::<E::Fr>(shift);
+        let offset_value = offset_generator.mul(as_scalar_repr).into_affine();
+        let offset = Self::constant(offset_value, params);
+
+        let result = Self {
+            x: final_acc_x,
+            y: final_acc_y,
+            value: final_value,
+        };
+
+        let (result, _) = result.sub_unequal(cs, offset)?;
+
+        Ok((result, this))
+
+
+
+
+
+        // k*R = k_1 * R + k_2 * (R*lambda);
+
+
         // Q = ( R * lambda);
         // R * lambda = (beta*x mod p, y)
 
-        let (k_2_mul_q, _ )= p_endo.mul(cs, &k2, bit_limit).unwrap();
+        // let (k_2_mul_q, _ )= p_endo.mul(cs, &k2, bit_limit).unwrap();
 
-        let (result, _) = k_1_mul_r.add_unequal(cs, k_2_mul_q).unwrap();
-        Ok((result, this_copy))
+        // let (result, _) = k_1_mul_r.add_unequal(cs, k_2_mul_q).unwrap();
+        // Ok((result, this_copy))
+
     }
     #[track_caller]
     pub fn mul<CS: ConstraintSystem<E>>(
@@ -1357,6 +1481,7 @@ fn compute_skewed_naf_table<F: PrimeField>(
     }
 
     bits[0] = Some(false);
+    println!("aaaaaaaaaaaa{:?}", bits);
 
     // sanity check
 
@@ -1402,6 +1527,7 @@ fn compute_skewed_naf_table<F: PrimeField>(
         }
 
         assert_eq!(reconstructed, value);
+        println!("dljksfjbwsdh{:?}", value);
     }
 
     bits
@@ -1657,6 +1783,44 @@ mod test {
             }
         }
     }
+    // #[test]
+    // fn test_add_on_random_witnesses() {
+    //     use rand::{Rng, SeedableRng, XorShiftRng};
+    //     let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+
+    //     let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
+
+    //     for i in 0..100 {
+    //         let mut cs =
+    //             TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+
+    //         let a_f: G1Affine = rng.gen();
+
+    //         let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
+
+    //         let (result, a) = a.add_unequal_unchecked(&mut cs, a.clone()).unwrap();
+
+    //         assert!(cs.is_satisfied());
+
+    //         let x_fe = result.x.get_field_value().unwrap();
+    //         let y_fe = result.y.get_field_value().unwrap();
+
+    //         let (x, y) = result.get_value().unwrap().into_xy_unchecked();
+
+    //         assert_eq!(x_fe, x, "x coords mismatch");
+    //         assert_eq!(y_fe, y, "y coords mismatch");
+
+    //         let (x, y) = a_f.into_xy_unchecked();
+    //         assert_eq!(a.x.get_field_value().unwrap(), x, "x coords mismatch");
+    //         assert_eq!(a.y.get_field_value().unwrap(), y, "y coords mismatch");
+
+    //         if i == 0 {
+    //             let base = cs.n();
+    //             let _ = a.double(&mut cs).unwrap();
+    //             println!("Single double taken {} gates", cs.n() - base);
+    //         }
+    //     }
+    // }
 
     #[test]
     fn test_double_and_add_on_random_witnesses() {
@@ -1726,10 +1890,12 @@ mod test {
         use rand::{Rng, SeedableRng, XorShiftRng};
         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
-        for _i in 0..100 {
-            let a_f: Fr = rng.gen();
+        for _i in 0..1 {
+            // let a_f: Fr = rng.gen();
+            let a_f: Fr = Fr::from_str("8").unwrap();
 
-            let _ = compute_skewed_naf_table(&Some(a_f), None);
+            let c = compute_skewed_naf_table(&Some(a_f), Some(4));
+
         }
     }
 

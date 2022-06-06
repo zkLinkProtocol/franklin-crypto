@@ -869,8 +869,8 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         let x = self.x.clone();
         let y = self.y.clone();
 
-        let (x_beta, (x, _)) = x.mul(cs, beta.clone())?;
-        let (y_negated, y) = y.negated(cs)?;
+        let (x_beta, (_, _)) = x.mul(cs, beta.clone())?;
+        let (y_negated, _) = y.negated(cs)?;
 
         let q_endo = AffinePoint {
             x: x_beta,
@@ -881,8 +881,29 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         let this_value = self.get_value();
         let this_copy = self.clone();
 
-        let bit_limit = Some(bit_limit.unwrap()/2);
+        let other_copy = q_endo.clone();
+        let other_value = q_endo.get_value();
+
+
+        let bit_limit = if let Some(limit) = bit_limit {
+            Some(limit/2)
+        } else {
+            Some(127 as usize)
+        };
+
+
+        let mut minus_one = E::Fr::one();
+        minus_one.negate();
         let (k1, k2) = endomorphism_params.calculate_decomposition_num(cs, *scalar);
+
+        // k = k1 - lambda * k2
+        // lambda * k2 + k - k1 = 0
+        let mut decomposition_lc = LinearCombination::zero();
+        decomposition_lc.add_assign_number_with_coeff(&k2, endomorphism_params.lambda);
+        decomposition_lc.add_assign_number_with_coeff(&scalar, E::Fr::one());
+        decomposition_lc.add_assign_number_with_coeff(&k1, minus_one);
+
+        decomposition_lc.enforce_zero(cs)?;
 
         let v_1 = k1.get_variable();
         let v_2 = k2.get_variable();
@@ -897,13 +918,13 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
         let generator = Self::constant(offset_generator, params);
 
-        let (mut acc_1, (this_1, _)) = self.add_unequal(cs, generator.clone())?;
+        let (mut acc_1, (_, _)) = self.add_unequal(cs, generator.clone())?;
 
-        let mut x_1 = this_1.x;
-        let y_1 = this_1.y;
+        let mut x_1 = this_copy.clone().x;
+        let y_1 = this_copy.clone().y;
 
-        let mut x_2 = q_endo.clone().x;
-        let y_2 = q_endo.clone().y;
+        let mut x_2 = other_copy.x;
+        let y_2 = other_copy.y;
 
         let entries_1_without_first_and_last = &entries_1[1..(entries_1.len() - 1)];
         let entries_2_without_first_and_last = &entries_2[1..(entries_2.len() - 1)];
@@ -915,56 +936,73 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
         let (mut acc, (_, _)) = acc_1.add_unequal(cs, q_endo.clone())?;
 
+        //precompute 
+        let mut table1  = vec![];
+        let mut table2  = vec![];
+        for i in 0..2{
+            for j in 0..2 {
+                let flag_1 = Boolean::Constant(i!=0);
+                let flag_2 = Boolean::Constant(j!=0);
+                let (selected_y_1, _) = FieldElement::select(cs, &flag_1, minus_y_1.clone(), y_1.clone())?;
+                let (selected_y_2, _) = FieldElement::select(cs, &flag_2, minus_y_2.clone(), y_2.clone())?;
+
+                let t_value_1 = match (this_value, flag_1.get_value()) {
+                    (Some(val), Some(bit)) => {
+                        let mut val = val;
+                        if bit {
+                            val.negate();
+                        }
+    
+                        Some(val)
+                    }
+                    _ => None,
+                };
+                let t_value_2 = match (other_value, flag_2.get_value()) {
+                    (Some(val), Some(bit)) => {
+                        let mut val = val;
+                        if bit {
+                            val.negate();
+                        }
+    
+                        Some(val)
+                    }
+                    _ => None,
+                };
+    
+                let t_1 = Self {
+                    x: x_1.clone(),
+                    y: selected_y_1,
+                    value: t_value_1,
+                };
+                let t_2 = Self {
+                    x: x_2.clone(),
+                    y: selected_y_2,
+                    value: t_value_2,
+                };
+
+                let (c, (_, _)) = t_1.clone().add_unequal(cs, t_2.clone())?;
+                if i == 0{
+                    table1.push(c);
+                }
+                else{
+                    table2.push(c);
+                }
+            }
+        }
+        // table1 = [   0P + 0Q, 0P + 1Q  ]
+        // table2 = [   1P + 0Q, 1P + 1Q  ]
+
         for e in entries_1_without_first_and_last.iter().zip(entries_2_without_first_and_last.iter()) {
-            let (selected_y_1, _) = FieldElement::select(cs, e.0, minus_y_1.clone(), y_1.clone())?;
-            let (selected_y_2, _) = FieldElement::select(cs, e.1, minus_y_2.clone(), y_2.clone())?;
-
-            let t_value_1 = match (this_value, e.0.get_value()) {
-                (Some(val), Some(bit)) => {
-                    let mut val = val;
-                    if bit {
-                        val.negate();
-                    }
-
-                    Some(val)
-                }
-                _ => None,
-            };
-            let t_value_2 = match (this_value, e.1.get_value()) {
-                (Some(val), Some(bit)) => {
-                    let mut val = val;
-                    if bit {
-                        val.negate();
-                    }
-
-                    Some(val)
-                }
-                _ => None,
-            };
-
-            let t_1 = Self {
-                x: x_1.clone(),
-                y: selected_y_1,
-                value: t_value_1,
-            };
-            let t_2 = Self {
-                x: x_2.clone(),
-                y: selected_y_2,
-                value: t_value_2,
-            };
-
-            //precompute
-            let (c, (_, _)) = t_1.clone().add_unequal(cs, t_2.clone())?;
+            let (a, _) = AffinePoint::select(cs, e.1, table1[1].clone(), table1[0].clone())?;
+            let (b, _) = AffinePoint::select(cs, e.1, table2[1].clone(), table2[0].clone())?;
+            let (c, _) = AffinePoint::select(cs, e.0, b, a )?;
 
             let (new_acc, (_, t)) = acc.clone().double_and_add(cs, c)?;
 
             num_doubles += 1;
             acc = new_acc;
-            x_1 = t_1.x;
-            x_2 = t_2.x;
-
         }
-        let (with_skew, (acc, this)) = acc.sub_unequal(cs, this_copy)?;
+        let (with_skew, (acc, this)) = acc.sub_unequal(cs, this_copy.clone())?;
         let (with_skew, (acc, this)) = acc.sub_unequal(cs, q_endo.clone())?;
         let last_entry_1 = entries_1.last().unwrap();
         let last_entry_2 = entries_2.last().unwrap();
@@ -1481,7 +1519,6 @@ fn compute_skewed_naf_table<F: PrimeField>(
     }
 
     bits[0] = Some(false);
-    println!("aaaaaaaaaaaa{:?}", bits);
 
     // sanity check
 
@@ -1527,7 +1564,6 @@ fn compute_skewed_naf_table<F: PrimeField>(
         }
 
         assert_eq!(reconstructed, value);
-        println!("dljksfjbwsdh{:?}", value);
     }
 
     bits

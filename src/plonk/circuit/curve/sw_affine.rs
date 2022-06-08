@@ -3016,6 +3016,7 @@ mod test {
     fn test_base_curve_multiplication_by_split_scalar_with_range_table_and_endomorphism() {
         use rand::{Rng, SeedableRng, XorShiftRng};
         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+        // let rng = &mut XorShiftRng::from_seed([64, 64, 63, 63]);
 
         let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
 
@@ -3025,6 +3026,7 @@ mod test {
 
             let a_f: G1Affine = rng.gen();
             let b_f: Fr = rng.gen();
+
 
             let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
 

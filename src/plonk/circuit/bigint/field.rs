@@ -2272,11 +2272,11 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         // we do (a1 + a2 + ... + an) /den = result mod p
         // a1 + a2 + ... + an = result * den mod p
-        // result*den = q*p + (a1 + a2 + ... + an)
+        // result*den = (2k -1)q*p + (a1 + a2 + ... + an)
+        // k - Boolean which define result*den > or < num 
         // so we place nums into the remainders (don't need to negate here)
 
         let den = den.reduce_if_necessary(cs)?;
-
         let mut value_is_none = false;
 
         let inv = if let Some(den) = den.get_value() {
@@ -2307,20 +2307,27 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         }
         let num_value = if value_is_none { None } else { Some(num_value) };
 
-        let (result, q, _rem) = match (num_value, den.get_value(), inv.clone()) {
+        let (result, q, _) = match (num_value, den.get_value(), inv.clone()) {
             (Some(num_value), Some(den), Some(inv)) => {
                 let mut lhs = num_value.clone();
 
                 let mut rhs = BigUint::from(0u64);
-
                 let result = (num_value.clone() * &inv) % &params.represented_field_modulus;
 
                 rhs += result.clone() * &den;
-                let value = den * &result - num_value;
+
+                let k = Boolean::alloc(cs, Some(result.clone() * &den>=num_value))?;
+                let one = FieldElement::one(params);
+                let (minus_one, _) = one.clone().negated(cs)?;
+                // println!("minus_one{:?}", minus_one);
+                let (one_minusone, _) = FieldElement::select(cs, &k, one, minus_one)?;
+                let flag = fe_to_biguint(&one_minusone.value.unwrap());
+                println!("flag{:?}", flag);
+                let value = flag.clone() * den * &result + flag.clone() * num_value;
 
                 let (q, rem) = value.div_rem(&params.represented_field_modulus);
 
-                lhs += q.clone() * &params.represented_field_modulus;
+                lhs += flag.clone() * q.clone() * &params.represented_field_modulus;
 
                 assert_eq!(lhs, rhs);
 

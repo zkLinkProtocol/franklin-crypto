@@ -2323,10 +2323,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 let (one_minusone, _) = FieldElement::select(cs, &k, one, minus_one)?;
                 let flag = fe_to_biguint(&one_minusone.value.unwrap());
                 println!("flag{:?}", flag);
-                let value = flag.clone() * den * &result + flag.clone() * num_value;
+                let value = flag.clone() * den * &result - (flag.clone() * num_value);
 
                 let (q, rem) = value.div_rem(&params.represented_field_modulus);
-
+                println!("LHS_LAST{:?}", flag.clone() * q.clone() * &params.represented_field_modulus);
                 lhs += flag.clone() * q.clone() * &params.represented_field_modulus;
 
                 assert_eq!(lhs, rhs);

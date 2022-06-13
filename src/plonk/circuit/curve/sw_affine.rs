@@ -885,11 +885,11 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         let other_value = q_endo.get_value();
 
 
-        let bit_limit = if let Some(limit) = bit_limit {
-            Some(limit/2)
-        } else {
-            Some(127 as usize)
-        };
+        // let bit_limit = if let Some(limit) = bit_limit {
+        //     Some(limit/2)
+        // } else {
+        //     Some(127 as usize)
+        // };
 
 
         let mut minus_one = E::Fr::one();

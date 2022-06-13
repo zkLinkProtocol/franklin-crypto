@@ -2276,10 +2276,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // k - Boolean which define result*den > or < num 
         // so we place nums into the remainders (don't need to negate here)
 
-        let den = den.reduce_if_necessary(cs)?;
+        let den_field = den.reduce_if_necessary(cs)?;
         let mut value_is_none = false;
 
-        let inv = if let Some(den) = den.get_value() {
+        let inv = if let Some(den) = den_field.get_value() {
             let inv = mod_inverse(&den, &params.represented_field_modulus);
 
             Some(inv)
@@ -2288,9 +2288,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
             None
         };
+        let field_inv =  Self::new_allocated(cs, some_biguint_to_fe::<F>(&inv), params)?;
 
         let mut num_value = BigUint::from(0u64);
-        let mut all_constant = den.is_constant();
+        let mut all_constant = den_field.is_constant();
 
         let mut reduced_nums = Vec::with_capacity(nums.len());
 
@@ -2305,28 +2306,106 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             all_constant = all_constant & n.is_constant();
             reduced_nums.push(n);
         }
-        let num_value = if value_is_none { None } else { Some(num_value) };
-
+        let num_value = if value_is_none {
+            None
+        } else {
+            Some(num_value)
+        };
+        let field_num =  Self::new_allocated(cs, some_biguint_to_fe::<F>(&num_value), params)?;
+    
         let (result, q, _) = match (num_value, den.get_value(), inv.clone()) {
             (Some(num_value), Some(den), Some(inv)) => {
+                
                 let mut lhs = num_value.clone();
 
                 let mut rhs = BigUint::from(0u64);
-                let result = (num_value.clone() * &inv) % &params.represented_field_modulus;
+
+                let mut result = BigUint::zero();
+                let mut of = BigUint::zero();
+                let mut pre_of = BigUint::zero();
+                let mut res_in_limbs: Vec<Option<BigUint>> = vec![];
+                for k in 0..params.num_binary_limbs{
+                    for i in 0..2*k + 1 {
+                        let j = 2*k - i;
+
+                        result += field_num.binary_limbs[i].max_value() * field_inv.binary_limbs[j].max_value();
+                    }
+
+                    for i in 0..(2*k+2) {
+                        let j = 2*k + 1 - i;
+
+                        result += field_num.binary_limbs[i].max_value() * field_inv.binary_limbs[j].max_value()*(BigUint::from(1u64) << 64u32); // NOT TRUE, I DONT KNOW DEFAULT CAPACITY 
+                    }
+                    result += pre_of.clone();
+
+                    let modulus = BigUint::from(1u64) << 128u32;
+                    of = (result.clone() % modulus) >> 128u8;
+                    let limbs_for_result = result.clone() - of.clone()*(BigUint::from(1u64) << 128u32);
+                    res_in_limbs.push(Some(limbs_for_result.clone()));
+
+                    pre_of = of.clone();
+        
+                }
+
+                let result_by_modulus = (num_value.clone() * &inv) % &params.represented_field_modulus;
 
                 rhs += result.clone() * &den;
 
-                let k = Boolean::alloc(cs, Some(result.clone() * &den>=num_value))?;
-                let one = FieldElement::one(params);
-                let (minus_one, _) = one.clone().negated(cs)?;
-                // println!("minus_one{:?}", minus_one);
-                let (one_minusone, _) = FieldElement::select(cs, &k, one, minus_one)?;
-                let flag = fe_to_biguint(&one_minusone.value.unwrap());
-                println!("flag{:?}", flag);
-                let value = flag.clone() * den * &result - (flag.clone() * num_value);
+                let mut rhs = BigUint::zero();
+                let mut of = BigUint::zero();
+                let mut pre_of = BigUint::zero();
+                let mut c_in_limbs: Vec<Option<BigUint>> = vec![];
+                for k in 0..params.num_binary_limbs{
+                    for i in 0..2*k + 1 {
+                        let j = 2*k - i;
+
+                        rhs += res_in_limbs[i].unwrap() * den_field.binary_limbs[j].max_value();
+                    }
+
+                    for i in 0..(2*k+2) {
+                        let j = 2*k + 1 - i;
+
+                        rhs += res_in_limbs[i].unwrap() * den_field.binary_limbs[j].max_value()*(BigUint::from(1u64) << 64u32); // NOT TRUE, I DONT KNOW DEFAULT CAPACITY 
+                    }
+                    rhs += pre_of.clone();
+
+                    let modulus = BigUint::from(1u64) << 128u32;
+                    of = (rhs.clone() % modulus) >> 128u8;
+                    let limbs_for_rhs = rhs.clone() - of.clone()*(BigUint::from(1u64) << 128u32);
+                    c_in_limbs.push(Some(limbs_for_rhs.clone()));
+
+                    pre_of = of.clone();
+        
+                }
+                let mut value = BigUint::zero();
+                let mut of = BigUint::zero();
+                let mut pre_of = BigUint::zero();
+                let mut value_in_limbs: Vec<Option<BigUint>> = vec![];
+                for (l, r) in c_in_limbs.into_iter().zip(field_num.binary_limbs.into_iter().max_value()) {
+                    let mut new_limb = BigUint::from(0u64);
+
+                    if l.clone().unwrap() - pre_of.clone() < r.clone() {
+                        new_limb = l.as_ref().unwrap()+ (BigUint::from(1u64) << 64u32) - r - pre_of.clone();
+                        of = BigUint::from(1u64);
+                        value_in_limbs.push(Some(new_limb.clone()));
+                    }
+                    else{
+                        of = BigUint::zero();
+                        new_limb = l.as_ref().unwrap() - r.as_ref().unwrap()- pre_of.clone();
+                        value_in_limbs.push(Some(new_limb.clone()));
+                    }
+                }
+
+                // let k = Boolean::alloc(cs, Some(result.clone() * &den>=num_value))?;
+                // let one = FieldElement::one(params);
+                // let (minus_one, _) = one.clone().negated(cs)?;
+
+                // let (one_minusone, _) = FieldElement::select(cs, &k, one, minus_one)?;
+                // let flag = one_minusone.get_value().unwrap();
+
+                let value = den * &result - num_value;
 
                 let (q, rem) = value.div_rem(&params.represented_field_modulus);
-                println!("LHS_LAST{:?}", flag.clone() * q.clone() * &params.represented_field_modulus);
                 lhs += flag.clone() * q.clone() * &params.represented_field_modulus;
 
                 assert_eq!(lhs, rhs);

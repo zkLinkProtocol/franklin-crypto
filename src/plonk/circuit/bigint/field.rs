@@ -2396,6 +2396,11 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                     }
                 }
 
+
+                // next plan:
+                // Take the value obtained in the limbs and form q and rem
+
+
                 // let k = Boolean::alloc(cs, Some(result.clone() * &den>=num_value))?;
                 // let one = FieldElement::one(params);
                 // let (minus_one, _) = one.clone().negated(cs)?;

@@ -388,6 +388,8 @@ mod test {
         let crs = Crs::<Bn256, CrsForMonomialForm>::dummy_crs(1 << 20);
         let setup = assembly.create_setup::<TestKeccakCircuit::<Bn256>>(&worker).unwrap();
         let vk = VerificationKey::from_setup(&setup, &worker, &crs).unwrap();
+        println!("set com: {}", vk.gate_setup_commitments.len());
+        println!("sel com: {}", vk.gate_selectors_commitments.len());
 
         let proof = assembly
             .create_proof::<_, RollingKeccakTranscript<Fr>>(&worker, &setup, &crs, None)

@@ -88,7 +88,7 @@ impl<E: Engine> RangeCheckDecomposition<E> {
 
 
 // if coarsely flag is set that we constraint bit length up to range check granularity
-pub fn constraint_num_bits_ext_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
+pub fn constraint_bit_length_ext_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, strategy: RangeConstraintStrategy, coarsely: bool
 ) -> Result<RangeCheckDecomposition<E>, SynthesisError> {
     match strategy {
@@ -105,33 +105,33 @@ pub fn constraint_num_bits_ext_with_strategy<E: Engine, CS: ConstraintSystem<E>>
     }
 }
 
-pub fn constraint_num_bits_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
+pub fn constraint_bit_length_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, range_check_strategy: RangeConstraintStrategy
 ) -> Result<(), SynthesisError> {
-    let _decomposition = constraint_num_bits_ext_with_strategy(cs, var, num_bits, range_check_strategy, false)?;
+    let _decomposition = constraint_bit_length_ext_with_strategy(cs, var, num_bits, range_check_strategy, false)?;
     Ok(())
 }
 
-pub fn coarsely_constraint_num_bits_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
+pub fn coarsely_constraint_bit_length_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, range_check_strategy: RangeConstraintStrategy
 ) -> Result<(), SynthesisError> {
-    let _decomposition = constraint_num_bits_ext_with_strategy(cs, var, num_bits, range_check_strategy, true)?;
+    let _decomposition = constraint_bit_length_ext_with_strategy(cs, var, num_bits, range_check_strategy, true)?;
     Ok(())
 }
 
 // enforces that bitlength(var) <= shift and returns the decomposition of var into smaller chunks
 // the actual bitsize and type of chunks depends on the chosen strategy
-pub fn constraint_num_bits_ext<E: Engine, CS: ConstraintSystem<E>>(
+pub fn constraint_bit_length_ext<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize
 ) -> Result<RangeCheckDecomposition<E>, SynthesisError> {
     let range_check_strategy = get_optimal_strategy(cs);
-    constraint_num_bits_ext_with_strategy(cs, var, num_bits, range_check_strategy, false)
+    constraint_bit_length_ext_with_strategy(cs, var, num_bits, range_check_strategy, false)
 }
 
-pub fn constraint_num_bits<E: Engine, CS: ConstraintSystem<E>>(
+pub fn constraint_bit_length<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize
 ) -> Result<(), SynthesisError> {
-    let _decomposition = constraint_num_bits_ext(cs, var, num_bits)?;
+    let _decomposition = constraint_bit_length_ext(cs, var, num_bits)?;
     Ok(())
 }
 
@@ -506,7 +506,7 @@ pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>
 
     if !is_even_num_of_chunks || should_enforce_for_shifted_chunk {
         // if we should_enforce_for_shifted_chunk than our last gate would be of the form:
-        // [a, b, a ^ b, a] with arithmetic condition: b = a * shift
+        // [a, b, a ^ b, acc] with arithmetic condition: b = a * shift, acc = a * shift_a;
         let shift = u64_to_fe::<E::Fr>(1 << (chunk_width - (num_bits % chunk_width)));
         let a = if is_even_num_of_chunks { &dummy } else { &last_chunk };
         let b = if should_enforce_for_shifted_chunk {
@@ -519,9 +519,7 @@ pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>
         else {
             dummy.clone()
         };
-        let acc = last_chunk;
-
-        let shift_a = E::Fr::zero();
+    
         let shift_b = if should_enforce_for_shifted_chunk { shift } else { E::Fr::zero() };
         apply_range_table_gate(cs, a, &b, &acc, &shift_a, &shift_b, table.clone(), true)?;
     } 
@@ -530,6 +528,20 @@ pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>
         chunks_bitlength: chunk_width,
         decomposition: DecompositionType::ChunkDecomposition(chunks),
     })
+}
+
+pub fn split_into_bytes_using_default_range_table<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize
+) -> Result<Vec<AllocatedNum<E>>, SynthesisError> {
+    let range_check_strategy = get_optimal_strategy(cs);
+    if let range_check_strategy = RangeConstraintStrategy::WithBitwiseOpTable(8) {
+        let table = cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME).expect("should found a valid table");     
+        let decomposition = enforce_range_check_using_bitop_table(cs, var, num_bits, table, false)?; 
+        return Ok(decomposition.get_vars().clone())
+    }
+    else {
+        unimplemented!("Circuit geometry doesn't support splitting num into bytes via range table");
+    }
 }
 
 

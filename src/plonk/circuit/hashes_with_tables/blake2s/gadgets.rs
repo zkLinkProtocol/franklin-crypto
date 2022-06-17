@@ -1574,7 +1574,7 @@ impl<E: Engine> Blake2sGadget<E> {
         Ok(res)
     }
 
-    pub fn digest<CS: ConstraintSystem<E>>(&self, cs: &mut CS, data: &[Num<E>]) -> Result<Vec<Num<E>>> 
+    pub fn digest<CS: ConstraintSystem<E>>(&self, cs: &mut CS, data: &[Num<E>], message_len: usize) -> Result<Vec<Num<E>>> 
     {
         // h[0..7] := IV[0..7] // Initialization Vector.
         let mut total_len_as_u64 : u64 = 0;
@@ -1589,8 +1589,9 @@ impl<E: Engine> Blake2sGadget<E> {
         {
             assert_eq!(block.len(), 16);
             total_len_as_u64 += 64;
+            total_len_as_u64 = std::cmp::min(total_len_as_u64, message_len as u64);
             let total_len = Num::Constant(u64_to_ff(total_len_as_u64));
-            let is_last = Boolean::Constant(is_last);
+            let is_last = Boolean::Constant(is_last);   
             hash_state = self.f(cs, hash_state, &block[..], &total_len, is_last, total_len_as_u64)?;
         }
 
@@ -1604,21 +1605,34 @@ impl<E: Engine> Blake2sGadget<E> {
         Ok(res)
     }
 
+    pub fn digest_words32<CS: ConstraintSystem<E>>(&self, cs: &mut CS, words32: &[Num<E>]) -> Result<Vec<Num<E>>> 
+    {
+        let last_block_size = words32.len() % 16;
+        let num_of_zero_words = if last_block_size > 0 { 16 - last_block_size} else {0};
+        
+        let mut padded = vec![];
+        padded.extend(words32.iter().cloned());
+        padded.extend(iter::repeat(Num::Constant(E::Fr::zero())).take(num_of_zero_words));
+
+        assert_eq!(padded.len() % 16, 0);
+        self.digest(cs, &padded[..], words32.len() * 4)  
+    }
+
     pub fn digest_bytes<CS: ConstraintSystem<E>>(&self, cs: &mut CS, bytes: &[Byte<E>]) -> Result<Vec<Num<E>>> 
     {
         // padding with zeroes until length of message is multiple of 64
-        let last_block_size = bytes.len() % 64;
-        let num_of_zero_bytes = if last_block_size > 0 { 64 - last_block_size} else {0};
+        let last_block_size = bytes.len() % 128;
+        let num_of_zero_bytes = if last_block_size > 0 { 128 - last_block_size} else {0};
         
         let mut padded = vec![];
         padded.extend(bytes.iter().cloned());
         padded.extend(iter::repeat(Byte::from_cnst(E::Fr::zero())).take(num_of_zero_bytes));
 
-        assert_eq!(padded.len() % 64, 0);
+        assert_eq!(padded.len() % 128, 0);
 
         // now convert the byte array to array of 32-bit words
         let mut words32 = Vec::with_capacity(padded.len() % 4);
-        let cfs = [u64_to_ff(1 << 24), u64_to_ff(1 << 16), u64_to_ff(1 << 8), E::Fr::one()];
+        let cfs = [E::Fr::one(), u64_to_ff(1 << 8), u64_to_ff(1 << 16), u64_to_ff(1 << 24)];
         for chunk in padded.chunks(4) {
             let tmp = Num::lc(
                 cs, 
@@ -1628,7 +1642,7 @@ impl<E: Engine> Blake2sGadget<E> {
             words32.push(tmp);
         }
 
-        self.digest(cs, &words32[..])           
+        self.digest(cs, &words32[..], bytes.len())           
     }
 
     pub fn round_function<CS: ConstraintSystem<E>>(

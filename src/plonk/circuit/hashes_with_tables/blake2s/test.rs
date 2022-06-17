@@ -64,7 +64,7 @@ mod test {
                         input_vars.push(Num::Constant(value.clone()));
                     }
                 }
-                blake2s_gadget.digest(cs, &input_vars[..])?
+                blake2s_gadget.digest(cs, &input_vars[..], 10)?
             }
             else {
                 let mut input_vars = Vec::with_capacity(self.input.len());

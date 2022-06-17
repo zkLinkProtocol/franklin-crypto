@@ -448,7 +448,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
             let max_value = if is_last { msl_max_val.clone() } else { params.max_ordinary_limb_val_on_alloc.clone() };
             let bitlength = if is_last { msl_width } else { params.binary_limb_width };
-            let decomposition = constraint_num_bits_ext_with_strategy(
+            let decomposition = constraint_bit_length_ext_with_strategy(
                 cs, &a, bitlength, params.range_check_strategy, coarsely
             )?; 
             decompositions.push(decomposition);
@@ -850,7 +850,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             } else {
                 let var = AllocatedNum::alloc(cs, || r_wit.map(|x| biguint_to_fe::<E::Fr>(x)).grab())?;
                 let width = if is_last { msl_width } else { params.binary_limb_width };
-                constraint_num_bits_with_strategy(cs, &var, width, params.range_check_strategy)?;
+                constraint_bit_length_with_strategy(cs, &var, width, params.range_check_strategy)?;
                 Num::Variable(var) 
             };
             let r_term = Term::<E>::from_num(r);
@@ -1388,7 +1388,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             };
             let abs_flag = Term::from_boolean(&Boolean::Is(AllocatedBit::alloc(cs, abs_flag_wit)?)); 
             let abs_carry = AllocatedNum::alloc(cs, || abs_wit.grab())?;
-            constraint_num_bits_ext_with_strategy(
+            constraint_bit_length_ext_with_strategy(
                 cs, &abs_carry, bin_limb_width + MAX_INTERMIDIATE_OVERFLOW_WIDTH, params.range_check_strategy, true
             )?;
             let abs_carry = Term::from_num(Num::Variable(abs_carry)); 

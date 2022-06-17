@@ -443,10 +443,10 @@ impl ConditionalSelect<u64> for u64 {
 
 #[derive(Clone, Debug)]
 pub struct TwistedEdwardsPoint<E: Engine> {
-    pub x: E::Fr,
-    pub y: E::Fr,
-    pub z: E::Fr,
-    pub t: E::Fr,
+    pub(crate) x: E::Fr,
+    pub(crate) y: E::Fr,
+    pub(crate) z: E::Fr,
+    pub(crate) t: E::Fr,
 }
 
 impl<E: Engine> Copy for TwistedEdwardsPoint<E> {}

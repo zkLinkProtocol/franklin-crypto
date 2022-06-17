@@ -24,6 +24,7 @@ use super::super::utils::*;
 use super::super::tables::*;
 use super::super::{NumExtension, AllocatedNumExtension};
 
+use std::convert::TryInto;
 use std::sync::Arc;
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
@@ -56,12 +57,54 @@ pub const KECCAK_NUM_ROUNDS : usize = 24;
 pub const MAX_OF_COUNT_PER_ITER : u64 = 50;
 pub const DEFAULT_RANGE_TABLE_WIDTH: usize = 16;
 
-#[derive(Clone)]
-pub struct KeccakState<E: Engine>([[Num<E>; KECCAK_STATE_WIDTH]; KECCAK_STATE_WIDTH]);
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeccakStateBase {
+    First,
+    Second,
+    Binary,
+    Unknown
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct KeccakState<E: Engine> {
+    pub state: [[Num<E>; KECCAK_STATE_WIDTH]; KECCAK_STATE_WIDTH],
+    pub base: KeccakStateBase
+}
+
+impl<E: Engine> KeccakState<E> {
+    pub fn from_raw(state: [Num<E>; KECCAK_STATE_WIDTH * KECCAK_STATE_WIDTH]) -> Self {
+        let mut new = Self {
+            state: [[Num::<E>::zero(); KECCAK_STATE_WIDTH]; KECCAK_STATE_WIDTH],
+            base: KeccakStateBase::Unknown,
+        };
+        let mut it = state.iter();
+        for row in new.state.iter_mut() {
+            for el in row.iter_mut() {
+                *el = *it.next().unwrap();
+            }
+        }
+
+        assert!(it.next().is_none());
+
+        new
+    }
+
+    pub fn into_raw(self) -> [Num<E>; KECCAK_STATE_WIDTH * KECCAK_STATE_WIDTH] {
+        let mut tmp = vec![];
+        for row in self.state.iter() {
+            tmp.extend_from_slice(row);
+        }
+
+        tmp.try_into().unwrap()
+    }
+}
 
 impl<E: Engine> Default for KeccakState<E> {
     fn default() -> Self {
-        KeccakState(<[[Num<E>; KECCAK_STATE_WIDTH]; KECCAK_STATE_WIDTH]>::default())
+        KeccakState {
+            state: [[Num::<E>::zero(); KECCAK_STATE_WIDTH]; KECCAK_STATE_WIDTH],
+            base: KeccakStateBase::Unknown,
+        }
     }
 }
 
@@ -72,7 +115,7 @@ impl<E: Engine> Index<(usize, usize)> for KeccakState<E> {
         assert!(index.0 < KECCAK_STATE_WIDTH);
         assert!(index.1 < KECCAK_STATE_WIDTH);
 
-        &self.0[index.0][index.1]
+        &self.state[index.0][index.1]
     }
 }
 
@@ -81,7 +124,7 @@ impl<E: Engine> IndexMut<(usize, usize)> for KeccakState<E> {
         assert!(index.0 < KECCAK_STATE_WIDTH);
         assert!(index.1 < KECCAK_STATE_WIDTH);
 
-        &mut self.0[index.0][index.1]
+        &mut self.state[index.0][index.1]
     }
 }
 
@@ -158,16 +201,24 @@ impl<E: Engine> Keccak256Gadget<E> {
             PolyIdentifier::VariablesPolynomial(2)
         ];
 
+        use plonk::circuit::hashes_with_tables::get_or_create_table;
+
         let name1: &'static str = "from_binary_converter_table";
-        let from_binary_converter_table = LookupTableApplication::new(
+        let from_binary_converter_table = get_or_create_table(
+            cs,
             name1,
-            MultiBaseNormalizationTable::new(
-                binary_base_num_of_chunks, BINARY_BASE, KECCAK_FIRST_SPARSE_BASE, KECCAK_SECOND_SPARSE_BASE, |x| {x}, |x| {x}, name1,
-            ),
-            columns3.clone(),
-            None,
-            true
-        );
+            || {
+                LookupTableApplication::new(
+                    name1,
+                    MultiBaseNormalizationTable::new(
+                        binary_base_num_of_chunks, BINARY_BASE, KECCAK_FIRST_SPARSE_BASE, KECCAK_SECOND_SPARSE_BASE, |x| {x}, |x| {x}, name1,
+                    ),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            }
+        )?;
 
         let name2 : &'static str = "first_to_second_base_converter_table";
         let f = |x| { keccak_u64_first_converter(x)};
@@ -197,31 +248,44 @@ impl<E: Engine> Keccak256Gadget<E> {
         };
         
         let g = |x| { of_transformed[x as usize] };
-        let first_to_second_base_converter_table = LookupTableApplication::new(
+        let first_to_second_base_converter_table = get_or_create_table(
+            cs,
             name2,
-            ExtendedBaseConverterTable::new(
-                first_base_num_of_chunks, KECCAK_FIRST_SPARSE_BASE, KECCAK_SECOND_SPARSE_BASE, f, g, name2
-            ),
-            columns3.clone(),
-            None,
-            true
-        );
+            || {
+                LookupTableApplication::new(
+                    name2,
+                    ExtendedBaseConverterTable::new(
+                        first_base_num_of_chunks, KECCAK_FIRST_SPARSE_BASE, KECCAK_SECOND_SPARSE_BASE, f, g, name2
+                    ),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            }
+        )?;
 
         let name3 : &'static str = "of_first_to_second_base_converter_table";
         let f = |x| { keccak_u64_first_converter(x)};
-        let of_first_to_second_base_converter_table = LookupTableApplication::new(
+        let of_first_to_second_base_converter_table = get_or_create_table(
+            cs,
             name3,
-            OverflowCognizantConverterTable::new(
-                KECCAK_FIRST_SPARSE_BASE, KECCAK_SECOND_SPARSE_BASE, KECCAK_LANE_WIDTH as u64, f, name3,
-            ),
-            columns3.clone(),
-            None,
-            true
-        );
+            || {
+                LookupTableApplication::new(
+                    name3,
+                    OverflowCognizantConverterTable::new(
+                        KECCAK_FIRST_SPARSE_BASE, KECCAK_SECOND_SPARSE_BASE, KECCAK_LANE_WIDTH as u64, f, name3,
+                    ),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            }
+        )?;
 
         let name4 : &'static str = "from_second_base_converter_table";
         let f = |x| { keccak_u64_second_converter(x)};
-        let from_second_base_converter_table = LookupTableApplication::new(
+        let from_second_base_converter_table = get_or_create_table(
+            cs,
             name4,
             MultiBaseNormalizationTable::new(
                 second_base_num_of_chunks, KECCAK_SECOND_SPARSE_BASE, KECCAK_FIRST_SPARSE_BASE, BINARY_BASE, f, f, name4
@@ -601,18 +665,21 @@ impl<E: Engine> Keccak256Gadget<E> {
     // ---------------------------------------------------------------------------------------------------------------------------
 
     fn theta<CS: ConstraintSystem<E>>(&self, cs: &mut CS, state: KeccakState<E>) -> Result<KeccakState<E>> {
+        assert!(state.base == KeccakStateBase::First);
         let mut c_vec = Vec::with_capacity(KECCAK_STATE_WIDTH);
         // calculate C[x] for each column:
         for i in 0..KECCAK_STATE_WIDTH {
-            c_vec.push(Num::sum(cs, &state.0[i])?);
+            c_vec.push(Num::sum(cs, &state.state[i])?);
         }
 
         // recalculate state
         let coeffs = [E::Fr::one(), E::Fr::one(), u64_to_ff(KECCAK_FIRST_SPARSE_BASE)];
         let mut new_state = KeccakState::default();
+        new_state.base = state.base;
         for (i, j) in (0..KECCAK_STATE_WIDTH).cartesian_product(0..KECCAK_STATE_WIDTH) {
             let inputs = [
-                state[(i, j)].clone(), c_vec[(i+KECCAK_STATE_WIDTH-1) % KECCAK_STATE_WIDTH].clone(), 
+                state[(i, j)].clone(), 
+                c_vec[(i+KECCAK_STATE_WIDTH-1) % KECCAK_STATE_WIDTH].clone(), 
                 c_vec[(i+1) % KECCAK_STATE_WIDTH].clone()
             ];
             new_state[(i, j)] = Num::lc(cs, &coeffs, &inputs[..])?;
@@ -622,6 +689,7 @@ impl<E: Engine> Keccak256Gadget<E> {
 
     fn pi<CS: ConstraintSystem<E>>(&self, _cs: &mut CS, state: KeccakState<E>) -> Result<KeccakState<E>> {
         let mut new_state = KeccakState::default();
+        new_state.base = state.base;
         for (i, j) in (0..KECCAK_STATE_WIDTH).cartesian_product(0..KECCAK_STATE_WIDTH) {
             new_state[(i, j)] = state[((i + 3*j) % KECCAK_STATE_WIDTH, i)].clone();
         }
@@ -632,7 +700,7 @@ impl<E: Engine> Keccak256Gadget<E> {
     fn rho<CS: ConstraintSystem<E>>(&self, cs: &mut CS, state: KeccakState<E>) -> Result<KeccakState<E>> {
         let mut new_state = KeccakState::default();
         let mut of_map : std::collections::HashMap<usize, Vec<AllocatedNum<E>>> = HashMap::new();
-        let num_slices_max = (KECCAK_LANE_WIDTH -1) / self.first_base_num_of_chunks + 3;  
+        let num_slices_max = (KECCAK_LANE_WIDTH - 1) / self.first_base_num_of_chunks + 3;  
         
         let input_chunks_standard_step = u64_exp_to_ff(KECCAK_FIRST_SPARSE_BASE, self.first_base_num_of_chunks as u64);
         let output_chunks_standard_step = u64_exp_to_ff(KECCAK_SECOND_SPARSE_BASE, self.first_base_num_of_chunks as u64);
@@ -784,8 +852,7 @@ impl<E: Engine> Keccak256Gadget<E> {
 
             let last_chunk = if has_value {
                 Some(last_chunk_value)     
-            }
-            else {
+            } else {
                 None
             };
             let last_chunk = AllocatedNum::alloc(cs, || last_chunk.grab())?;
@@ -807,6 +874,8 @@ impl<E: Engine> Keccak256Gadget<E> {
                 self.handle_of_arr(cs, &arr[..], self.of_transformed[i] * (arr.len() as u64))?
             }
         }
+
+        new_state.base = KeccakStateBase::Second;
         
         Ok(new_state) 
     }
@@ -820,6 +889,8 @@ impl<E: Engine> Keccak256Gadget<E> {
         // if elems_to_squeeze > 0 && elems_to_mix.is_some() {
         //     unreachable!();
         // }
+
+        assert!(state.base == KeccakStateBase::Second);
 
         // check, that elems to mix contains the righit number of elements
         if let Some(input_to_mix) = elems_to_mix {
@@ -852,8 +923,8 @@ impl<E: Engine> Keccak256Gadget<E> {
         };
 
         for (j, i) in (0..KECCAK_STATE_WIDTH).cartesian_product(0..KECCAK_STATE_WIDTH) {
-            // A′[x, y,z] = (A[x, y,z] ⊕ ((A[(x+1) mod 5, y, z] ⊕ 1) ⋅ A[(x+2) mod 5, y, z])) ⊕ D.
-            // the corresponding algebraic transform is y = 2a + b + 3c +2d
+            // A′[x, y, z] = (A[x, y, z] ⊕ ((A[(x+1) mod 5, y, z] ⊕ 1) ⋅ A[(x+2) mod 5, y, z])) ⊕ D.
+            // the corresponding algebraic transform is y = 2a + b + 3c + 2d
             // if we are squeezing:
             // D is always constant and nonzero only for lane[0][0]
             // if we are mixing:
@@ -865,15 +936,17 @@ impl<E: Engine> Keccak256Gadget<E> {
                     let idx = j * KECCAK_STATE_WIDTH + i; 
                     if idx < KECCAK_RATE_WORDS_SIZE { input_to_mix[idx].clone() } else { Num::default() }
                 },
-            }; 
+            };
+            let a = state[(i, j)].clone();
             let b = state[((i+1) % KECCAK_STATE_WIDTH, j)].clone();
             let c = state[((i+2) % KECCAK_STATE_WIDTH, j)].clone();
-            let inputs = [state[(i, j)].clone(), b, c, d];
+            let inputs = [a, b, c, d];
             let lc = Num::lc_with_d_next(cs, &coeffs[..], &inputs[..])?;
 
             if lc.is_constant() {
                 let fr = lc.get_value().unwrap();
                 new_state[(i, j)] = Num::Constant(keccak_ff_second_converter(fr, KECCAK_FIRST_SPARSE_BASE));
+                new_state.base = KeccakStateBase::First;
                 if iter_count < elems_to_squeeze {
                     squeezed.push(Num::Constant(keccak_ff_second_converter(fr, BINARY_BASE)));
                 }
@@ -943,6 +1016,7 @@ impl<E: Engine> Keccak256Gadget<E> {
 
                 AllocatedNum::long_weighted_sum_eq(cs, &output1_slices[..], &output1_slice_modulus_fr, &output1_total, false)?;
                 new_state[(i, j)] = Num::Variable(output1_total);
+                new_state.base = KeccakStateBase::First;
             }
 
             if iter_count < elems_to_squeeze {
@@ -955,6 +1029,149 @@ impl<E: Engine> Keccak256Gadget<E> {
                 squeezed.push(Num::Variable(output2_total));
 
                 iter_count += 1;
+            }
+        }
+       
+        Ok((new_state, squeezed))
+    }
+
+    fn xi_i_pure<CS: ConstraintSystem<E>>(
+        &self, 
+        cs: &mut CS, 
+        state: KeccakState<E>, 
+        round: usize, 
+        elems_to_squeeze: usize,
+        is_final: bool,
+    ) -> Result<(KeccakState<E>, Vec<Num<E>>)> 
+    {
+        if elems_to_squeeze > 0 {
+            assert!(is_final);
+        }
+        assert!(state.base == KeccakStateBase::Second);
+        let mut new_state = KeccakState::default();
+        let mut iter_count = 0;
+        let coeffs = [u64_to_ff(2), E::Fr::one(), u64_to_ff(3), u64_to_ff(2)];
+        let mut squeezed = Vec::with_capacity(elems_to_squeeze);
+        
+        let num_of_chunks = self.second_base_num_of_chunks;
+        let num_slices = round_up(KECCAK_LANE_WIDTH, num_of_chunks);
+                    
+        let second_sparse_base_modulus_usize = pow(KECCAK_SECOND_SPARSE_BASE as usize, num_of_chunks);
+
+        let second_sparse_base_modulus_fr = u64_exp_to_ff(KECCAK_SECOND_SPARSE_BASE, num_of_chunks as u64);
+        let first_sparse_base_modulus_fr = u64_exp_to_ff(KECCAK_FIRST_SPARSE_BASE, num_of_chunks as u64);
+        let binary_sparse_base_modulus_fr = u64_exp_to_ff(BINARY_BASE, num_of_chunks as u64);
+
+        let mut minus_one = E::Fr::one();
+        minus_one.negate();
+
+        let keccak_ff_second_converter = | fr: E::Fr, output_base: u64 | {
+            func_normalizer(fr, KECCAK_SECOND_SPARSE_BASE, output_base, |n| { keccak_u64_second_converter(n) })
+        };
+
+        for (j, i) in (0..KECCAK_STATE_WIDTH).cartesian_product(0..KECCAK_STATE_WIDTH) {
+            // A′[x, y, z] = (A[x, y, z] ⊕ ((A[(x+1) mod 5, y, z] ⊕ 1) ⋅ A[(x+2) mod 5, y, z])) ⊕ D.
+            // the corresponding algebraic transform is y = 2a + b + 3c + 2d
+            // D is always constant and nonzero only for lane[0][0]
+            // there are 4-summands so always push result in d-next if not constant
+            let d = if i == 0  && j == 0 {Num::Constant(self.round_cnsts_in_second_base[round].clone())} else { Num::default() };
+            let a = state[(i, j)].clone();
+            let b = state[((i+1) % KECCAK_STATE_WIDTH, j)].clone();
+            let c = state[((i+2) % KECCAK_STATE_WIDTH, j)].clone();
+            let inputs = [a, b, c, d];
+            let lc = Num::lc_with_d_next(cs, &coeffs[..], &inputs[..])?;
+
+            if lc.is_constant() {
+                let fr = lc.get_value().unwrap();
+                new_state[(i, j)] = Num::Constant(keccak_ff_second_converter(fr, KECCAK_FIRST_SPARSE_BASE));
+                if iter_count < elems_to_squeeze {
+                    squeezed.push(Num::Constant(keccak_ff_second_converter(fr, BINARY_BASE)));
+                }
+                iter_count += 1;
+                continue;
+            }
+
+            let var = lc.get_variable();
+                
+            let mut input_slices : Vec<AllocatedNum<E>> = Vec::with_capacity(num_slices);
+            let mut output1_slices : Vec<AllocatedNum<E>> = Vec::with_capacity(num_slices);
+            let mut output2_slices : Vec<AllocatedNum<E>> = Vec::with_capacity(num_slices);
+
+            let witness = match var.get_value() {
+                None => {
+                    vec![None; num_slices]
+                },
+                Some(f) => {
+                    let mut result = vec![];
+                    // here we have to operate on row biguint number
+                    let mut big_f = BigUint::default();
+                    let f_repr = f.into_repr();
+                    for n in f_repr.as_ref().iter().rev() {
+                        big_f <<= 64;
+                        big_f += *n;
+                    } 
+
+                    for _ in 0..num_slices {
+                        let remainder = (big_f.clone() % BigUint::from(second_sparse_base_modulus_usize)).to_u64().unwrap();
+                        let new_val = u64_to_ff(remainder);
+                        big_f /= second_sparse_base_modulus_usize;
+
+                        result.push(Some(new_val));
+                    }
+
+                    assert!(big_f.is_zero());
+
+                    result
+                }
+            };
+
+            for w in witness.into_iter() {
+                let tmp = AllocatedNum::alloc(cs, || w.grab())?;
+                input_slices.push(tmp);
+            }
+
+            let mut coef = E::Fr::one();
+            let mut acc = var.clone();
+            for (_is_first, is_last, input_chunk) in input_slices.iter().identify_first_last() {
+                let (output1, output2, new_acc) = self.query_table_accumulate(
+                    cs, &self.from_second_base_converter_table, input_chunk, &acc, &coef, is_last
+                )?;
+
+
+                coef.mul_assign(&second_sparse_base_modulus_fr);
+                acc = new_acc;
+
+                output1_slices.push(output1);
+                output2_slices.push(output2);
+            }
+
+            // always go into 1st base
+
+            if !is_final {
+                let output1_total = AllocatedNum::alloc(cs, || {
+                    let fr = var.get_value().grab()?;
+                    Ok(keccak_ff_second_converter(fr, KECCAK_FIRST_SPARSE_BASE))
+                })?;
+
+                AllocatedNum::long_weighted_sum_eq(cs, &output1_slices[..], &first_sparse_base_modulus_fr, &output1_total, false)?;
+                new_state[(i, j)] = Num::Variable(output1_total);
+                new_state.base = KeccakStateBase::First;
+            } else {
+                // and squeeze ONLY if final, and convert full state into binary
+
+                let output2_total = AllocatedNum::alloc(cs, || {
+                    let fr = var.get_value().grab()?;
+                    Ok(keccak_ff_second_converter(fr, BINARY_BASE))
+                })?;
+
+                AllocatedNum::long_weighted_sum_eq(cs, &output2_slices[..], &binary_sparse_base_modulus_fr, &output2_total, false)?;
+                if iter_count < elems_to_squeeze {
+                    squeezed.push(Num::Variable(output2_total));
+                    iter_count += 1;
+                }
+
+                new_state[(i,j)] = Num::Variable(output2_total);
+                new_state.base = KeccakStateBase::Binary;
             }
         }
        
@@ -1011,10 +1228,11 @@ impl<E: Engine> Keccak256Gadget<E> {
                 for (idx, elem) in data_block.iter().enumerate() {
                     let out = self.convert_binary_to_sparse_repr(cs, elem, KeccakBase::KeccakFirstSparseBase)?;
                     state[(idx % KECCAK_STATE_WIDTH, idx / KECCAK_STATE_WIDTH)] = out;
+                    state.base = KeccakStateBase::First;
                 }
             }
             else {
-                let converted : Vec<Num<E>> =  data_block.iter().map(|elem| {
+                let converted : Vec<Num<E>> = data_block.iter().map(|elem| {
                     self.convert_binary_to_sparse_repr(cs, elem, KeccakBase::KeccakSecondSparseBase)
                 }).collect::<Result<Vec<_>>>()?;
                 let (new_state, _) = self.keccak_f(cs, state, 0, Some(&converted[..]), false, true)?;
@@ -1181,8 +1399,10 @@ impl<E: Engine> Keccak256Gadget<E> {
                 is_first = false;
                 let tmp = self.convert_binary_to_sparse_repr(cs, &elem_in, KeccakBase::KeccakSecondSparseBase)?;
                 Num::conditionally_select(
-                    cs, &is_first_block, 
-                    &Num::Constant(self.round_cnsts_in_second_base[KECCAK_NUM_ROUNDS-1]), &tmp
+                    cs, 
+                    &is_first_block, 
+                    &Num::Constant(self.round_cnsts_in_second_base[KECCAK_NUM_ROUNDS-1]), 
+                    &tmp
                 )?
             } else {
                 // returns 0 if condition == `false` and `a` if condition == `true` 
@@ -1238,7 +1458,7 @@ impl<E: Engine> Keccak256Gadget<E> {
         let block_size = KECCAK_RATE_WORDS_SIZE * (KECCAK_LANE_WIDTH / 8);
         let last_block_size = bytes.len() % block_size;
         let padlen = block_size - last_block_size;
-        if padlen == 1{
+        if padlen == 1 {
             padded.push(Byte::from_cnst(u64_to_ff(0x81)));
         }
         else {

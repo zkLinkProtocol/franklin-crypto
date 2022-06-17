@@ -417,28 +417,26 @@ impl<E: Engine> LookupTableInternal<E> for XorRotateTable<E> {
 // it contains all possible triples [a0, a1, a2] where each a_i \in {0, 1}
 #[derive(Clone)]
 pub struct BooleanityTable<E: Engine> {
-    table_entries: [Vec<E::Fr>; 3],
+    table_entries: Vec<[E::Fr; 3]>,
     name: &'static str,
 }
 
 
 impl<E: Engine> BooleanityTable<E> {
     pub fn new(name: &'static str) -> Self {
-        let column0 = vec![
-            E::Fr::zero(),  E::Fr::zero(),  E::Fr::zero(),  E::Fr::zero(),
-            E::Fr::one(), E::Fr::one(), E::Fr::one(), E::Fr::one()
-        ];
-        let column1 = vec![
-            E::Fr::zero(),  E::Fr::zero(),  E::Fr::one(),  E::Fr::one(),
-            E::Fr::zero(), E::Fr::zero(), E::Fr::one(), E::Fr::one()
-        ];
-        let column2 = vec![
-            E::Fr::zero(),  E::Fr::one(),  E::Fr::zero(),  E::Fr::one(),
-            E::Fr::zero(), E::Fr::one(), E::Fr::zero(), E::Fr::one()
+        let entries = vec![
+            [E::Fr::zero(), E::Fr::zero(), E::Fr::zero()],
+            [E::Fr::zero(), E::Fr::zero(), E::Fr::one()],
+            [E::Fr::zero(), E::Fr::one(), E::Fr::zero()],
+            [E::Fr::zero(), E::Fr::one(), E::Fr::one()],
+            [E::Fr::one(), E::Fr::zero(), E::Fr::zero()],
+            [E::Fr::one(), E::Fr::zero(), E::Fr::one()],
+            [E::Fr::one(), E::Fr::one(), E::Fr::zero()],
+            [E::Fr::one(), E::Fr::one(), E::Fr::one()],
         ];
 
         Self {
-            table_entries: [column0, column1, column2],
+            table_entries: entries,
             name,
         }
     }
@@ -469,7 +467,14 @@ impl<E: Engine> LookupTableInternal<E> for BooleanityTable<E> {
         true
     }
     fn get_table_values_for_polys(&self) -> Vec<Vec<E::Fr>> {
-        vec![self.table_entries[0].clone(), self.table_entries[1].clone(), self.table_entries[2].clone()]
+        let mut result  = vec![vec![]; 3];
+        for [e0, e1, e2] in self.table_entries.iter() {
+            result[0].push(*e0);
+            result[1].push(*e1);
+            result[2].push(*e2);
+        }
+
+        result
     }
     fn table_id(&self) -> E::Fr {
         table_id_from_string(self.name)
@@ -492,8 +497,17 @@ impl<E: Engine> LookupTableInternal<E> for BooleanityTable<E> {
         values.iter().all(|x| check_booleanity(x))
     }
 
-    fn query(&self, _keys: &[E::Fr]) -> Result<Vec<E::Fr>, SynthesisError> {
-        Err(SynthesisError::Unsatisfiable)
+    fn query(&self, keys: &[E::Fr]) -> Result<Vec<E::Fr>, SynthesisError> {
+        assert!(keys.len() == self.num_keys());
+
+        for set in self.table_entries.iter() {
+            if &set[..] == keys {
+                return Ok(vec![])
+            }
+        }
+
+        panic!("Invalid input into table {}: {:?}", self.name(), keys);
+        // Err(SynthesisError::Unsatisfiable)
     }
 }
 

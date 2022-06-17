@@ -20,6 +20,20 @@ use crate::plonk::circuit::Assignment;
 
 use std::iter;
 
+fn get_or_create_table<E: Engine, CS: ConstraintSystem<E>, FN: FnOnce() -> LookupTableApplication<E>>(
+    cs: &mut CS,
+    table_name: &str,
+    init_fn: FN
+) -> Result<std::sync::Arc<LookupTableApplication<E>>, SynthesisError> {
+    if let Ok(existing) = cs.get_table(table_name) {
+        Ok(existing)
+    } else {
+        let new_one = init_fn();
+        let new_one = cs.add_table(new_one)?;
+
+        Ok(new_one)
+    }
+}
 
 trait NumExtension<E: Engine> : Sized
 {

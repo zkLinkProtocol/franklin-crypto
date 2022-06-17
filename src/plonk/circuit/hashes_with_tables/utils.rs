@@ -150,6 +150,9 @@ pub fn general_normalizer<Fr: PrimeField>(fr : Fr, bit_table: &[u64], base: u64)
     res
 }
 
+/// Normalizes an input value by taking `digits` in the `input_base`,
+/// then transforming this "digits" with transformation function,
+/// and finally treating transformation results as digits into `output_base` 
 pub fn func_normalizer<Fr: PrimeField, T: Fn(u64) -> u64>(fr : Fr, input_base: u64, output_base: u64, transform_f: T) -> Fr
 {
     let mut input = BigUint::default();

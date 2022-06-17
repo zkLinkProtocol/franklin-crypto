@@ -7,7 +7,7 @@ use super::linear_combination::*;
 use super::boolean::Boolean;
 use super::utils::*;
 use crate::plonk::circuit::Assignment;
-use crate::plonk::circuit::bigint::constraint_bit_length;
+use crate::plonk::circuit::bigint_new::constraint_bit_length;
 
 use crate::bellman::plonk::better_better_cs::cs::{
     Variable, 

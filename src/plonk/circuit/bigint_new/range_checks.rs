@@ -398,7 +398,8 @@ pub fn enforce_range_check_using_custom_gate<E: Engine, CS: ConstraintSystem<E>>
 
 
 pub fn apply_range_table_gate<E: Engine, CS: ConstraintSystem<E>>(
-    cs: &mut CS, a: &AllocatedNum<E>, b: &AllocatedNum<E>, acc: &AllocatedNum<E>, shift_a: &E::Fr, shift_b: &E::Fr,
+    cs: &mut CS, a: &AllocatedNum<E>, b: &AllocatedNum<E>, acc: &AllocatedNum<E>, 
+    shift_a: &E::Fr, shift_b: &E::Fr, shift_d_next: &E::Fr,
     table: Arc<LookupTableApplication<E>>, is_final: bool
 ) -> Result<AllocatedNum<E>, SynthesisError>
 {
@@ -419,6 +420,8 @@ pub fn apply_range_table_gate<E: Engine, CS: ConstraintSystem<E>>(
             tmp = b.get_value().grab()?;
             tmp.mul_assign(&shift_b);
             res.sub_assign(&tmp);
+            let div_inv = shift_d_next.inverse().unwrap();
+            res.mul_assign(&div_inv);
             Ok(res)
         })?
     }
@@ -434,8 +437,8 @@ pub fn apply_range_table_gate<E: Engine, CS: ConstraintSystem<E>>(
     let range_of_next_step_linear_terms = CS::MainGate::range_of_next_step_linear_terms();
     let idx_of_last_linear_term = range_of_next_step_linear_terms.last().expect("must have an index");
 
-    // new_acc = prev_acc - a * shift_a - b * shift_b
-    // or: a * shift_a + b * shift_b + new_acc - prev_acc = 0;
+    // new_acc * shift_d_next = prev_acc - a * shift_a - b * shift_b
+    // or: a * shift_a + b * shift_b + new_acc * shift_d_next - prev_acc = 0;
     let vars = [a.get_variable(), b.get_variable(), a_xor_b.get_variable(), acc.get_variable()];
     let coeffs = [shift_a.clone(), shift_b.clone(), E::Fr::zero(), minus_one];
 
@@ -449,7 +452,7 @@ pub fn apply_range_table_gate<E: Engine, CS: ConstraintSystem<E>>(
         gate_coefs[idx] = *coef;
     }
     if !is_final {
-        gate_coefs[idx_of_last_linear_term] = E::Fr::one();
+        gate_coefs[idx_of_last_linear_term] = shift_d_next.clone();
     }
 
     let mg = CS::MainGate::default();
@@ -487,9 +490,6 @@ pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>
     let shift_d_next = shifts[chunk_width * 2].clone();
     let mut minus_one = E::Fr::one();
     minus_one.negate();
-
-   
-    let mut shift_b = shift_b_start.clone();
     let mut acc = var.clone();
 
     let is_even_num_of_chunks = chunks.len() % 2 == 0;
@@ -501,10 +501,7 @@ pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>
         // a + b * shift - acc + acc_next * shift^2;
         let (a, b) = (&pair[0], &pair[1]);
         is_final &= is_even_num_of_chunks; 
-        acc = apply_range_table_gate(cs, a, b, &acc, &shift_a, &shift_b, table.clone(), is_final)?;
-
-        shift_a.mul_assign(&shift_inc);
-        shift_b.mul_assign(&shift_inc);
+        acc = apply_range_table_gate(cs, a, b, &acc, &shift_a, &shift_b, &shift_d_next, table.clone(), is_final)?;
     }
 
     if !is_even_num_of_chunks || should_enforce_for_shifted_chunk {
@@ -524,7 +521,7 @@ pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>
         };
     
         let shift_b = if should_enforce_for_shifted_chunk { shift } else { E::Fr::zero() };
-        apply_range_table_gate(cs, a, &b, &acc, &shift_a, &shift_b, table.clone(), true)?;
+        apply_range_table_gate(cs, a, &b, &acc, &shift_a, &shift_b, &E::Fr::zero(), table.clone(), true)?;
     } 
 
     Ok(RangeCheckDecomposition {
@@ -542,7 +539,7 @@ mod test {
     fn check_two_bit_gate() {
         use crate::bellman::pairing::bn256::{Bn256, Fr};
         use crate::bellman::plonk::better_better_cs::cs::*;
-        use crate::plonk::circuit::bigint::*;
+        use crate::plonk::circuit::bigint_new::*;
         use crate::plonk::circuit::linear_combination::*;
         use crate::plonk::circuit::allocated_num::*;
 

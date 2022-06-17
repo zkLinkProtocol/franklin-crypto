@@ -101,7 +101,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> MultiexpTable<'a, E, G> where G::Base
             0 => {},
             1 => {
                 let mut point = remainder[0].clone();
-                let (minus_y, y) = point.y.clone().negate(cs)?;
+                let (minus_y, y) = point.y.clone().negated(cs)?;
                 point.y = y;
 
                 let mut point_negated = point.clone();
@@ -499,7 +499,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> MultiexpTable<'a, E, G> where G::Base
             0 => {},
             1 => {
                 let w1 = self.width_one_elements.as_ref().unwrap();
-                let (y, _) = FieldElement::select(cs, &remainder[0], &w1[0].y.clone(), &w1[1].y.clone())?;
+                let (y, _) = FieldElement::select(cs, &remainder[0], w1[0].y.clone(), w1[1].y.clone())?;
                 let x = w1[0].x.clone();
 
                 let new_value = if let Some(b) = remainder[0].get_value() {

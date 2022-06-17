@@ -22,9 +22,6 @@ extern crate lazy_static;
 #[macro_use]
 extern crate arr_macro;
 
-#[cfg(test)]
-#[macro_use]
-extern crate hex_literal;
 
 #[cfg(test)]
 extern crate hex;

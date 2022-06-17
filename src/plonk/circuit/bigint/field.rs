@@ -38,178 +38,9 @@ use crate::plonk::circuit::SomeField;
 
 use super::*;
 use super::bigint::*;
-use super::range_checks::*;
 use num_bigint::BigUint;
 use num_integer::Integer;
 use num_traits::Zero;
-
-
-// Simple term and bit counter/max value counter that we can update
-#[derive(Clone, Debug)]
-pub struct Limb<E: Engine> {
-    pub term: Term<E>,
-    pub max_value: BigUint,
-}
-
-pub(crate) fn get_num_bits<F: PrimeField>(el: &F) -> usize {
-    let repr = el.into_repr();
-    let mut num_bits = repr.as_ref().len() * 64;
-    for &limb in repr.as_ref().iter().rev() {
-        if limb == 0 {
-            num_bits -= 64;
-        } else {
-            num_bits -= limb.leading_zeros() as usize;
-            break;
-        }
-    }
-
-    num_bits
-}
-
-impl<E: Engine> Limb<E> {
-    pub fn new(
-        term: Term<E>,
-        max_value: BigUint,
-    ) -> Self {
-        Self {
-            term,
-            max_value,
-        }
-    }
-
-    pub fn new_constant(
-        value: BigUint
-    ) -> Self {
-        let v = biguint_to_fe(value.clone());
-
-        let term = Term::<E>::from_constant(v);
-
-        Self {
-            term,
-            max_value: value
-        }
-    }
-
-    pub fn new_constant_from_field_value(
-        value: E::Fr
-    ) -> Self {
-        let term = Term::<E>::from_constant(value);
-
-        Self {
-            term,
-            max_value: fe_to_biguint(&value)
-        }
-    }
-
-    pub fn max_bits(&mut self) -> usize {
-        (self.max_value.bits() as usize) + 1
-    }
-
-    pub fn inc_max(&mut self, by: &BigUint) {
-        self.max_value += by;
-    }
-
-    pub fn scale_max(&mut self, by: &BigUint) {
-        self.max_value *= by;
-    }
-
-    pub fn max_value(&self) -> BigUint {
-        self.max_value.clone()
-    }
-
-    pub fn get_value(&self) -> Option<BigUint> {
-        some_fe_to_biguint(&self.term.get_value())
-    }
-
-    pub fn scale(&mut self, by: &E::Fr) {
-        self.term.scale(by);
-    }
-
-    pub fn negate(&mut self) {
-        self.term.negate();
-    }
-
-    pub fn add_constant(&mut self, c: &E::Fr) {
-        self.term.add_constant(&c);
-    }
-
-    pub fn get_field_value(&self) -> Option<E::Fr> {
-        let v = self.term.get_value();
-
-        v
-    }
-
-    pub fn is_constant(&self) -> bool {
-        self.term.is_constant()
-    }
-
-    pub fn collapse_into_constant(&self) -> E::Fr {
-        self.term.get_constant_value()
-    }
-
-    pub fn collapse_into_num<CS: ConstraintSystem<E>>(
-        &self,
-        cs: &mut CS
-    ) -> Result<Num<E>, SynthesisError> {
-        self.term.collapse_into_num(cs)
-    }
-
-    pub fn is_zero(&self) -> bool {
-        if self.is_constant() {
-            self.term.get_constant_value().is_zero()
-        } else {
-            false
-        }
-    }
-}
-
-
-// in principle this is valid for both cases:
-// when we represent some (field) element as a set of limbs
-// that are power of two, or if it's a single element as in RNS
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LimbedRepresentationParameters<E: Engine> {
-    pub limb_size_bits: usize,
-    pub limb_max_value: BigUint,
-    pub limb_max_intermediate_value: BigUint,
-    pub limb_intermediate_value_capacity: usize,
-    pub shift_left_by_limb_constant: E::Fr,
-    pub shift_right_by_limb_constant: E::Fr,
-    pub mul_two_constant: E::Fr,
-    pub div_two_constant: E::Fr
-}
-
-impl<E: Engine> LimbedRepresentationParameters<E> {
-    pub fn new(limb_size: usize, intermediate_value_capacity: usize) -> Self {
-        // assert!(limb_size <= (E::Fr::CAPACITY as usize) / 2);
-        // assert!(intermediate_value_capacity <= E::Fr::CAPACITY as usize);
-
-        let limb_max_value = (BigUint::from(1u64) << limb_size) - BigUint::from(1u64);
-
-        let tmp = BigUint::from(1u64) << limb_size;
-
-        let shift_left_by_limb_constant = E::Fr::from_str(&tmp.to_string()).unwrap();
-
-        let shift_right_by_limb_constant = shift_left_by_limb_constant.inverse().unwrap();
-
-        let mut two = E::Fr::one();
-        two.double();
-
-        let div_two_constant = two.inverse().unwrap();
-
-        Self {
-            limb_size_bits: limb_size,
-            limb_max_value,
-            limb_max_intermediate_value: (BigUint::from(1u64) << intermediate_value_capacity) - BigUint::from(1u64),
-            limb_intermediate_value_capacity: intermediate_value_capacity,
-            shift_left_by_limb_constant,
-            shift_right_by_limb_constant,
-            mul_two_constant: two,
-            div_two_constant,
-        }
-    }
-}
 
 // Parameters of the representation
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -633,9 +464,19 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                     }
 
                     // match over strategy
-                    constraint_bit_length_ext_with_strategy(
-                        cs, &var, expected_width, params.range_check_info.strategy, true
-                    )?; 
+
+                    match params.range_check_info.strategy {
+                        RangeConstraintStrategy::MultiTable => {
+                            self::range_constraint_functions::coarsely_enforce_using_multitable(cs, var, expected_width)?;
+                        },
+                        RangeConstraintStrategy::SingleTableInvocation => {
+                            self::single_table_range_constraint::enforce_using_single_column_table(cs, var, expected_width)?;
+                        },
+                        RangeConstraintStrategy::CustomTwoBitGate => {
+                            let _ = create_range_constraint_chain(cs, var, expected_width)?;
+                        }
+                        _ => {unimplemented!("range constraint strategies other than multitable, single table or custom gate are not yet handled")}
+                    }
 
                     let term = Term::<E>::from_allocated_num(var.clone());
 
@@ -876,10 +717,19 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                         "limb size must be divisible by range constraint strategy granularity");
 
                     // match over strategy
-                    constraint_bit_length_ext_with_strategy(
-                        cs, &var, expected_width, params.range_check_info.strategy, true
-                    )?; 
 
+                    match params.range_check_info.strategy {
+                        RangeConstraintStrategy::MultiTable => {
+                            self::range_constraint_functions::coarsely_enforce_using_multitable(cs, var, expected_width)?;
+                        },
+                        RangeConstraintStrategy::SingleTableInvocation => {
+                            self::single_table_range_constraint::enforce_using_single_column_table(cs, var, expected_width)?;
+                        },
+                        RangeConstraintStrategy::CustomTwoBitGate => {
+                            let _ = create_range_constraint_chain(cs, var, expected_width)?;
+                        }
+                        _ => {unimplemented!("range constraint strategies other than multitable, single table or custom gate are not yet handled")}
+                    }
 
                     let term = Term::<E>::from_allocated_num(var.clone());
 
@@ -974,9 +824,19 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             }
 
             let max_value = (BigUint::from(1u64) << size) - BigUint::from(1u64);
-            constraint_bit_length_ext_with_strategy(
-                cs, &a, size, params.range_check_info.strategy, true
-            )?; 
+
+            match params.range_check_info.strategy {
+                RangeConstraintStrategy::MultiTable => {
+                    self::range_constraint_functions::coarsely_enforce_using_multitable(cs, &a, size)?;
+                },
+                RangeConstraintStrategy::SingleTableInvocation => {
+                    self::single_table_range_constraint::enforce_using_single_column_table(cs, &a, size)?;
+                },
+                RangeConstraintStrategy::CustomTwoBitGate => {
+                    let _ = create_range_constraint_chain(cs, &a, size)?;
+                }
+                _ => {unimplemented!("range constraint strategies other than multitable, single table or custom gate are not yet handled")}
+            }
 
             let term = Term::<E>::from_allocated_num(a.clone());
 

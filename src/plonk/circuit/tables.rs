@@ -37,7 +37,7 @@ use crate::bellman::plonk::better_better_cs::lookup_tables::*;
 
 use crate::plonk::circuit::Assignment;
 use super::*;
-use super::bigint::*;
+use super::bigint_new::*;
 
 use crate::plonk::circuit::allocated_num::{AllocatedNum, Num};
 use crate::plonk::circuit::simple_term::{Term};
@@ -68,6 +68,7 @@ where E: Engine, CS: ConstraintSystem<E>
         PolyIdentifier::VariablesPolynomial(1), 
         PolyIdentifier::VariablesPolynomial(2)
     ];
+    use crate::plonk::circuit::bigint_new::*;
     let name = BITWISE_LOGICAL_OPS_TABLE_NAME;
     let table = LookupTableApplication::new(
         name, CombinedBitwiseLogicRangeTable::new(&name, width), over.clone(), None, true

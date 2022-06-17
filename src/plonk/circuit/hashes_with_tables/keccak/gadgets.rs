@@ -287,15 +287,16 @@ impl<E: Engine> Keccak256Gadget<E> {
         let from_second_base_converter_table = get_or_create_table(
             cs,
             name4,
-            || { MultiBaseNormalizationTable::new(
-                second_base_num_of_chunks, KECCAK_SECOND_SPARSE_BASE, KECCAK_FIRST_SPARSE_BASE, BINARY_BASE, f, f, name4
+            || { LookupTableApplication::new(
+                name4,
+                MultiBaseNormalizationTable::new(
+                    second_base_num_of_chunks, KECCAK_SECOND_SPARSE_BASE, KECCAK_FIRST_SPARSE_BASE, BINARY_BASE, f, f, name4
+                ),
+                columns3.clone(),
+                None,
+                true
             )},
         )?;
-
-        let from_binary_converter_table = add_table_once(cs, from_binary_converter_table)?;
-        let first_to_second_base_converter_table = add_table_once(cs, first_to_second_base_converter_table)?;
-        let of_first_to_second_base_converter_table = add_table_once(cs, of_first_to_second_base_converter_table)?;
-        let from_second_base_converter_table = add_table_once(cs, from_second_base_converter_table)?;
 
         let f = |mut input: u64, step: u64| -> E::Fr {
             let mut acc = BigUint::default(); 

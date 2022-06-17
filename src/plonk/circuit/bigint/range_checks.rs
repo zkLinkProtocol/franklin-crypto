@@ -482,12 +482,13 @@ pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>
 
     let dummy = AllocatedNum::zero(cs);
     let shifts = compute_shifts::<E::Fr>();
-    let shift_b_start = shifts[chunk_width].clone();
-    let shift_inc = shifts[chunk_width * 2].clone();
+    let shift_a = E::Fr::one();
+    let shift_b = shifts[chunk_width].clone();
+    let shift_d_next = shifts[chunk_width * 2].clone();
     let mut minus_one = E::Fr::one();
     minus_one.negate();
 
-    let mut shift_a = E::Fr::one();
+   
     let mut shift_b = shift_b_start.clone();
     let mut acc = var.clone();
 
@@ -496,6 +497,8 @@ pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>
     let iter = chunks.chunks_exact(2);
     
     for (_is_first, mut is_final, pair) in iter.identify_first_last() {
+        // a + b * shift = acc - acc_next * shift^2;
+        // a + b * shift - acc + acc_next * shift^2;
         let (a, b) = (&pair[0], &pair[1]);
         is_final &= is_even_num_of_chunks; 
         acc = apply_range_table_gate(cs, a, b, &acc, &shift_a, &shift_b, table.clone(), is_final)?;
@@ -528,20 +531,6 @@ pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>
         chunks_bitlength: chunk_width,
         decomposition: DecompositionType::ChunkDecomposition(chunks),
     })
-}
-
-pub fn split_into_bytes_using_default_range_table<E: Engine, CS: ConstraintSystem<E>>(
-    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize
-) -> Result<Vec<AllocatedNum<E>>, SynthesisError> {
-    let range_check_strategy = get_optimal_strategy(cs);
-    if let range_check_strategy = RangeConstraintStrategy::WithBitwiseOpTable(8) {
-        let table = cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME).expect("should found a valid table");     
-        let decomposition = enforce_range_check_using_bitop_table(cs, var, num_bits, table, false)?; 
-        return Ok(decomposition.get_vars().clone())
-    }
-    else {
-        unimplemented!("Circuit geometry doesn't support splitting num into bytes via range table");
-    }
 }
 
 

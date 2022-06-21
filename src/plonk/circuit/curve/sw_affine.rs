@@ -981,7 +981,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
                     y: selected_y_2,
                     value: t_value_2,
                 };
-
+                println!("j {}", j);
                 let (c, (_, _)) = t_1.clone().add_unequal(cs, t_2.clone())?;
                 table.push(c);
             }
@@ -3033,83 +3033,83 @@ mod test {
 
         assert!(cs.is_satisfied());
     }
-    // #[test]
-    // fn test_base_curve_multiplication_by_split_scalar_with_range_table_and_endomorphism() {
-    //     use rand::{Rng, SeedableRng, XorShiftRng};
-    //     let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
-    //     // let rng = &mut XorShiftRng::from_seed([64, 64, 63, 63]);
+    #[test]
+    fn test_base_curve_multiplication_by_split_scalar_with_range_table_and_endomorphism() {
+        use rand::{Rng, SeedableRng, XorShiftRng};
+        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+        // let rng = &mut XorShiftRng::from_seed([64, 64, 63, 63]);
 
-    //     let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
+        let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
 
-    //     for i in 0..10 {
-    //         let mut cs =
-    //             TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+        for i in 0..10 {
+            let mut cs =
+                TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
 
-    //         let a_f: G1Affine = rng.gen();
-    //         let b_f: Fr = rng.gen();
+            let a_f: G1Affine = rng.gen();
+            let b_f: Fr = rng.gen();
 
 
-    //         let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
+            let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
 
-    //         let b = AllocatedNum::alloc(&mut cs, || Ok(b_f)).unwrap();
+            let b = AllocatedNum::alloc(&mut cs, || Ok(b_f)).unwrap();
 
-    //         let b = Num::Variable(b);
+            let b = Num::Variable(b);
 
-    //         let endo_parameters = super::super::endomorphism::bn254_endomorphism_parameters();
+            let endo_parameters = super::super::endomorphism::bn254_endomorphism_parameters();
 
-    //         let (result, a) = a.mul_split_scalar(&mut cs, &b, None, endo_parameters.clone()).unwrap();
+            let (result, a) = a.mul_split_scalar(&mut cs, &b, None, endo_parameters.clone(), 1).unwrap();
 
-    //         let result_recalculated = a_f.mul(b_f.into_repr()).into_affine();
+            let result_recalculated = a_f.mul(b_f.into_repr()).into_affine();
 
-    //         assert!(cs.is_satisfied());
+            assert!(cs.is_satisfied());
 
-    //         let x_fe = result.x.get_field_value().unwrap();
-    //         let y_fe = result.y.get_field_value().unwrap();
+            let x_fe = result.x.get_field_value().unwrap();
+            let y_fe = result.y.get_field_value().unwrap();
 
-    //         let (x, y) = result.get_value().unwrap().into_xy_unchecked();
+            let (x, y) = result.get_value().unwrap().into_xy_unchecked();
 
-    //         assert_eq!(x_fe, x, "x coords mismatch between value and coordinates");
-    //         assert_eq!(y_fe, y, "y coords mismatch between value and coordinates");
+            assert_eq!(x_fe, x, "x coords mismatch between value and coordinates");
+            assert_eq!(y_fe, y, "y coords mismatch between value and coordinates");
 
-    //         let (x, y) = result_recalculated.into_xy_unchecked();
+            let (x, y) = result_recalculated.into_xy_unchecked();
 
-    //         assert_eq!(
-    //             x_fe, x,
-    //             "x coords mismatch between expected result and circuit result"
-    //         );
-    //         assert_eq!(
-    //             y_fe, y,
-    //             "y coords mismatch between expected result and circuit result"
-    //         );
+            assert_eq!(
+                x_fe, x,
+                "x coords mismatch between expected result and circuit result"
+            );
+            assert_eq!(
+                y_fe, y,
+                "y coords mismatch between expected result and circuit result"
+            );
 
-    //         assert_eq!(
-    //             result.get_value().unwrap(),
-    //             result_recalculated,
-    //             "mismatch between expected result and circuit result"
-    //         );
+            assert_eq!(
+                result.get_value().unwrap(),
+                result_recalculated,
+                "mismatch between expected result and circuit result"
+            );
 
-    //         let (x, y) = a_f.into_xy_unchecked();
-    //         assert_eq!(
-    //             a.x.get_field_value().unwrap(),
-    //             x,
-    //             "x coords mismatch, input was mutated"
-    //         );
-    //         assert_eq!(
-    //             a.y.get_field_value().unwrap(),
-    //             y,
-    //             "y coords mismatch, input was mutated"
-    //         );
+            let (x, y) = a_f.into_xy_unchecked();
+            assert_eq!(
+                a.x.get_field_value().unwrap(),
+                x,
+                "x coords mismatch, input was mutated"
+            );
+            assert_eq!(
+                a.y.get_field_value().unwrap(),
+                y,
+                "y coords mismatch, input was mutated"
+            );
 
-    //         // if i == 0 {
-    //         //     crate::plonk::circuit::counter::reset_counter();
-    //         //     let base = cs.n();
-    //         //     let _ = a.mul_split_scalar(&mut cs, &b, None, endo_parameters).unwrap();
-    //         //     println!("single multiplication taken {} gates", cs.n() - base);
-    //         //     println!(
-    //         //         "Affine spent {} gates in equality checks",
-    //         //         crate::plonk::circuit::counter::output_counter()
-    //         //     );
-    //         // }
-    //     }
-    // }
+            if i == 0 {
+                crate::plonk::circuit::counter::reset_counter();
+                let base = cs.n();
+                let _ = a.mul_split_scalar(&mut cs, &b, None, endo_parameters, 1).unwrap();
+                println!("single multiplication taken {} gates", cs.n() - base);
+                println!(
+                    "Affine spent {} gates in equality checks",
+                    crate::plonk::circuit::counter::output_counter()
+                );
+            }
+        }
+    }
 }

@@ -2317,15 +2317,34 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 rhs += result.clone() * &den;
 
                 let k = Boolean::alloc(cs, Some(result.clone() * &den>=num_value))?;
+                let k_to_field = Term::<E>::from_boolean(&k);
                 let one = FieldElement::one(params);
                 let (minus_one, _) = one.clone().negated(cs)?;
                 // println!("minus_one{:?}", minus_one);
                 let (one_minusone, _) = FieldElement::select(cs, &k, one, minus_one)?;
                 let flag = one_minusone.get_value().unwrap();
-                let value = flag.clone() * den * &result - (flag.clone() * num_value);
+                let mut value = BigUint::zero();
+                if result.clone()*den.clone()>=num_value {
+                    value = den.clone() * &result - num_value.clone();
+
+                }
+                else{
+                    value = num_value.clone() - (den.clone() * &result);
+                }
+
 
                 let (q, rem) = value.div_rem(&params.represented_field_modulus);
-                lhs += flag.clone() * q.clone() * &params.represented_field_modulus;
+                if result.clone()*den.clone()>=num_value {
+                    lhs += q.clone() * &params.represented_field_modulus ;
+
+                }
+                else{
+                    lhs -= q.clone() * &params.represented_field_modulus ;
+                }
+
+
+                println!("num_value{:?}", num_value.clone());
+                println!("qp{:?}", q.clone() * &params.represented_field_modulus );
 
                 assert_eq!(lhs, rhs);
 
@@ -2366,6 +2385,8 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         Ok((result_wit, (reduced_nums, den)))
     }
+
+    // pub fn constraint_fma<CS: ConstraintSystem>
 
     // returns first if true and second if false
     pub fn select<CS: ConstraintSystem<E>>(
@@ -2446,7 +2467,20 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         Ok((selected, (this, negated)))
     }
-
+    // fn split_const_into_limbs(value: BigUint, params: &'a RnsParameters<E, F>) -> Vec<Limb<E>> {
+    //     let binary_limb_values = split_into_fixed_number_of_limbs(
+    //         value, params.binary_limb_width, params.num_binary_limbs
+    //     );
+    //     let mut binary_limbs = Vec::with_capacity(binary_limb_values.len());
+    //     for l in binary_limb_values.into_iter()
+    //     {
+    //         let f = biguint_to_fe(l.clone());
+    //         let term = Term::<E>::from_constant(f);
+    //         let limb = Limb::<E>::new(term, l);
+    //         binary_limbs.push(limb);
+    //     }
+    //     binary_limbs
+    // }
     #[track_caller]
     fn constraint_fma_with_multiple_additions<CS: ConstraintSystem<E>>(
         cs: &mut CS,

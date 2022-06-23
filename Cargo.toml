@@ -33,7 +33,7 @@ blake2 = "0.9"
 lazy_static = "1.4"
 
 #bellman = { package = "bellman_ce", path = "../bellman" }
-bellman = { package = "bellman_ce", git = "https://github.com/matter-labs/bellman", branch = "async-dev" }
+bellman = { package = "bellman_ce", git = "https://github.com/matter-labs/bellman", branch = "gpu-prover" }
 blake2-rfc_bellman_edition = "0.0.1"
 #poseidon_hash = { path = "../poseidon_hash" }
 #poseidon_hash = {git = "https://github.com/shamatar/poseidon_hash.git"}

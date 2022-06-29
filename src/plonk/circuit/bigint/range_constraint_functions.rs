@@ -400,6 +400,8 @@ pub fn adaptively_coarsely_constraint_multiple_with_two_bit_decomposition<
     // so it's not that important how many we pack up to ceil()
 
     assert_eq!(terms.len(), widths.len());
+    println!("{:?}", terms);
+    println!("{:?}", terms.len());
 
     let mut non_constant_terms = vec![];
 
@@ -435,6 +437,8 @@ pub fn adaptively_coarsely_constraint_multiple_with_two_bit_decomposition<
 
         if let Some(v) = low_term.get_value() {
             let as_int = fe_to_biguint(&v);
+            println!("as_int.bits()   {:?}", as_int.bits());
+            println!("c[0].1  {:?}", c[0].1 as u64);
             assert!(as_int.bits() <= (c[0].1 as u64));
         }
 

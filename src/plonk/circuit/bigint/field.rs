@@ -2315,14 +2315,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 let result = (num_value.clone() * &inv) % &params.represented_field_modulus;
 
                 rhs += result.clone() * &den;
-
-                let k = Boolean::alloc(cs, Some(result.clone() * &den>=num_value))?;
-                let k_to_field = Term::<E>::from_boolean(&k);
-                let one = FieldElement::one(params);
-                let (minus_one, _) = one.clone().negated(cs)?;
-                // println!("minus_one{:?}", minus_one);
-                let (one_minusone, _) = FieldElement::select(cs, &k, one, minus_one)?;
-                let flag = one_minusone.get_value().unwrap();
                 let mut value = BigUint::zero();
                 if result.clone()*den.clone()>=num_value {
                     value = den.clone() * &result - num_value.clone();
@@ -2341,10 +2333,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 else{
                     lhs -= q.clone() * &params.represented_field_modulus ;
                 }
-
-
-                println!("num_value{:?}", num_value.clone());
-                println!("qp{:?}", q.clone() * &params.represented_field_modulus );
 
                 assert_eq!(lhs, rhs);
 
@@ -2600,7 +2588,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         }
 
         let params = mul_a.representation_params;
-
+        println!("result_limbs      {:?}", result_limbs);
+        println!("collapsed_max_values    {:?}", collapsed_max_values);
+        println!("addition_elements      {:?}", addition_elements);
+        println!("result_remainder_decomposition       {:?}", result_remainder_decomposition);
         if params.propagate_carries_using_double_limbs() {
             Self::propagate_carries_using_double_limb_approach(
                 cs,
@@ -2955,9 +2946,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             // collapse contributions
             let (base, other) = contributions.split_first().unwrap();
             let mut r = base.add_multiple(cs, &other)?;
+            println!("rrrrrrrrrrr    {:?}", r);
 
             r.scale(&shift_right_two_limb_constant);
-
+            println!("rrrrrrrrrrr  before   {:?}", r);
             if i + 1 == last_idx && last_single_limb_max_bits.is_none() {
                 // we don't need to propagate any further
             } else {
@@ -2994,8 +2986,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             // collapse contributions
             let (base, other) = contributions.split_first().unwrap();
             let mut r = base.add_multiple(cs, &other)?;
+            println!("rrrrrrrrrrr    {:?}", r);
 
             r.scale(&shift_right_one_limb_constant);
+            println!("rrrrrrrrrrr  before   {:?}", r);
 
             double_limb_carries.push(r);
             double_limb_max_bits.push(last_bits);
@@ -3006,7 +3000,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         assert_eq!(double_limb_carries.len(), double_limb_max_bits.len());
 
         // now we need to perform individual constraining
-
+        println!("double_limb_carries          {:?}", double_limb_carries);
         match params.range_check_info.strategy {
             RangeConstraintStrategy::MultiTable => {
                 super::range_constraint_functions::adaptively_coarsely_constraint_multiple_with_multitable(cs, &double_limb_carries, &double_limb_max_bits)?;

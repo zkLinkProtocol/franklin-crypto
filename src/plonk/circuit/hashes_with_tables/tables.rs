@@ -440,7 +440,7 @@ impl<E: Engine> LookupTableInternal<E> for BooleanityTable<E> {
         self.name
     }
     fn table_size(&self) -> usize {
-        1 << 8
+        1 << 3
     }
     fn num_keys(&self) -> usize {
         3

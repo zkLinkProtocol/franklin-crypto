@@ -12,6 +12,7 @@ use crate::bellman::pairing::{Engine, GenericCurveAffine, GenericCurveProjective
 use crate::bellman::pairing::ff::{BitIterator, Field, PrimeField, PrimeFieldRepr, ScalarEngine};
 use super::super::allocated_num::{AllocatedNum};
 use super::super::linear_combination::LinearCombination;
+use plonk::circuit::bigint::RnsParameters;
 
 use crate::bellman::plonk::better_better_cs::cs::{
     ArithmeticTerm, Coefficient, ConstraintSystem, Gate, GateInternal, LinearCombinationOfTerms,
@@ -24,7 +25,7 @@ pub struct Memory<'a, E: Engine, G: GenericCurveAffine>
 where
     <G as GenericCurveAffine>::Base: PrimeField,
 {
-    pub block: Vec<(u64, Boolean, u64, AffinePoint<'a, E, G>)>,
+    pub block: Vec<(u64, AffinePoint<'a, E, G>)>,
 
     pub witness_map: HashMap<u64 ,AffinePoint<'a, E, G>>
 
@@ -40,29 +41,13 @@ where
             witness_map: HashMap::new()
         }
     }
-    pub fn read_or_write<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, flag: Boolean, count: u64, addr: u64, value: AffinePoint<'a, E, G>){
-        match (flag.get_value(), addr, value.clone()) {
-            (Some(flag), addr, value) => {
-                if flag {
-                    self.witness_map.insert(addr, value.clone());
-                } else {
-                    if let existing = self.witness_map.get(&addr).unwrap().clone() {
-                        let (a, _) = AffinePoint::equals(cs, existing, value.clone()).unwrap();
-                        assert_eq!(a.get_value().unwrap(), true)
-                    }
-                }
-            },
-            _ => {}
-        }
-        
-        self.block.push((count, flag, addr, value ))
-    }
+    pub fn read_and_alloc<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, addr: u64, value: AffinePoint<'a, E, G>, params: &'a RnsParameters<E, G::Base>){
 
-    pub fn get_witness(&self, addr: u64) -> AffinePoint<'a, E, G>
-    {
-        let witness = self.witness_map.get(&addr).unwrap();
+        let existing = self.witness_map.get(&addr).unwrap().clone();
+        let witness_alloc = AffinePoint::alloc(cs, existing.value, params).unwrap();
 
-        witness.clone()
+        self.block.push((addr, witness_alloc));
+
     }
 
     pub fn insert_witness(&mut self, addr: u64, point: AffinePoint<'a, E, G>){
@@ -89,58 +74,89 @@ where
         use plonk::circuit::bigint::compute_shifts;
         let shifts = compute_shifts::<E::Fr>();
         let mut original_values = vec![];
+        let mut original_indexes = vec![];
+
         let mut sorted_values = vec![];
+        let mut sorted_indexes = vec![];
+        
 
         let mut packed_original_values = vec![];
         let mut packed_sorted_values = vec![];
 
 
-        for (idx, flag, addr, value ) in self.block.iter() {
+        for (addr, value ) in self.block.iter() {
 
             let value = value.clone();
             let y = FieldElement::into_limbs(value.y.clone());
-            let step = 256 / y.len();
+            let x = FieldElement::into_limbs(value.x.clone());
+            let step_for_y = 256 / y.len();
+            let step_for_x = 256 / x.len();
             let mut i = 0;
+            let mut j = 0;
             let mut lc_low = LinearCombination::zero(); 
             for l in 0..y.len()/2{
                 lc_low.add_assign_number_with_coeff(&y[l].num, shifts[i]);
-                i+= step;
+                i+= step_for_y;
+
+            }
+            for l in 0..x.len()/2{
+                lc_low.add_assign_number_with_coeff(&x[l].num, shifts[j]);
+                j+= step_for_x;
+
             }
             let value_low = lc_low.into_num(cs)?.get_variable();
             i=0;
+            j=0;
 
             let mut lc_high = LinearCombination::zero();
             for m in y.len()/2..y.len(){
                 lc_high.add_assign_number_with_coeff(&y[m].num, shifts[i]);
-                i+= step;
+                i+= step_for_y;
+            }
+            for m in x.len()/2..x.len(){
+                lc_high.add_assign_number_with_coeff(&x[m].num, shifts[j]);
+                j+= step_for_x;
             }
             let value_high = lc_high.into_num(cs)?.get_variable();
 
             packed_original_values.push([value_low, value_high]);
             original_values.push(value);
+            original_indexes.push(addr);
 
         }
 
         for index in permutation.elements.iter() {
 
-            let value_other = original_values[*index].clone();
-            sorted_values.push(value_other.clone());
+            let value = original_values[*index].clone();
+            let addr = original_indexes[*index].clone();
+            sorted_values.push(value.clone());
+            sorted_indexes.push(addr.clone());
 
-            let y = FieldElement::into_limbs(value_other.y.clone());
-            let step = 256 / y.len();
+            let value = value.clone();
+            let y = FieldElement::into_limbs(value.y.clone());
+            let x = FieldElement::into_limbs(value.x.clone());
+            let step_for_y = 256 / y.len();
+            let step_for_x = 256 / x.len();
             let mut i = 0;
+            let mut j = 0;
             let mut lc_low = LinearCombination::zero(); 
-            for l in 0..y.len()/2{
-                lc_low.add_assign_number_with_coeff(&y[l].num, shifts[i]);
-                i+= step;
+            for l in 0..x.len()/2{
+                lc_low.add_assign_number_with_coeff(&x[l].num, shifts[j]);
+                j+= step_for_x;
+
             }
             let value_low = lc_low.into_num(cs)?.get_variable();
             i=0;
+            j=0;
 
             let mut lc_high = LinearCombination::zero();
             for m in y.len()/2..y.len(){
                 lc_high.add_assign_number_with_coeff(&y[m].num, shifts[i]);
-                i+= step;
+                i+= step_for_y;
+            }
+            for m in x.len()/2..x.len(){
+                lc_high.add_assign_number_with_coeff(&x[m].num, shifts[j]);
+                j+= step_for_x;
             }
             let value_high = lc_high.into_num(cs)?.get_variable();
 
@@ -168,17 +184,35 @@ where
         )?;
 
 
+        let mut first_read_in_this_cell = Boolean::constant(true);
+        let mut new_cell = Boolean::constant(true);
+
+        let mut value_addr_iter = sorted_values.into_iter().zip(sorted_indexes.into_iter());
+        let (value, addr) = value_addr_iter.next().unwrap();
+        let mut pre_value = value.clone();
+        let mut pre_addr = addr.clone();
+
+        for (value, addr) in value_addr_iter{
+            if addr == pre_addr{
+                let (unchanged, _) = AffinePoint::equals(cs, value, pre_value.clone())?;
+            }
+            else{
+                pre_addr = addr.clone();
+                pre_value = value.clone();
+            }
+            
+        }
+
         Ok(())
 
     }
 
-    fn calculate_permutation(row: &Vec<(u64, Boolean, u64, AffinePoint<'a, E, G>)>) -> Option<IntegerPermutation> {
+    fn calculate_permutation(row: &Vec<(u64, AffinePoint<'a, E, G>)>) -> Option<IntegerPermutation> {
         
         let mut keys = vec![];
-        for (id, _, addr, _) in row.iter() {
-            let composite_key = *id as usize + *addr as usize;
+        for (addr, _) in row.iter() {
             let idx = keys.len();
-            keys.push((idx, composite_key));
+            keys.push((idx, addr));
         }
 
         keys.sort_by(|a, b| a.1.cmp(&b.1));

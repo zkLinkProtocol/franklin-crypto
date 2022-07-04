@@ -57,6 +57,7 @@ pub const KECCAK_NUM_ROUNDS : usize = 24;
 pub const MAX_OF_COUNT_PER_ITER : u64 = 50;
 pub const DEFAULT_RANGE_TABLE_WIDTH: usize = 16;
 
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum KeccakStateBase {
     First,
@@ -1271,6 +1272,7 @@ impl<E: Engine> Keccak256Gadget<E> {
                 cs, &state[idx], KeccakBase::KeccakFirstSparseBase
             )?;
         }
+        state.base = KeccakStateBase::First;
         Ok(())
     }
 

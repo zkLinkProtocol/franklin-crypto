@@ -18,8 +18,6 @@ plonk = ["bellman/plonk"]
 rand = "0.4"
 digest = "0.9"
 byteorder = "1"
-serde = "1.0.80"
-serde_derive = "1.0.80"
 tiny-keccak = "1.4.2"
 bit-vec = "0.6"
 num-bigint = "0.4"
@@ -31,6 +29,7 @@ itertools = "0.10"
 splitmut = "0.2"
 blake2 = "0.9"
 lazy_static = "1.4"
+serde = {version = "1", features = ["derive"]}
 
 #bellman = { package = "bellman_ce", path = "../../bellman/plonk" }
 bellman = { package = "bellman_ce", git = "https://github.com/matter-labs/bellman", branch = "dev" }

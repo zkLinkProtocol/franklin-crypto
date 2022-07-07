@@ -7,6 +7,8 @@ use crate::plonk::circuit::SomeField;
 use crate::plonk::circuit::assignment::Assignment;
 use crate::plonk::circuit::hashes_with_tables::utils::IdentifyFirstLast;
 use crate::bellman::plonk::better_better_cs::lookup_tables::LookupTableApplication;
+use num_bigint::BigUint;
+use num_traits::Zero;
 
 
 pub static NUM_RANGE_CHECK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -55,6 +57,49 @@ pub struct RangeCheckDecomposition<E: Engine>
 }
 
 impl<E: Engine> RangeCheckDecomposition<E> {
+    pub fn get_chunk_bitlen(&self) -> usize {
+        self.chunks_bitlength
+    }
+
+    pub fn get_num_chunks(&self) -> usize {
+        match &self.decomposition {
+            DecompositionType::BitDecomposition(x) => x.len(),
+            DecompositionType::ChunkDecomposition(x) => x.len()
+        }
+    }
+
+    pub fn is_bit_decomposition(&self) -> bool {
+        match &self.decomposition {
+            DecompositionType::BitDecomposition(_) => true,
+            DecompositionType::ChunkDecomposition(_) => false
+        }
+    }
+
+    pub fn get_total_value(&self) -> Option<BigUint> {
+        let (values, chunk_size) : (Vec<Option<E::Fr>>, usize) = match &self.decomposition {
+            DecompositionType::BitDecomposition(_) => {
+                let elems: Vec<Option<E::Fr>> = self.get_bits().iter().map(|x| {
+                     x.get_value_as_field_element::<E>() 
+                }).collect();
+                (elems, 1)
+            },
+            DecompositionType::ChunkDecomposition(_) => {
+                let elems: Vec<Option<E::Fr>> = self.get_vars().iter().map(|x| { x.get_value() }).collect();
+                (elems, self.chunks_bitlength)
+            }
+        };
+        if values.iter().any(|x| x.is_none()) {
+            return None;
+        };
+            
+        let mut result = BigUint::zero();
+        for elem in values.into_iter().rev() {
+            result <<= chunk_size;
+            result += fe_to_biguint(&elem.unwrap())
+        }
+        Some(result)
+    }
+
     pub fn get_bits(&self) -> &Vec<AllocatedBit> {
         if let DecompositionType::BitDecomposition(ref x) = self.decomposition { &x } else { unreachable!(); }
     }

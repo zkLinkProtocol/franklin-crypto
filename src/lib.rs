@@ -16,6 +16,7 @@ extern crate itertools;
 extern crate splitmut;
 extern crate blake2;
 extern crate serde;
+extern crate num_derive;
 
 #[macro_use]
 extern crate lazy_static;

@@ -15,6 +15,7 @@ extern crate sha2;
 extern crate sha3;
 extern crate splitmut;
 extern crate tiny_keccak;
+extern crate serde;
 
 #[macro_use]
 extern crate lazy_static;
@@ -39,10 +40,6 @@ pub mod primitives;
 pub mod redjubjub;
 pub mod rescue;
 pub mod util;
-
-extern crate serde;
-#[macro_use]
-extern crate serde_derive;
 
 pub fn log2_floor(num: usize) -> u32 {
     assert!(num > 0);

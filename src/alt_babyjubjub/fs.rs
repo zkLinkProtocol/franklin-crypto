@@ -69,7 +69,7 @@ const NEGATIVE_ONE: Fs = Fs(FsRepr([
 ]));
 
 /// This is the underlying representation of an element of `Fs`.
-#[derive(Copy, Clone, PartialEq, Eq, Default, Debug, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Default, Debug, Hash, ::serde::Serialize, ::serde::Deserialize)]
 pub struct FsRepr(pub [u64; 4]);
 
 impl ::rand::Rand for FsRepr {
@@ -286,6 +286,26 @@ impl ::rand::Rand for Fs {
 impl From<Fs> for FsRepr {
     fn from(e: Fs) -> FsRepr {
         e.into_repr()
+    }
+}
+
+impl ::serde::Serialize for Fs {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where S: ::serde::Serializer 
+    {
+        let repr = self.into_repr();
+        repr.serialize(serializer)
+    }
+}
+
+impl<'de> ::serde::Deserialize<'de> for Fs {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: ::serde::Deserializer<'de> 
+    {
+        let repr = FsRepr::deserialize(deserializer)?;
+        let new = Self::from_repr(repr).expect("serialized representation is expected to be valid");
+
+        Ok(new)
     }
 }
 

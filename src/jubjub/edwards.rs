@@ -13,7 +13,7 @@ use std::io::{self, Read, Write};
 //
 // See "Twisted Edwards Curves Revisited"
 //     Huseyin Hisil, Kenneth Koon-Ho Wong, Gary Carter, and Ed Dawson
-#[derive(Serialize, Deserialize, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Default)]
 pub struct Point<E: JubjubEngine, Subgroup> {
     x: E::Fr,
     y: E::Fr,

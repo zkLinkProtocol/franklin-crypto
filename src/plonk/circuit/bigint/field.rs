@@ -2362,14 +2362,14 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         // let q_elem = Self::coarsely_allocate_for_unknown_width(cs, q, params)?;
 
-        Self::constraint_fma_with_multiple_additions(
-            cs,
-            &den,
-            &result_wit,
-            &[],
-            &q_elem,
-            &reduced_nums,
-        )?;
+        // Self::constraint_fma_with_multiple_additions(
+        //     cs,
+        //     &den,
+        //     &result_wit,
+        //     &[],
+        //     &q_elem,
+        //     &reduced_nums,
+        // )?;
 
         Ok((result_wit, (reduced_nums, den)))
     }

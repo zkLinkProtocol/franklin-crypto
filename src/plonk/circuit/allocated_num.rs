@@ -138,6 +138,26 @@ impl<E: Engine> Num<E> {
         }
     }
 
+    pub fn from_boolean_is(boolean: Boolean) -> Self {
+        match boolean {
+            Boolean::Is(_) => {
+                let allocated_num = AllocatedNum::from_boolean_is(boolean);
+
+                Num::Variable(allocated_num)
+            },
+            Boolean::Constant(constant_value) => {
+                if constant_value {
+                    Num::Constant(E::Fr::one())
+                } else {
+                    Num::Constant(E::Fr::zero())
+                }
+            },
+            _ => {
+                panic!("Can not boolean NOT")
+            }
+        }
+    }
+
     #[track_caller]
     pub fn enforce_equal<CS: ConstraintSystem<E>>(
         &self,
@@ -168,6 +188,14 @@ impl<E: Engine> Num<E> {
     where
         CS: ConstraintSystem<E>,
     {
+        match (cond.get_value(), a.get_value(), b.get_value()) {
+            (Some(cond), Some(a), Some(b)) => {
+                if cond {
+                    assert_eq!(a, b);
+                }
+            },
+            _ => {}
+        }
         let masked_a = Num::mask(cs, &a, &cond)?;
         let masked_b = Num::mask(cs, &b, &cond)?;
         masked_a.enforce_equal(cs, &masked_b)
@@ -828,7 +856,7 @@ impl<E: Engine> Num<E> {
         }
     }
 
-    // returns 0 if condition == `false` and `a` if condition == `true`
+    /// returns 0 if condition == `false` and `a` if condition == `true`
     pub fn mask<CS: ConstraintSystem<E>>(
         cs: &mut CS,
         a: &Self,
@@ -1242,7 +1270,7 @@ impl<E: Engine> AllocatedNum<E> {
                 variable: var.get_variable(),
             },
             _ => {
-                panic!("Can not convert boolean constant or boolean NOT")
+                panic!("Can not boolean NOT")
             }
         }
     }

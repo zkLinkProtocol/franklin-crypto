@@ -982,7 +982,6 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
                     y: selected_y_2,
                     value: t_value_2,
                 };
-                println!("jjjjjjj {}", j);
                 let (c, (_, _)) = t_1.clone().add_unequal(cs, t_2.clone())?;
                 table.push(c);
             }

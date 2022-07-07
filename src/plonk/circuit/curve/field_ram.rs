@@ -41,12 +41,14 @@ where
             witness_map: HashMap::new()
         }
     }
-    pub fn read_and_alloc<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, addr: u64, value: AffinePoint<'a, E, G>, params: &'a RnsParameters<E, G::Base>){
+    pub fn read_and_alloc<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, addr: u64, params: &'a RnsParameters<E, G::Base>) -> Result<AffinePoint<E, G>, SynthesisError>{
 
         let existing = self.witness_map.get(&addr).unwrap().clone();
         let witness_alloc = AffinePoint::alloc(cs, existing.value, params).unwrap();
 
         self.block.push((addr, witness_alloc));
+
+        Ok(existing)
 
     }
 
@@ -140,6 +142,11 @@ where
             let mut i = 0;
             let mut j = 0;
             let mut lc_low = LinearCombination::zero(); 
+            for l in 0..y.len()/2{
+                lc_low.add_assign_number_with_coeff(&y[l].num, shifts[i]);
+                i+= step_for_y;
+
+            }
             for l in 0..x.len()/2{
                 lc_low.add_assign_number_with_coeff(&x[l].num, shifts[j]);
                 j+= step_for_x;
@@ -165,21 +172,20 @@ where
         }
         let o0: Vec<_> = packed_original_values.iter().map(|el| el[0]).collect();
         let o1: Vec<_> = packed_original_values.into_iter().map(|el| el[1]).collect();
-
         let s0: Vec<_> = packed_sorted_values.iter().map(|el| el[0]).collect();
         let s1: Vec<_> = packed_sorted_values.into_iter().map(|el| el[1]).collect();
 
         prove_permutation_using_switches_witness(
             cs, 
-            &s0,
             &o0,
+            &s0,
             &switches
         )?;
 
         prove_permutation_using_switches_witness(
             cs, 
-            &s1,
             &o1,
+            &s1,
             &switches
         )?;
 
@@ -228,3 +234,47 @@ where
 
 
 } 
+
+mod test {
+    use super::*;
+
+    use crate::bellman::pairing::bn256::{Bn256, Fq, Fr, G1Affine};
+    use crate::plonk::circuit::*;
+
+    #[test]
+    fn test_add_on_random_witnesses() {
+        use rand::{Rng, SeedableRng, XorShiftRng};
+        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+
+        let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
+
+        let mut ram = Memory::new();
+        let mut addres = 0 as u64;
+        let mut vec_verif = vec![];
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+        for i in 0..2 {
+
+            let a_f: G1Affine = rng.gen();
+            let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
+
+            vec_verif.push(a.clone());
+
+            ram.block.push((addres, a.clone()));
+            ram.witness_map.insert(addres, a.clone()); 
+            addres+= 1 as u64;
+        }
+
+        let mut addr_get = 0 as u64; 
+        for j in 0..2{
+            let point = ram.read_and_alloc(&mut cs, addr_get, &params).unwrap();
+            assert_eq!(vec_verif[j].value.unwrap(), point.value.unwrap());
+            addr_get+= 1 as u64;
+            
+        }
+
+        ram.waksman_permutation(&mut cs);
+
+
+
+    }
+}

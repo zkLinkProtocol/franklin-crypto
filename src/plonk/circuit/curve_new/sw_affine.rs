@@ -204,14 +204,14 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     #[track_caller]
     pub fn is_on_curve_for_zero_a<CS: ConstraintSystem<E>>(&self, cs: &mut CS, curve_b: G::Base
     ) -> Result<Boolean, SynthesisError> {
-        let params = self.x.representation_params;
+        let params = &self.x.representation_params;
         assert_eq!(curve_b, G::b_coeff());
-        let b = FieldElement::new_constant(curve_b, params);
+        let b = FieldElement::constant(curve_b, params);
 
         let mut lhs = self.y.square(cs)?;
-        let x_squared = x.square(cs)?;
-        let x_cubed = x_squared.mul(cs, x)?;
-        let mut rhs = x_cubed.add(cs, b)?;
+        let x_squared = self.x.square(cs)?;
+        let x_cubed = x_squared.mul(cs, &self.x)?;
+        let mut rhs = x_cubed.add(cs, &b)?;
 
         FieldElement::equals(cs, &mut lhs, &mut rhs)
     }
@@ -220,13 +220,6 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     pub fn add_unequal<CS>(&mut self, cs: &mut CS, other: &mut Self) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
-        match (self.get_value(), other.get_value()) {
-            (Some(first), Some(second)) => {
-                assert!(first != second, "points are actually equal");
-            },
-            _ => {}
-        }
-
         // only enforce that x != x'
         FieldElement::enforce_not_equal(cs, &mut self.x, &mut other.x)?;
         self.add_unequal_unchecked(cs, other)
@@ -247,19 +240,19 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         // we need to calculate lambda = (y' - y)/(x' - x). We don't care about a particular
         // value of y' - y, so we don't add them explicitly and just use in inversion witness
         let other_x_minus_this_x = other.x.add(cs, &self.x)?;
-        let chain = FieldElementsChain::new().add_pos_term(&other.y).add_neg_term(&this.y)?;
+        let chain = FieldElementsChain::new().add_pos_term(&other.y).add_neg_term(&self.y);
         let lambda = FieldElement::div_with_chain(cs, &chain, &other_x_minus_this_x)?;
         
         // lambda^2 + (-x' - x)
-        let chain = FieldElementsChain::new().add_neg_term(&other.x).add_neg_term(&self.x)?;
-        let new_x = lambda.clone().square_with_chain(cs, &chain)?;
+        let chain = FieldElementsChain::new().add_neg_term(&other.x).add_neg_term(&self.x);
+        let new_x = lambda.square_with_chain(cs, &chain)?;
 
         // lambda * (x - new_x) + (- y)
         let this_x_minus_new_x = self.x.sub(cs, &new_x)?;
-        let chain = FieldElementsChain::new().add_neg_term(&self.y)?;
-        let (new_y, _) = lambda.mul_with_chain(cs, this_x_minus_new_x, &chain)?;
+        let chain = FieldElementsChain::new().add_neg_term(&self.y);
+        let new_y = FieldElement::mul_with_chain(cs, &lambda, &this_x_minus_new_x, &chain)?;
 
-        let new_value = match (this_value, other_value) {
+        let new_value = match (self.value, other.value) {
             (Some(this), Some(other)) => {
                 assert!(this != other);
                 let mut tmp = this.into_projective();
@@ -281,6 +274,15 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     pub fn sub_unequal<CS>(&mut self, cs: &mut CS, other: &mut Self) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
+        // only enforce that x != x'
+        FieldElement::enforce_not_equal(cs, &mut self.x, &mut other.x)?;
+        self.sub_unequal_unchecked(cs, other)
+    }
+
+    #[track_caller]
+    pub fn sub_unequal_unchecked<CS>(&mut self, cs: &mut CS, other: &mut Self) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
         match (self.get_value(), other.get_value()) {
             (Some(first), Some(second)) => {
                 assert!(first != second, "points are actually equal");
@@ -290,19 +292,19 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         FieldElement::enforce_not_equal(cs, &mut self.x, &mut other.x)?;
 
         let other_x_minus_this_x = other.x.add(cs, &self.x)?;
-        let chain = FieldElementsChain::new().add_pos_term(&other.y).add_pos_term(&this.y)?;
-        let lambda = FieldElement::div_with_chain(cs, &chain, other_x_minus_this_x)?;
+        let chain = FieldElementsChain::new().add_pos_term(&other.y).add_pos_term(&self.y);
+        let lambda = FieldElement::div_with_chain(cs, &chain, &other_x_minus_this_x)?;
 
         // lambda^2 + (-x' - x)
-        let (new_x, (lambda, _)) = lambda.clone().square_with_addition_chain(cs, vec![other_x_negated, this_x_negated])?;
+        let chain = FieldElementsChain::new().add_neg_term(&self.x).add_neg_term(&other.x);
+        let new_x = lambda.square_with_chain(cs, &chain)?;
 
         // lambda * -(x - new_x) + (- y)
+        let new_x_minus_this_x = new_x.sub(cs, &self.x)?;
+        let chain = FieldElementsChain::new().add_neg_term(&self.y);
+        let new_y = FieldElement::mul_with_chain(cs, &lambda, &new_x_minus_this_x, &chain)?;
 
-        let (new_x_minus_this_x, (new_x, this_x)) = new_x.sub(cs, this_x)?;
-        
-        let (new_y, _) = lambda.fma_with_addition_chain(cs, new_x_minus_this_x, vec![this_y_negated])?;
-
-        let new_value = match (this_value, other_value) {
+        let new_value = match (self.value, other.value) {
             (Some(this), Some(other)) => {
                 assert!(this != other);
                 let mut tmp = this.into_projective();
@@ -320,94 +322,46 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
             y: new_y,
             value: new_value
         };
-        Ok((new, (this, other)))
+        Ok(new)
     }
 
+    // doubles self and adds other
     #[track_caller]
-    pub fn double_and_add<CS: ConstraintSystem<E>>(
-        self,
-        cs: &mut CS,
-        other: Self
-    ) -> Result<(Self, (Self, Self)), SynthesisError> {
-        // doubles self and adds other
+    pub fn double_and_add<CS>(&mut self, cs: &mut CS, other: &mut Self) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
         // even though https://www.researchgate.net/publication/283556724_New_Fast_Algorithms_for_Elliptic_Curve_Arithmetic_in_Affine_Coordinates exists
         // inversions are cheap, so Montgomery ladder is better
         // we can also try https://eprint.iacr.org/2015/1060.pdf
         // only check that x - x' != 0 and go into the unchecked routine
-
-        let this_x = self.x.clone();
-        let other_x = other.x.clone();
-
-        let (this_x, other_x) = FieldElement::enforce_not_equal(cs, this_x, other_x)?;
-
-        let mut this = self;
-        this.x = this_x;
-        let mut other = other;
-        other.x = other_x;
-
-        this.double_and_add_unchecked(cs, other)
+        FieldElement::enforce_not_equal(cs, &mut self.x, &mut other.x)?;
+        self.double_and_add_unchecked(cs, &other)
     }
 
-
     #[track_caller]
-    pub fn double_and_add_unchecked<CS: ConstraintSystem<E>>(
-        self,
-        cs: &mut CS,
-        other: Self
-    ) -> Result<(Self, (Self, Self)), SynthesisError> {
-        // doubles self and adds other
-
-        // even though https://www.researchgate.net/publication/283556724_New_Fast_Algorithms_for_Elliptic_Curve_Arithmetic_in_Affine_Coordinates exists
-        // inversions are cheap, so Montgomery ladder is better
-
-        // we can also try https://eprint.iacr.org/2015/1060.pdf
-
-        let this_value = self.get_value();
-        let other_value = other.get_value();
-
-        let this_x = self.x;
-        let this_y = self.y;
-
-        let other_x = other.x;
-        let other_y = other.y;
-
-        let (this_y_negated, this_y) = this_y.negated(cs)?;
-        let (this_x_negated, this_x) = this_x.negated(cs)?;
-
-        let (other_x_minus_this_x, (other_x, this_x_negated)) = other_x.add(cs, this_x_negated)?;
-
-        let (other_x_negated, other_x) = other_x.negated(cs)?;
-
-        let (lambda, (mut tmp, _)) = FieldElement::div_from_addition_chain(cs, vec![other_y, this_y_negated], other_x_minus_this_x)?;
-
-        let this_y_negated = tmp.pop().unwrap();
-        let other_y = tmp.pop().unwrap();
+    pub fn double_and_add_unchecked<CS>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        let other_x_minus_this_x = other.x.sub(cs, &self.x)?;
+        let chain = FieldElementsChain::new().add_pos_term(&other.y).add_neg_term(&self.y); 
+        let lambda = FieldElement::div_with_chain(cs, &chain, &other_x_minus_this_x)?;
 
         // lambda^2 + (-x' - x)
-        let (new_x, (lambda, mut tmp)) = lambda.square_with_addition_chain(cs, vec![other_x_negated, this_x_negated])?;
+        let chain = FieldElementsChain::new().add_neg_term(&other.x).add_neg_term(&self.x);
+        let new_x = lambda.square_with_chain(cs, &chain)?;
+        
+        let new_x_minus_this_x = new_x.sub(cs, &self.x)?;
+        let two_y = self.y.double(cs)?;
+        let t0 = two_y.div(cs, &new_x_minus_this_x)?;
+        let t1 = lambda.add(cs, &t0)?;
+        let chain = FieldElementsChain::new().add_neg_term(&self.x).add_neg_term(&new_x);
+        let new_x = t1.square_with_chain(cs, &chain)?;
 
-        let this_x_negated = tmp.pop().unwrap();
+        let new_x_minus_x= new_x.sub(cs, &self.x)?;
+        let chain = FieldElementsChain::new().add_neg_term(&self.y);
+        let new_y = FieldElement::mul_with_chain(cs, &t1, &new_x_minus_x, &chain)?;
 
-        let (new_x_minus_this_x, (new_x, this_x)) = new_x.sub(cs, this_x)?;
-
-        let (two_y, this_y) = this_y.double(cs)?;
-
-        let (t0, _) = two_y.div(cs, new_x_minus_this_x)?;
-
-        let (t1, (_, _)) = lambda.add(cs, t0)?;
-
-        let (new_x_negated, _) = new_x.negated(cs)?;
-
-        let (new_x, (t1, mut tmp)) = t1.square_with_addition_chain(cs, vec![this_x_negated, new_x_negated])?;
-
-        let _ = tmp.pop().unwrap();
-        let this_x_negated = tmp.pop().unwrap();
-
-        let (new_x_minus_x, (new_x, _)) = new_x.add(cs, this_x_negated)?;
-
-        let (new_y, _) = t1.fma_with_addition_chain(cs, new_x_minus_x, vec![this_y_negated])?;
-
-        let new_value = match (this_value, other_value) {
+        let new_value = match (self.value, other.value) {
             (Some(this), Some(other)) => {
                 assert!(this != other);
                 let mut tmp = this.into_projective();
@@ -424,35 +378,17 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
             y: new_y,
             value: new_value
         };
-
-        let this = Self {
-            x: this_x,
-            y: this_y,
-            value: this_value
-        };
-
-        let other = Self {
-            x: other_x,
-            y: other_y,
-            value: other_value
-        };
-
-        Ok((new, (this, other)))
+        Ok(new)
     }
-
-
 
     #[track_caller]
     pub fn mul_by_scalar<CS: ConstraintSystem<E>>(
-        self, cs: &mut CS, scalar: &RangeCheckDecomposition<E>
+        &self, cs: &mut CS, scalar: &RangeCheckDecomposition<E>, bit_limit: Option<usize>
     ) -> Result<Self, SynthesisError> {
-        if let Some(value) = scalar.get_value() {
+        if let Some(value) = scalar.get_total_value() {
             assert!(!value.is_zero(), "can not multiply by zero in the current approach");
         }
-        if scalar.is_constant() {
-            unimplemented!();
-        }
-
+       
         let params = self.x.representation_params;
         let this_value = self.get_value();
         let this_copy = self.clone();
@@ -549,115 +485,6 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         Ok((result, this))
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-//     pub fn mul_by_skewed_scalar_decomposition<CS: ConstraintSystem<E>>(
-//         self,
-//         cs: &mut CS,
-//         entries: &[Boolean],
-//         offset_generator: G,
-//     ) -> Result<(Self, Self), SynthesisError> {
-//         let params = self.x.representation_params;
-//         let this_value = self.get_value();
-//         let this_copy = self.clone();
-
-//         // offset generator allows us to be safe
-
-//         let generator = Self::constant(offset_generator, params);
-
-//         let (mut acc, (this, _)) = self.add_unequal(cs, generator)?;
-
-//         let mut x = this.x;
-//         let y = this.y;
-
-//         let entries_without_first_and_last = &entries[1..(entries.len() - 1)];
-
-//         let mut num_doubles = 0;
-
-//         let (minus_y, y) = y.negated(cs)?;
-
-//         for e in entries_without_first_and_last.iter() {
-//             let (selected_y, _) = FieldElement::select(cs, e, minus_y.clone(), y.clone())?;  
-  
-//             let t_value = match (this_value, e.get_value()) {
-//                 (Some(val), Some(bit)) => {
-//                     let mut val = val;
-//                     if bit {
-//                         val.negate();
-//                     }
-
-//                     Some(val)
-//                 },
-//                 _ => None
-//             };
-
-//             let t = Self {
-//                 x: x,
-//                 y: selected_y,
-//                 value: t_value
-//             };
-
-//             let (new_acc, (_, t)) = acc.double_and_add(cs, t)?;
-
-//             num_doubles += 1;
-//             acc = new_acc;
-//             x = t.x;
-//         }
-
-//         let (with_skew, (acc, this)) = acc.sub_unequal(cs, this_copy)?;
-
-//         let last_entry = entries.last().unwrap();
-
-//         let with_skew_value = with_skew.get_value();
-//         let with_skew_x = with_skew.x;
-//         let with_skew_y = with_skew.y;
-
-//         let acc_value = acc.get_value();
-//         let acc_x = acc.x;
-//         let acc_y = acc.y;
-
-//         let final_value = match (with_skew_value, acc_value, last_entry.get_value()) {
-//             (Some(s_value), Some(a_value), Some(b)) => {
-//                 if b {
-//                     Some(s_value)
-//                 } else {
-//                     Some(a_value)
-//                 }
-//             },
-//             _ => None
-//         };
-
-//         let (final_acc_x, _) = FieldElement::select(cs, last_entry, with_skew_x, acc_x)?;
-//         let (final_acc_y, _) = FieldElement::select(cs, last_entry, with_skew_y, acc_y)?;
-
-//         let mut scaled_offset = offset_generator.into_projective();
-//         for _ in 0..num_doubles {
-//             scaled_offset.double();
-//         }
-//         let offset = Self::constant(scaled_offset.into_affine(), params);
-
-//         let result = Self {
-//             x: final_acc_x,
-//             y: final_acc_y,
-//             value: final_value
-//         };
-
-//         let (result, _) = result.sub_unequal(cs, offset)?;
-
-//         Ok((result, this))
-//     }
-// }
-
 
 
 // if x = [x_0, x_1, ..., x_n] = /sum x_i 2^i - binary representation of x: x_i /in {0, 1}

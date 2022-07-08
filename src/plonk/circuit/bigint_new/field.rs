@@ -284,7 +284,7 @@ pub enum ReductionStatus {
 pub struct FieldElement<'a, E: Engine, F: PrimeField>{
     binary_limbs: Vec<Limb<E>>,
     base_field_limb: Term<E>,
-    representation_params: &'a RnsParameters<E, F>,
+    pub(crate) representation_params: &'a RnsParameters<E, F>,
     value: Option<F>,
     reduction_status: ReductionStatus
 }
@@ -411,7 +411,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     // and the maximal_stored_value < F::char
     #[track_caller]
     pub unsafe fn alloc_from_limbs_unchecked<CS: ConstraintSystem<E>>(
-        cs: &mut CS, raw_limbs: &[Num<E>], params: &'a RnsParameters<E, F>
+        cs: &mut CS, raw_limbs: &[Num<E>], params: &'a RnsParameters<E, F>, is_normalized: bool
     ) -> Result<Self, SynthesisError> {
         let mut binary_limbs_allocated = Vec::with_capacity(params.num_binary_limbs);
         let msl_max_val = &params.max_msl_val_on_alloc_strict;
@@ -452,12 +452,13 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             }
         }).map(|x| biguint_to_fe::<F>(x));
         
+        let reduction_status = if is_normalized { ReductionStatus::Normalized } else { ReductionStatus::Unreduced };
         let new = Self {
             binary_limbs: binary_limbs_allocated,
             base_field_limb: base_field_term,
             representation_params: params,
             value: total_value,
-            reduction_status: ReductionStatus::Normalized
+            reduction_status
         };
         
         Ok(new)
@@ -1132,38 +1133,41 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Self::mul_with_chain(cs, &self, &self, &FieldElementsChain::new())
     }
 
-    pub fn square_with_chain<CS>(&self, cs: &mut CS, chain: &FieldElementsChain<E>) -> Result<Self, SynthesisError> 
+    pub fn square_with_chain<CS>(&self, cs: &mut CS, chain: &FieldElementsChain<E, F>) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         Self::mul_with_chain(cs, &self, &self, chain)
     }
 
     pub fn div<CS: ConstraintSystem<E>>(&self, cs: &mut CS, den: &Self) -> Result<Self, SynthesisError> {
-        Self::div_with_chain(cs, &self, den, &FieldElementsChain::new())
+        let num_chain = FieldElementsChain::new().add_pos_term(self);
+        Self::div_with_chain(cs, &num_chain, den)
     }
 
     pub fn inverse<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        Self::div_with_chain(cs, &Self::one(&self.representation_params), &self, &FieldElementsChain::new())
+        let num_chain = FieldElementsChain::new().add_pos_term(&Self::one(&self.representation_params));
+        Self::div_with_chain(cs, num_chain, self)
     }
 
     #[track_caller]
-    fn div_with_chain<CS>(cs: &mut CS, num: &Self, den: &Self, chain: &FieldElementsChain<E>) -> Result<Self, SynthesisError> 
+    pub fn div_with_chain<CS>(cs: &mut CS, num_chain: &FieldElementsChain<E, F>, den: &Self) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
+        let num = &num_chain.elems_to_add[0];
         let params = num.representation_params;
-        assert!(Self::check_params_equivalence(self, den));
+        assert!(Self::check_params_equivalence(num, den));
         // we do self/den = result mod p, where we assume that den != 0
         // so naively we should constraint: result * den = q * p + self
         assert!(!den.get_field_value().unwrap_or(F::one()).is_zero());
 
-        if self.is_constant() && den.is_constant() {
+        if num.is_constant() && den.is_constant() {
             let mut tmp = den.get_field_value().unwrap().inverse().unwrap();
-            tmp.mul_assign(&self.get_field_value().unwrap());
+            tmp.mul_assign(&num.get_field_value().unwrap());
             let new = Self::constant(tmp, params);
             return Ok(new);
         }
         
-        let (result_wit, q_wit) = match (self.get_raw_value(), den.get_raw_value()) {
+        let (result_wit, q_wit) = match (num.get_raw_value(), den.get_raw_value()) {
             (Some(this), Some(den)) => {
                 let inv = mod_inverse(&den, &params.represented_field_modulus);
                 let result = (this.clone() * &inv) % &params.represented_field_modulus;
@@ -1189,21 +1193,21 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let q_max_bits = q_max_value.bits();
         let q_elem = Self::alloc_for_known_bitwidth(cs, q_wit, q_max_bits as usize, params, coarsely)?;
 
-        Self::constraint_fma(cs, &den, &res, &[], &q_elem, &self)?;
+        Self::constraint_fma(cs, &den, &res, &[], &q_elem, &num)?;
         Ok(res)
     }
 
     #[track_caller]
-    fn mul_with_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, a: &Self, b: &Self, chain: &FieldElementsChain<E>
+    pub fn mul_with_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, a: &Self, b: &Self, chain: &FieldElementsChain<E, F>
     ) -> Result<Self, SynthesisError> {
         let params = &a.representation_params;
         assert!(Self::check_params_equivalence(a, b));
-        assert!(to_add.iter().all(|x| Self::check_params_equivalence(a, x)));
+        assert!(chain.elems_to_add.iter().all(|x| Self::check_params_equivalence(a, x)));
 
         let mut final_value = a.get_field_value();
         final_value = final_value.mul(&b.get_field_value());
-        for r in to_add.iter() {
+        for r in chain.elems_to_add.iter() {
             final_value = final_value.add(&r.get_field_value());
         }
 
@@ -1215,7 +1219,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         }
         
         let mut all_constants = a.is_constant() && b.is_constant();
-        for r in to_add.iter() {
+        for r in chain.elems_to_add.iter() {
             if let Some(v) = r.get_raw_value() {
                 raw_value += v;
             } else {
@@ -1234,7 +1238,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // so we constraint a * b + [to_add] = q * p + r
         // we we estimate q width
         let mut lhs_max_value = a.get_maximal_possible_stored_value() * b.get_maximal_possible_stored_value();
-        for el in to_add.iter() {
+        for el in chain.elems_to_add.iter() {
             lhs_max_value += el.get_maximal_possible_stored_value();
         }
         let q_max_value = lhs_max_value / &params.represented_field_modulus;
@@ -1247,7 +1251,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let q_elem = Self::alloc_for_known_bitwidth(cs, q, q_max_bits as usize, params, coarsely)?;
         let r_elem = Self::alloc_for_known_bitwidth(cs, r, r_max_bits as usize, params, false)?;
 
-        Self::constraint_fma(cs, &a, &b, to_add, &q_elem, &r_elem)?;
+        Self::constraint_fma(cs, &a, &b, &chain.elems_to_add[..], &q_elem, &r_elem)?;
         Ok(r_elem)
     }
 

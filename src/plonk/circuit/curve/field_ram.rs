@@ -61,6 +61,9 @@ where
 
         let size = self.block.len();
         let permutation = Self::calculate_permutation(&self.block);
+
+        println!("permutation {:?}", permutation);
+
         let permutation = if let Some(permutation) = permutation {
             permutation
         } else {
@@ -68,6 +71,9 @@ where
         };
 
         let switches = order_into_switches_set(cs, &permutation)?;
+
+
+
         let mut total_num_switches = 0;
         for layer in switches.iter() {
             total_num_switches += layer.len();
@@ -142,29 +148,35 @@ where
             let mut i = 0;
             let mut j = 0;
             let mut lc_low = LinearCombination::zero(); 
+
             for l in 0..y.len()/2{
                 lc_low.add_assign_number_with_coeff(&y[l].num, shifts[i]);
                 i+= step_for_y;
 
             }
+
             for l in 0..x.len()/2{
                 lc_low.add_assign_number_with_coeff(&x[l].num, shifts[j]);
                 j+= step_for_x;
 
             }
+
             let value_low = lc_low.into_num(cs)?.get_variable();
             i=0;
             j=0;
 
             let mut lc_high = LinearCombination::zero();
+
             for m in y.len()/2..y.len(){
                 lc_high.add_assign_number_with_coeff(&y[m].num, shifts[i]);
                 i+= step_for_y;
             }
+
             for m in x.len()/2..x.len(){
                 lc_high.add_assign_number_with_coeff(&x[m].num, shifts[j]);
                 j+= step_for_x;
             }
+
             let value_high = lc_high.into_num(cs)?.get_variable();
 
             packed_sorted_values.push([value_low, value_high]);
@@ -177,15 +189,15 @@ where
 
         prove_permutation_using_switches_witness(
             cs, 
-            &o0,
             &s0,
+            &o0,
             &switches
         )?;
 
         prove_permutation_using_switches_witness(
             cs, 
-            &o1,
             &s1,
+            &o1,
             &switches
         )?;
 
@@ -242,7 +254,7 @@ mod test {
     use crate::plonk::circuit::*;
 
     #[test]
-    fn test_add_on_random_witnesses() {
+    fn test_ram() {
         use rand::{Rng, SeedableRng, XorShiftRng};
         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
@@ -252,7 +264,7 @@ mod test {
         let mut addres = 0 as u64;
         let mut vec_verif = vec![];
         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
-        for i in 0..2 {
+        for i in 0..100 {
 
             let a_f: G1Affine = rng.gen();
             let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
@@ -263,9 +275,8 @@ mod test {
             ram.witness_map.insert(addres, a.clone()); 
             addres+= 1 as u64;
         }
-
         let mut addr_get = 0 as u64; 
-        for j in 0..2{
+        for j in 0..100{
             let point = ram.read_and_alloc(&mut cs, addr_get, &params).unwrap();
             assert_eq!(vec_verif[j].value.unwrap(), point.value.unwrap());
             addr_get+= 1 as u64;

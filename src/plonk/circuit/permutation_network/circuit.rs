@@ -115,18 +115,18 @@ pub fn order_into_switches_set<E: Engine, CS: ConstraintSystem<E>>(
 /// if elements are unique or not
 pub fn prove_permutation_using_switches_witness<E, CS>(
     cs: &mut CS,
-    original: &[AllocatedNum<E>],
     permuted: &[AllocatedNum<E>],
+    original: &[AllocatedNum<E>],
     switches_layes: &Vec<Vec<Boolean>>,
 ) -> Result<(), SynthesisError>
 where
     CS: ConstraintSystem<E>,
     E: Engine,
 {
-    assert_eq!(original.len(), permuted.len());
+    assert_eq!(permuted.len(), original.len());
     // First make a topology
 
-    let topology = AsWaksmanTopology::new(original.len());
+    let topology = AsWaksmanTopology::new(permuted.len());
 
     // now route elements through the network. Deterministically do the bookkeeping of the variables in a plain array
 
@@ -134,9 +134,9 @@ where
     assert_eq!(num_columns, switches_layes.len());
 
     let mut permutation: Vec<Option<AllocatedNum<E>>> =
-        original.iter().map(|e| Some(e.clone())).collect();
+        permuted.iter().map(|e| Some(e.clone())).collect();
 
-    // let mut permutation: Vec<Option<AllocatedNum<E>>> = permuted.iter().map(|e| Some(e.clone())).collect();
+    // let mut permutation: Vec<Option<AllocatedNum<E>>> = original.iter().map(|e| Some(e.clone())).collect();
 
     let mut switch_count = 0;
 
@@ -236,7 +236,7 @@ where
 
     // we have routed the "original" into some "permutation", so we check that
     // "permutation" is equal to the claimed "permuted" value
-    for (claimed, routed) in permuted.iter().zip(permutation.into_iter()) {
+    for (claimed, routed) in original.iter().zip(permutation.into_iter()) {
         let routed = routed.expect("must be some");
         routed.enforce_equal(cs, &claimed)?;
     }

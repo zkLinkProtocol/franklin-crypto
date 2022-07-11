@@ -279,6 +279,8 @@ pub enum ReductionStatus {
     Unreduced
 }
 
+impl Copy for ReductionStatus {}
+
 
 #[derive(Clone, Debug)]
 pub struct FieldElement<'a, E: Engine, F: PrimeField>{
@@ -1008,7 +1010,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         new_base_limb.scale(&two);
         let new_value = self.get_field_value().add(&self.get_field_value());
 
-        let new = Self {
+        let mut new = Self {
             binary_limbs: new_binary_limbs,
             base_field_limb: new_base_limb,
             value: new_value,
@@ -1140,12 +1142,14 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     }
 
     pub fn div<CS: ConstraintSystem<E>>(&self, cs: &mut CS, den: &Self) -> Result<Self, SynthesisError> {
-        let num_chain = FieldElementsChain::new().add_pos_term(self);
+        let mut num_chain = FieldElementsChain::new();
+        num_chain.add_pos_term(self);
         Self::div_with_chain(cs, &num_chain, den)
     }
 
     pub fn inverse<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        let num_chain = FieldElementsChain::new().add_pos_term(&Self::one(&self.representation_params));
+        let mut num_chain = FieldElementsChain::new();
+        num_chain.add_pos_term(&Self::one(&self.representation_params));
         Self::div_with_chain(cs, num_chain, self)
     }
 
@@ -1342,12 +1346,12 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         let mut out_0 = Boolean::zero();
         let mut out_1 = Boolean::zero();
-        let iter = ([
+        let arr = [
             (&this.binary_limbs[0].term, &other.binary_limbs[0].term, &mut out_0), 
             (&this.base_field_limb, &other.base_field_limb, &mut out_1)
-        ]).into_iter();
+        ];
         
-        for &(a, b, out) in iter {
+        for &(a, b, out) in arr.into_iter() {
             let a = a.collapse_into_num(cs)?;
             let b = b.collapse_into_num(cs)?;
             let equals = Num::equals(cs, &a, &b)?;

@@ -37,7 +37,7 @@ use crate::bellman::plonk::better_better_cs::lookup_tables::*;
 
 use crate::plonk::circuit::Assignment;
 use super::*;
-use super::bigint::*;
+use super::bigint_new::*;
 
 use crate::plonk::circuit::allocated_num::{AllocatedNum, Num};
 use crate::plonk::circuit::simple_term::{Term};
@@ -47,6 +47,7 @@ pub use crate::bellman::plonk::better_better_cs::lookup_tables::RANGE_CHECK_SING
 
 const DEFAULT_RANGE_TABLE_NAME_PREFIX: &'static str = "Range check table over 3 columns for";
 
+
 pub fn inscribe_default_range_table_for_bit_width_over_first_three_columns<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS,
     width: usize
@@ -54,6 +55,24 @@ pub fn inscribe_default_range_table_for_bit_width_over_first_three_columns<E: En
     // inscribe_range_table_for_bit_width_over_first_three_columns(cs, width).map(|_| ())
     let over = vec![PolyIdentifier::VariablesPolynomial(0), PolyIdentifier::VariablesPolynomial(1), PolyIdentifier::VariablesPolynomial(2)];
     let table = LookupTableApplication::new_range_table_of_width_3(width, over)?;
+    cs.add_table(table)?;
+
+    Ok(())
+}
+
+pub fn inscribe_combined_bitwise_ops_and_range_table<E, CS>(cs: &mut CS, width: usize) -> Result<(), SynthesisError> 
+where E: Engine, CS: ConstraintSystem<E>
+{
+    let over = vec![
+        PolyIdentifier::VariablesPolynomial(0), 
+        PolyIdentifier::VariablesPolynomial(1), 
+        PolyIdentifier::VariablesPolynomial(2)
+    ];
+    use crate::plonk::circuit::bigint_new::*;
+    let name = BITWISE_LOGICAL_OPS_TABLE_NAME;
+    let table = LookupTableApplication::new(
+        name, CombinedBitwiseLogicRangeTable::new(&name, width), over.clone(), None, true
+    );
     cs.add_table(table)?;
 
     Ok(())

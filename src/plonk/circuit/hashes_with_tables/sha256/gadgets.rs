@@ -247,20 +247,6 @@ pub struct Sha256Gadget<E: Engine> {
 }
 
 impl<E: Engine> Sha256Gadget<E> {
-    pub fn iv() -> [E::Fr; 8] {
-        [ 
-            u64_to_ff(0x6a09e667), u64_to_ff(0xbb67ae85), u64_to_ff(0x3c6ef372), u64_to_ff(0xa54ff53a),
-            u64_to_ff(0x510e527f), u64_to_ff(0x9b05688c), u64_to_ff(0x1f83d9ab), u64_to_ff(0x5be0cd19),
-        ]
-    }
-
-    pub fn iv_as_nums() -> [Num<E>; 8] {
-        let iv = Self::iv();
-        use std::convert::TryInto;
-
-        iv.iter().map(|&el| Num::Constant(el)).collect::<Vec<_>>().try_into().unwrap()
-    }
-
     pub fn new<CS: ConstraintSystem<E>>(
         cs: &mut CS, 
         ch_base_num_of_chunks: Option<usize>,
@@ -1726,25 +1712,10 @@ impl<E: Engine> Sha256Gadget<E> {
         Ok(regs)
     }
 
-    /// expects well formed and padded input, outputs 32 bit words
-    /// Can be used when we perform something like sha256(truncate(sha256(a)), truncate(sha256(b)))
-    /// to fit hashing of truncated outputs into the single round
-    pub fn sha256<CS: ConstraintSystem<E>>(&self, cs: &mut CS, message: &[Num<E>]) -> Result<[Num<E>; 8]>
-    {    
-        // we assume that input is already well-padded
-        assert!(message.len() % 16 == 0);
-        
-        let mut regs = Sha256Registers {
-            a: Num::Constant(self.iv[0].clone()).into(),
-            b: Num::Constant(self.iv[1].clone()).into(),
-            c: Num::Constant(self.iv[2].clone()).into(),
-            d: Num::Constant(self.iv[3].clone()).into(),
-            e: Num::Constant(self.iv[4].clone()).into(),
-            f: Num::Constant(self.iv[5].clone()).into(),
-            g: Num::Constant(self.iv[6].clone()).into(),
-            h: Num::Constant(self.iv[7].clone()).into(),
-        };
-
+    fn sha256_impl<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, mut regs : Sha256Registers<E>, message: &[Num<E>]
+    ) -> Result<[Num<E>; 8]>
+    {
         for block in message.chunks(16) {
             let expanded_block = self.message_expansion(cs, block)?;
             regs = self.sha256_inner_block(cs, regs, &expanded_block[..], &self.round_constants)?;
@@ -1764,31 +1735,45 @@ impl<E: Engine> Sha256Gadget<E> {
         Ok(res)
     }
 
-    pub fn empty_state() -> Sha256Registers<E> {
-        let iv = Self::iv();
+    fn initial_state(&self) -> Sha256Registers<E> {
         let regs = Sha256Registers {
-            a: Num::Constant(iv[0].clone()).into(),
-            b: Num::Constant(iv[1].clone()).into(),
-            c: Num::Constant(iv[2].clone()).into(),
-            d: Num::Constant(iv[3].clone()).into(),
-            e: Num::Constant(iv[4].clone()).into(),
-            f: Num::Constant(iv[5].clone()).into(),
-            g: Num::Constant(iv[6].clone()).into(),
-            h: Num::Constant(iv[7].clone()).into(),
+            a: Num::Constant(self.iv[0].clone()).into(),
+            b: Num::Constant(self.iv[1].clone()).into(),
+            c: Num::Constant(self.iv[2].clone()).into(),
+            d: Num::Constant(self.iv[3].clone()).into(),
+            e: Num::Constant(self.iv[4].clone()).into(),
+            f: Num::Constant(self.iv[5].clone()).into(),
+            g: Num::Constant(self.iv[6].clone()).into(),
+            h: Num::Constant(self.iv[7].clone()).into(),
         };
 
         regs
     }
 
-    pub fn empty_state_as_nums() -> [Num<E>; 8] {
-        Self::iv_as_nums()
+    // ---------------------------------------------------------------------------------------------------------------------------
+    // public interface: exported functions
+    // ---------------------------------------------------------------------------------------------------------------------------
+    pub fn iv_as_nums(&self) -> [Num<E>; 8] {
+        use std::convert::TryInto;
+        self.iv.iter().map(|&el| Num::Constant(el)).collect::<Vec<_>>().try_into().unwrap()
+    }
+
+    /// expects well formed and padded input, outputs 32 bit words
+    /// Can be used when we perform something like sha256(truncate(sha256(a)), truncate(sha256(b)))
+    /// to fit hashing of truncated outputs into the single round
+    pub fn sha256<CS: ConstraintSystem<E>>(&self, cs: &mut CS, message: &[Num<E>]) -> Result<[Num<E>; 8]>
+    {
+        let regs = self.initial_state();
+        self.sha256_impl(cs, regs, message)
     }
 
     /// expects inner state as 8 32-bit words and input as 16 32-bit words, and outputs and updated state
-    pub fn sha256_round_function<CS: ConstraintSystem<E>>(&self, cs: &mut CS, inner_state: [Num<E>; 8], round_input: &[Num<E>; 16]) -> Result<[Num<E>; 8]>
+    pub fn round_function<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, inner_state: [Num<E>; 8], round_input: &[Num<E>; 16]
+    ) -> Result<[Num<E>; 8]>
     {            
 
-        let state = Sha256Registers {
+        let regs = Sha256Registers {
             a: inner_state[0].into(),
             b: inner_state[1].into(),
             c: inner_state[2].into(),
@@ -1798,28 +1783,10 @@ impl<E: Engine> Sha256Gadget<E> {
             g: inner_state[6].into(),
             h: inner_state[7].into(),
         };
-    
-        let expanded_block = self.message_expansion(cs, round_input)?;
-        let state = self.sha256_inner_block(cs, state, &expanded_block[..], &self.round_constants)?;
-
-        let res = [
-            self.extact_32_bits_from_tracked_num(cs, state.a)?,
-            self.extact_32_bits_from_tracked_num(cs, state.b)?,
-            self.extact_32_bits_from_tracked_num(cs, state.c)?,
-            self.extact_32_bits_from_tracked_num(cs, state.d)?,
-            self.extact_32_bits_from_tracked_num(cs, state.e)?,
-            self.extact_32_bits_from_tracked_num(cs, state.f)?,
-            self.extact_32_bits_from_tracked_num(cs, state.g)?,
-            self.extact_32_bits_from_tracked_num(cs, state.h)?,
-        ];
-
-        Ok(res)
+        
+        self.sha256_impl(cs, regs, round_input)
     }
 
-    // ---------------------------------------------------------------------------------------------------------------------------
-    // public interface: exported functions
-    // ---------------------------------------------------------------------------------------------------------------------------
-    
     /// take bytes as input and return Num<E> as output, where each Num<E> is 32 bit integer
     pub fn sha256_from_bytes<CS: ConstraintSystem<E>>(&self, cs: &mut CS, bytes: &[Byte<E>]) -> Result<[Num<E>; 8]>
     {

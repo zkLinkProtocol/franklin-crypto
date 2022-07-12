@@ -6,7 +6,7 @@ use super::group_hash::GroupHasher;
 use rand::{Rand, Rng};
 
 pub mod bn256;
-pub mod rescue_transcript;
+//pub mod rescue_transcript;
 
 pub trait SBox<E: Engine>: Sized + Clone + std::fmt::Debug {
     fn apply(&self, elements: &mut [E::Fr]);

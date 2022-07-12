@@ -724,6 +724,7 @@ impl Boolean {
         }
     }
 
+
     /// Perform XOR over two boolean operands
     pub fn xor<'a, E, CS>(
         cs: &mut CS,

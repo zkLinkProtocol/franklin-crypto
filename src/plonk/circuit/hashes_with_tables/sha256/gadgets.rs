@@ -247,6 +247,20 @@ pub struct Sha256Gadget<E: Engine> {
 }
 
 impl<E: Engine> Sha256Gadget<E> {
+    pub fn iv() -> [E::Fr; 8] {
+        [ 
+            u64_to_ff(0x6a09e667), u64_to_ff(0xbb67ae85), u64_to_ff(0x3c6ef372), u64_to_ff(0xa54ff53a),
+            u64_to_ff(0x510e527f), u64_to_ff(0x9b05688c), u64_to_ff(0x1f83d9ab), u64_to_ff(0x5be0cd19),
+        ]
+    }
+
+    pub fn iv_as_nums2() -> [Num<E>; 8] {
+        let iv = Self::iv();
+        use std::convert::TryInto;
+
+        iv.iter().map(|&el| Num::Constant(el)).collect::<Vec<_>>().try_into().unwrap()
+    }
+
     pub fn new<CS: ConstraintSystem<E>>(
         cs: &mut CS, 
         ch_base_num_of_chunks: Option<usize>,

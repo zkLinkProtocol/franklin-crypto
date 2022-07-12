@@ -1482,4 +1482,169 @@ impl<E: Engine> Keccak256Gadget<E> {
 
         self.digest(cs, &words64[..])           
     }
+
+    pub fn keccak_absorb_into_state_into_binary_base<CS: ConstraintSystem<E>>(
+        &self, 
+        cs: &mut CS, 
+        state: KeccakState<E>, 
+        elems_to_mix: [Num<E>; KECCAK_RATE_WORDS_SIZE],
+    ) -> Result<KeccakState<E>>{
+        assert!(state.base == KeccakStateBase::Binary);
+        let mut state = state;
+        for row in state.state.iter_mut() {
+            for el in row.iter_mut() {
+                *el = self.convert_binary_to_sparse_repr(
+                    cs, el, KeccakBase::KeccakSecondSparseBase
+                )?;
+            }
+        }
+        state.base = KeccakStateBase::Second;
+
+        // we kind of partially repeat xi_i step, since all the table is available, and
+        // second base implements a ^ (~b & c) ^ d, and for b = c = 0 it's A xor 0 xor D = A xor D
+
+        let mut elems_to_mix = elems_to_mix;
+
+        // convert input into second base
+        for el in elems_to_mix.iter_mut() {
+            *el = self.convert_binary_to_sparse_repr(
+                cs, el, KeccakBase::KeccakSecondSparseBase
+            )?;
+        }
+
+        let mut new_state = KeccakState::default();
+        let coeffs = [u64_to_ff(2), E::Fr::one(), u64_to_ff(3), u64_to_ff(2)];
+        
+        let num_of_chunks = self.second_base_num_of_chunks;
+        let num_slices = round_up(KECCAK_LANE_WIDTH, num_of_chunks);
+                    
+        let second_sparse_base_modulus_usize = pow(KECCAK_SECOND_SPARSE_BASE as usize, num_of_chunks);
+
+        let second_sparse_base_modulus_fr = u64_exp_to_ff(KECCAK_SECOND_SPARSE_BASE, num_of_chunks as u64);
+        let first_sparse_base_modulus_fr = u64_exp_to_ff(KECCAK_FIRST_SPARSE_BASE, num_of_chunks as u64);
+
+        let mut minus_one = E::Fr::one();
+        minus_one.negate();
+
+        let keccak_ff_second_converter = | fr: E::Fr, output_base: u64 | {
+            func_normalizer(fr, KECCAK_SECOND_SPARSE_BASE, output_base, |n| { keccak_u64_second_converter(n) })
+        };
+
+        for (j, i) in (0..KECCAK_STATE_WIDTH).cartesian_product(0..KECCAK_STATE_WIDTH) {
+            // A′[x, y, z] = (A[x, y, z] ⊕ ((A[(x+1) mod 5, y, z] ⊕ 1) ⋅ A[(x+2) mod 5, y, z])) ⊕ D.
+            // the corresponding algebraic transform is y = 2a + b + 3c + 2d
+            // D is always constant and nonzero only for lane[0][0]
+            // there are 4-summands so always push result in d-next if not constant
+            let d = {
+                let idx = j * KECCAK_STATE_WIDTH + i; 
+                if idx < KECCAK_RATE_WORDS_SIZE { elems_to_mix[idx].clone() } else { Num::default() }
+            };
+            let a = state[(i, j)].clone();
+            let b = Num::zero();
+            let c = Num::zero();
+            let inputs = [a, b, c, d];
+            let lc = Num::lc_with_d_next(cs, &coeffs[..], &inputs[..])?;
+
+            if lc.is_constant() {
+                let fr = lc.get_value().unwrap();
+                new_state[(i, j)] = Num::Constant(keccak_ff_second_converter(fr, KECCAK_FIRST_SPARSE_BASE));
+                continue;
+            }
+
+            let var = lc.get_variable();
+                
+            let mut input_slices : Vec<AllocatedNum<E>> = Vec::with_capacity(num_slices);
+            let mut output1_slices : Vec<AllocatedNum<E>> = Vec::with_capacity(num_slices);
+
+            let witness = match var.get_value() {
+                None => {
+                    vec![None; num_slices]
+                },
+                Some(f) => {
+                    let mut result = vec![];
+                    // here we have to operate on row biguint number
+                    let mut big_f = BigUint::default();
+                    let f_repr = f.into_repr();
+                    for n in f_repr.as_ref().iter().rev() {
+                        big_f <<= 64;
+                        big_f += *n;
+                    } 
+
+                    for _ in 0..num_slices {
+                        let remainder = (big_f.clone() % BigUint::from(second_sparse_base_modulus_usize)).to_u64().unwrap();
+                        let new_val = u64_to_ff(remainder);
+                        big_f /= second_sparse_base_modulus_usize;
+
+                        result.push(Some(new_val));
+                    }
+
+                    assert!(big_f.is_zero());
+
+                    result
+                }
+            };
+
+            for w in witness.into_iter() {
+                let tmp = AllocatedNum::alloc(cs, || w.grab())?;
+                input_slices.push(tmp);
+            }
+
+            let mut coef = E::Fr::one();
+            let mut acc = var.clone();
+            for (_is_first, is_last, input_chunk) in input_slices.iter().identify_first_last() {
+                let (output1, _output2, new_acc) = self.query_table_accumulate(
+                    cs, &self.from_second_base_converter_table, input_chunk, &acc, &coef, is_last
+                )?;
+
+
+                coef.mul_assign(&second_sparse_base_modulus_fr);
+                acc = new_acc;
+
+                output1_slices.push(output1);
+            }
+
+            let output1_total = AllocatedNum::alloc(cs, || {
+                let fr = var.get_value().grab()?;
+                Ok(keccak_ff_second_converter(fr, KECCAK_FIRST_SPARSE_BASE))
+            })?;
+
+            // back to first base
+            AllocatedNum::long_weighted_sum_eq(cs, &output1_slices[..], &first_sparse_base_modulus_fr, &output1_total, false)?;
+            new_state[(i, j)] = Num::Variable(output1_total);
+        }
+
+        new_state.base = KeccakStateBase::First;
+
+        Ok(new_state)
+    }
+
+    pub fn keccak_normal_rounds_function_state_in_first_base<CS: ConstraintSystem<E>>(
+        &self, 
+        cs: &mut CS, 
+        state: KeccakState<E>, 
+    ) -> Result<(KeccakState<E>, [Num<E>; 4])> {
+        let mut state = state;
+        assert!(state.base == KeccakStateBase::First);
+
+        // here we do all rounds without the last one
+        for round in 0..(KECCAK_NUM_ROUNDS-1) {
+            state = self.theta(cs, state)?;
+            state = self.rho(cs, state)?;
+
+            state = self.pi(cs, state)?;
+      
+            let (new_state, _) = self.xi_i_pure(cs, state, round, 0, false)?;
+            state = new_state; 
+        }
+
+        state = self.theta(cs, state)?;
+        state = self.rho(cs, state)?;
+        state = self.pi(cs, state)?;
+
+        let (new_state, out) = self.xi_i_pure(cs, state, KECCAK_NUM_ROUNDS-1, 4, true)?;
+
+        let out: [Num<E>; 4] = out.try_into().unwrap();
+
+        Ok((new_state, out))
+    }
 }

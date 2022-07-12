@@ -213,6 +213,18 @@ where
         Ok((new, this))
     }
 
+
+    pub fn point_compression<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<Boolean, SynthesisError>{
+
+        let y = self.y;
+        let normalize_y = y.enforce_is_normalized(cs)?;
+
+        
+
+
+        todo!();
+    }
+
     pub fn conditionally_negate<CS: ConstraintSystem<E>>(
         self,
         cs: &mut CS,

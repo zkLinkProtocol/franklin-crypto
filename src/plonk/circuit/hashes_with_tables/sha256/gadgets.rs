@@ -254,7 +254,7 @@ impl<E: Engine> Sha256Gadget<E> {
         ]
     }
 
-    pub fn iv_as_nums2() -> [Num<E>; 8] {
+    pub fn iv_as_nums() -> [Num<E>; 8] {
         let iv = Self::iv();
         use std::convert::TryInto;
 
@@ -1767,10 +1767,10 @@ impl<E: Engine> Sha256Gadget<E> {
     // ---------------------------------------------------------------------------------------------------------------------------
     // public interface: exported functions
     // ---------------------------------------------------------------------------------------------------------------------------
-    pub fn iv_as_nums(&self) -> [Num<E>; 8] {
-        use std::convert::TryInto;
-        self.iv.iter().map(|&el| Num::Constant(el)).collect::<Vec<_>>().try_into().unwrap()
-    }
+    // pub fn iv_as_nums(&self) -> [Num<E>; 8] {
+    //     use std::convert::TryInto;
+    //     self.iv.iter().map(|&el| Num::Constant(el)).collect::<Vec<_>>().try_into().unwrap()
+    // }
 
     /// expects well formed and padded input, outputs 32 bit words
     /// Can be used when we perform something like sha256(truncate(sha256(a)), truncate(sha256(b)))

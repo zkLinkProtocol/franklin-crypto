@@ -1782,7 +1782,7 @@ impl<E: Engine> Sha256Gadget<E> {
     }
 
     /// expects inner state as 8 32-bit words and input as 16 32-bit words, and outputs and updated state
-    pub fn round_function<CS: ConstraintSystem<E>>(
+    pub fn sha256_round_function<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, inner_state: [Num<E>; 8], round_input: &[Num<E>; 16]
     ) -> Result<[Num<E>; 8]>
     {            

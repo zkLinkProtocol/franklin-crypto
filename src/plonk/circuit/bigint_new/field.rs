@@ -334,7 +334,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElementsChain<'a, E, F> {
     pub fn add_neg_term(&mut self, elem: &FieldElement<'a, E, F>) -> &mut Self {
         self.elems_to_sub.push(elem.clone());
         self
-    } 
+    }
 }
 
 
@@ -711,7 +711,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     }
 
     #[track_caller]
-    pub fn select<CS>(cs: &mut CS, flag: &Boolean, first: &Self, second: &Self) -> Result<Self, SynthesisError> 
+    pub fn conditionally_select<CS>(cs: &mut CS, flag: &Boolean, first: &Self, second: &Self) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         assert!(Self::check_params_equivalence(first, second));
@@ -771,6 +771,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     #[track_caller]
     // negates if true
+    // TODO: we could create optimized conditional negation
     pub fn conditionally_negate<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
@@ -778,7 +779,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             if f { return self.negate(cs) } else { return Ok(self.clone()) }
         };
         let negated = self.negate(cs)?;
-        Self::select(cs, flag, &negated, self)
+        Self::conditionally_select(cs, flag, &negated, self)
     }
 
     // we call value to be reduced if all binary limbs do not overflow: i.e there are no capacity bits occupied 
@@ -813,7 +814,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     where CS: ConstraintSystem<E>
     {
         if self.is_constant() {
-            self.reduction_status == ReductionStatus::Normalized;
+            self.reduction_status = ReductionStatus::Normalized;
             return Ok(());
         }
         
@@ -865,7 +866,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         };
 
         let r_fe = some_biguint_to_fe::<F>(&rem);
-        let mut r_elem = Self::alloc(cs, r_fe, params)?;
+        let r_elem = Self::alloc(cs, r_fe, params)?;
 
         // perform constraining by implementing multiplication: x = q*p + r
         let one = Self::one(self.representation_params);
@@ -1106,7 +1107,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let new_field_limb = tmp.sub(cs, &other.base_field_limb)?;
         
         let new_value = self.get_field_value().sub(&other.get_field_value());
-        let new = Self {
+        let mut new = Self {
             binary_limbs: new_binary_limbs,
             base_field_limb: new_field_limb,
             value: new_value,
@@ -1135,7 +1136,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Self::mul_with_chain(cs, &self, &self, &FieldElementsChain::new())
     }
 
-    pub fn square_with_chain<CS>(&self, cs: &mut CS, chain: &FieldElementsChain<E, F>) -> Result<Self, SynthesisError> 
+    pub fn square_with_chain<CS>(&self, cs: &mut CS, chain: &FieldElementsChain<'a, E, F>) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         Self::mul_with_chain(cs, &self, &self, chain)
@@ -1150,11 +1151,11 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     pub fn inverse<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
         let mut num_chain = FieldElementsChain::new();
         num_chain.add_pos_term(&Self::one(&self.representation_params));
-        Self::div_with_chain(cs, num_chain, self)
+        Self::div_with_chain(cs, &num_chain, self)
     }
 
     #[track_caller]
-    pub fn div_with_chain<CS>(cs: &mut CS, num_chain: &FieldElementsChain<E, F>, den: &Self) -> Result<Self, SynthesisError> 
+    pub fn div_with_chain<CS>(cs: &mut CS, num_chain: &FieldElementsChain<'a, E, F>, den: &Self) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         let num = &num_chain.elems_to_add[0];
@@ -1203,7 +1204,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     #[track_caller]
     pub fn mul_with_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, a: &Self, b: &Self, chain: &FieldElementsChain<E, F>
+        cs: &mut CS, a: &Self, b: &Self, chain: &FieldElementsChain<'a, E, F>
     ) -> Result<Self, SynthesisError> {
         let params = &a.representation_params;
         assert!(Self::check_params_equivalence(a, b));
@@ -1346,12 +1347,12 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         let mut out_0 = Boolean::zero();
         let mut out_1 = Boolean::zero();
-        let arr = [
+       
+        let arr = vec![
             (&this.binary_limbs[0].term, &other.binary_limbs[0].term, &mut out_0), 
             (&this.base_field_limb, &other.base_field_limb, &mut out_1)
         ];
-        
-        for &(a, b, out) in arr.into_iter() {
+        for (a, b, out) in arr.into_iter() {
             let a = a.collapse_into_num(cs)?;
             let b = b.collapse_into_num(cs)?;
             let equals = Num::equals(cs, &a, &b)?;
@@ -1495,8 +1496,166 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         lc.enforce_zero(cs)?;
 
         Ok(())
-    }   
+    } 
+
+    pub fn get_raw_limbs_representation<CS>(&self, cs: &mut CS) -> Result<Vec<Num<E>>, SynthesisError> 
+    where CS: ConstraintSystem<E> {
+        self.binary_limbs.iter().map(|x| x.term.collapse_into_num(cs)).collect::<Result<Vec<_>, SynthesisError>>()
+    }
+    
+    // this fucction is used in elliptic curve by scalar multiplication
+    #[track_caller]
+    pub fn decompose_into_skewed_representation<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS
+    ) -> Result<Vec<Boolean>, SynthesisError> 
+    {
+        let params = self.representation_params;
+        self.reduce_loose(cs)?;
+
+        let num_of_chunks = params.num_binary_limbs;
+        let reg_chunk_bitlen = params.binary_limb_width;
+        let msl_chunk_bitlen = params.msl_width;
+        let total_bitlen = params.represented_field_modulus_bitlength;
+        
+        let bit_values = compute_skewed_naf_representation(&self.get_raw_value(), total_bitlen);
+        let mut bits = Vec::<Boolean>::with_capacity(bit_values.len());
+        let mut alloc_cnst_bit = false;
+
+        for (idx, bit) in bit_values.into_iter().enumerate() {
+            if idx % reg_chunk_bitlen == 0 {
+                alloc_cnst_bit = self.binary_limbs.get(idx / reg_chunk_bitlen).map(|chunk| {
+                    chunk.is_constant()
+                }).unwrap_or(true); 
+            }
+            let elem = if alloc_cnst_bit { 
+                Boolean::Constant(bit.unwrap()) 
+            } else {
+                Boolean::from(AllocatedBit::alloc(cs, bit)?)
+            };
+
+            bits.push(elem)
+        }
+
+        let shifts = compute_shifts::<E::Fr>();
+        let two = shifts[1].clone();
+        let mut minus_one = E::Fr::one();
+        minus_one.negate();
+        let mut limb_shift_negated = shifts[reg_chunk_bitlen]; 
+        limb_shift_negated.negate();
+
+        for (chunk_idx, chunk) in self.binary_limbs.iter().enumerate() {   
+            let is_first = chunk_idx == 0;
+            let is_last = chunk_idx == num_of_chunks - 1;
+            let chunk_bitlen = if is_last { msl_chunk_bitlen } else { reg_chunk_bitlen };
+
+            let mut start_offset = chunk_idx * reg_chunk_bitlen;
+            let mut end_offset = (chunk_idx + 1) * chunk_bitlen;  
+
+            let mut reconstructed = Term::<E>::zero();
+            if is_first {
+                // add y_{-1}
+                let skew_bit = bits[0];
+                // we only subtract if true
+                let mut contribution = Term::from_boolean(&skew_bit);
+                contribution.negate();
+                reconstructed = reconstructed.add(cs, &contribution)?;
+                start_offset += 1;
+            }
+            if is_last {
+                end_offset += 1;
+            }
+
+            let bits_slice = &bits[start_offset..end_offset];
+            let mut chunks = bits_slice.chunks_exact(2);
+
+            // we should add +1 if bit is false or add -1 if bit is true,
+            // so we make false = 0 -> 1 - 2*0 = 1
+            // true = 1 -> 1 - 2*1 = -1
+            for c in &mut chunks {
+                reconstructed.scale(&two);
+                reconstructed.scale(&two);
+
+                let mut high_contribution = construct_skewed_bit_term::<E>(&c[0], &two);
+                high_contribution.scale(&two);
+                let low_contribution = construct_skewed_bit_term::<E>(&c[1], &two);
+                reconstructed = reconstructed.add_multiple(cs, &[high_contribution, low_contribution])?;
+            }
+
+            let remainder = chunks.remainder();
+            if remainder.len() == 1 {
+                let last = &remainder[0];
+                reconstructed.scale(&two);
+                let contribution = construct_skewed_bit_term::<E>(&last, &two);
+                reconstructed = reconstructed.add(cs, &contribution)?;
+            }
+            
+            // y_ch_0 = x_ch_0 - 2^l
+            // for every intermidiate chunk: y_ch_i = x_ch_i - 2^l + 1
+            // y_ch_l = x_ch_k + 1
+            // this is equal to the following: 
+            // if not first_limb: y_ch += 1, if not last limb: y_ch -= 2^l
+            if !is_first {
+                let contribution = Term::from_constant(E::Fr::one());
+                reconstructed.add(cs, &contribution)?;
+            }
+            if !is_last {
+                let contribution = Term::from_constant(limb_shift_negated);
+                reconstructed.add(cs, &contribution)?;
+            }
+            chunk.term.enforce_equal(cs, &reconstructed)?;
+        }
+
+        Ok(bits)
+    }
 }
+
+
+// if x = [x_0, x_1, ..., x_n] = /sum x_i 2^i - binary representation of x: x_i /in {0, 1}
+// then x = [y_-1, y_0, y_1, ..., y_n] - skewed naf representation: where y_i /in {0, 1}
+// x = -y_-1 + /sum_{i >= 1} (1 - 2* y_i) 2^i
+// algorithm for construction of skewed representation: 
+// for -1 <= y < n: y_i = ~x_{i+1} = 1 - x_{i+1} and y_n = 0 (always)
+// indeed:
+// y = -y_-1 + /sum (1 - 2* y_i) 2^i = x_0 - 1 + /sum (2* x_{i+1} - 1) 2^i +2^n = 
+// = x - 1 - \sum_{i=0}^{n-1} 2^i + 2^n = x - 1 - (2^n - 1) + 2^n = x
+
+// if x is simultaneously split into chunks: x = [x_ch_0, x_ch_1, ..., x_ch_k] of length l
+// then we split y = [y_-1, y_0, y_1, ..., y_n] into chunks of l bits length 
+// and we would have the following relations between corresponding chunks of x and y:
+// y_ch_0 = x_ch_0 - 2^l
+// for every intermidiate chunk (every chunk between least significant and most sigificant chunks):
+// y_ch_i = x_ch_i - 2^l + 1
+// y_ch_l = x_ch_k + 1
+
+// in terms of cost in constraints computing skewed_wnaf is the same as computing traditional 
+// binary representation
+#[track_caller]
+fn compute_skewed_naf_representation(value: &Option<BigUint>, bit_limit: usize) -> Vec<Option<bool>> {
+    assert!(bit_limit > 0);
+    if value.is_none() {
+        return vec![None; bit_limit+1];
+    }
+
+    let value = value.as_ref().unwrap();
+    let mut bits = Vec::with_capacity(bit_limit+1);
+    for i in 0..bit_limit as u64 {
+        let b = value.bit(i);
+        bits.push(Some(!b));
+    }
+    bits.push(Some(false));
+    bits
+}
+
+#[track_caller]
+fn construct_skewed_bit_term<E: Engine>(c: &Boolean, two: &E::Fr) -> Term<E> {
+    // for bit c construct 1 - 2 * c
+    let mut contribution = Term::from_boolean(c);
+    contribution.scale(two);
+    contribution.negate();
+    contribution.add_constant(&E::Fr::one());
+    contribution
+}
+
 
 
 

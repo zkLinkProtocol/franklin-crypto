@@ -23,9 +23,9 @@ pub use self::range_checks::*;
 pub use self::range_check_table2::*;
 
 pub mod amplified_linear_combination;
-//pub mod field;
+pub mod field;
 pub use self::amplified_linear_combination::*;
-//pub use self::field::*;
+pub use self::field::*;
 
 
 pub const BITWISE_LOGICAL_OPS_TABLE_NAME: &'static str = "Table for bitwise logical ops";

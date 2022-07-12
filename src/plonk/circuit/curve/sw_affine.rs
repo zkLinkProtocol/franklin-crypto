@@ -913,7 +913,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         // we add a random point to the accumulator to avoid having zero anywhere (with high probability)
         // and unknown discrete log allows us to be "safe"
 
-        let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log::<E>(
+        let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log_proj::<E>(
             &crate::constants::MULTIEXP_DST[..], 
             1
         )[0];
@@ -1034,7 +1034,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         // we add a random point to the accumulator to avoid having zero anywhere (with high probability)
         // and unknown discrete log allows us to be "safe"
 
-        let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log::<E>(
+        let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log_proj::<E>(
             &crate::constants::MULTIEXP_DST[..], 
             1
         )[0];
@@ -1402,7 +1402,7 @@ fn simulate_multiplication<E: Engine>(point: E::G1Affine, scalar: E::Fr, num_bit
     let entries = compute_skewed_naf_table(&Some(scalar), num_bits);
     let base = point;
 
-    let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log::<E>(
+    let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log_proj::<E>(
         &crate::constants::MULTIEXP_DST[..], 
         1
     )[0];

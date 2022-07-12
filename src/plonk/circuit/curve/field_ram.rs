@@ -44,12 +44,21 @@ where
     }
     pub fn read_and_alloc<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, addr: Num<E>, params: &'a RnsParameters<E, G::Base>) -> Result<AffinePoint<E, G>, SynthesisError>{
         let addres = fe_to_biguint(&addr.get_value().unwrap());
-        let existing = self.witness_map.get(&addres).unwrap().clone();
-        let witness_alloc = AffinePoint::alloc(cs, existing.value, params).unwrap();
+        let instance = self.witness_map.contains_key(&addres);
+        let mut vec = vec![];
+        if instance{
+            vec.push(self.witness_map.get(&addres).unwrap().clone());
+            let existing = self.witness_map.get(&addres).unwrap().clone();
+            let witness_alloc = AffinePoint::alloc(cs, existing.value, params).unwrap();
 
-        self.block.push((addr, witness_alloc));
+            self.block.push((addr, witness_alloc));
+        }
+        else{
+            panic!();
+        }
+        let point = vec[0].clone();
 
-        Ok(existing)
+        Ok(point)
 
     }
 
@@ -61,11 +70,9 @@ where
 
     pub fn waksman_permutation<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError>{
 
+        println!("{:?}", E::Fr::CAPACITY as usize);
         let size = self.block.len();
         let permutation = Self::calculate_permutation(&self.block);
-
-        println!("permutation {:?}", permutation);
-
         let permutation = if let Some(permutation) = permutation {
             permutation
         } else {
@@ -73,8 +80,6 @@ where
         };
 
         let switches = order_into_switches_set(cs, &permutation)?;
-
-
 
         let mut total_num_switches = 0;
         for layer in switches.iter() {
@@ -85,9 +90,11 @@ where
         let shifts = compute_shifts::<E::Fr>();
         let mut original_values = vec![];
         let mut original_indexes = vec![];
+        // let mut original_addres = vec![];
 
         let mut sorted_values = vec![];
         let mut sorted_indexes = vec![];
+        // let mut original_addres = vec![];
         
 
         let mut packed_original_values = vec![];
@@ -97,36 +104,33 @@ where
         for (addr, value ) in self.block.iter() {
 
             let value = value.clone();
-            let y = FieldElement::into_limbs(value.y.clone());
-            let x = FieldElement::into_limbs(value.x.clone());
-            let step_for_y = 256 / y.len();
-            let step_for_x = 256 / x.len();
-            let mut i = 0;
-            let mut j = 0;
-            let mut lc_low = LinearCombination::zero(); 
-            for l in 0..y.len()/2{
-                lc_low.add_assign_number_with_coeff(&y[l].num, shifts[i]);
-                i+= step_for_y;
+            let y = FieldElement::into_limbs(value.clone().y.clone());
+            let x = FieldElement::into_limbs(value.clone().x.clone());
 
-            }
-            for l in 0..x.len()/2{
-                lc_low.add_assign_number_with_coeff(&x[l].num, shifts[j]);
-                j+= step_for_x;
+            let chunk = value.x.representation_params.binary_limbs_bit_widths[0];
+            let iter = value.x.representation_params.binary_limbs_bit_widths.clone().into_iter();
+            
+            let chunk_x = 253 / chunk;
+            let mut i = 0;
+            let mut lc_low = LinearCombination::zero(); 
+            for l in 0..chunk_x{
+                lc_low.add_assign_number_with_coeff(&x[l].num, shifts[i]);
+                i+= iter.clone().next().unwrap();
 
             }
             let value_low = lc_low.into_num(cs)?.get_variable();
             i=0;
-            j=0;
 
             let mut lc_high = LinearCombination::zero();
-            for m in y.len()/2..y.len(){
-                lc_high.add_assign_number_with_coeff(&y[m].num, shifts[i]);
-                i+= step_for_y;
+            for l in chunk_x..x.len(){
+                lc_high.add_assign_number_with_coeff(&x[l].num, shifts[i]);
+                i+= iter.clone().next().unwrap();
             }
-            for m in x.len()/2..x.len(){
-                lc_high.add_assign_number_with_coeff(&x[m].num, shifts[j]);
-                j+= step_for_x;
-            }
+            // lc_high.add_assign_boolean_with_coeff(&x[l].num, shifts[i]);  // point compression
+            i+= 1;
+
+            lc_high.add_assign_number_with_coeff(&addr, shifts[i]);
+
             let value_high = lc_high.into_num(cs)?.get_variable();
 
             packed_original_values.push([value_low, value_high]);
@@ -143,41 +147,32 @@ where
             sorted_indexes.push(addr.clone());
 
             let value = value.clone();
-            let y = FieldElement::into_limbs(value.y.clone());
-            let x = FieldElement::into_limbs(value.x.clone());
-            let step_for_y = 256 / y.len();
-            let step_for_x = 256 / x.len();
+            let y = FieldElement::into_limbs(value.clone().y.clone());
+            let x = FieldElement::into_limbs(value.clone().x.clone());
+
+            let chunk = value.x.representation_params.binary_limbs_bit_widths[0];
+            let iter = value.x.representation_params.binary_limbs_bit_widths.clone().into_iter();
+            
+            let chunk_x = 253 / chunk;
             let mut i = 0;
-            let mut j = 0;
             let mut lc_low = LinearCombination::zero(); 
-
-            for l in 0..y.len()/2{
-                lc_low.add_assign_number_with_coeff(&y[l].num, shifts[i]);
-                i+= step_for_y;
-
-            }
-
-            for l in 0..x.len()/2{
-                lc_low.add_assign_number_with_coeff(&x[l].num, shifts[j]);
-                j+= step_for_x;
+            for l in 0..chunk_x{
+                lc_low.add_assign_number_with_coeff(&x[l].num, shifts[i]);
+                i+= iter.clone().next().unwrap();
 
             }
-
             let value_low = lc_low.into_num(cs)?.get_variable();
             i=0;
-            j=0;
 
             let mut lc_high = LinearCombination::zero();
-
-            for m in y.len()/2..y.len(){
-                lc_high.add_assign_number_with_coeff(&y[m].num, shifts[i]);
-                i+= step_for_y;
+            for l in chunk_x..x.len(){
+                lc_high.add_assign_number_with_coeff(&x[l].num, shifts[i]);
+                i+= iter.clone().next().unwrap();
             }
+            // lc_high.add_assign_boolean_with_coeff(&x[l].num, shifts[i]);  // point compression
+            i+= 1;
 
-            for m in x.len()/2..x.len(){
-                lc_high.add_assign_number_with_coeff(&x[m].num, shifts[j]);
-                j+= step_for_x;
-            }
+            lc_high.add_assign_number_with_coeff(&addr, shifts[i]);
 
             let value_high = lc_high.into_num(cs)?.get_variable();
 
@@ -203,25 +198,25 @@ where
             &switches
         )?;
 
-
-        let mut first_read_in_this_cell = Boolean::constant(true);
-        let mut new_cell = Boolean::constant(true);
-
         let mut value_addr_iter = sorted_values.into_iter().zip(sorted_indexes.into_iter());
         let (value, addr) = value_addr_iter.next().unwrap();
         let mut pre_value = value.clone();
         let mut pre_addr = addr.clone();
 
-        // for (value, addr) in value_addr_iter{
-        //     if addr == pre_addr{
-        //         let (unchanged, _) = AffinePoint::equals(cs, value, pre_value.clone())?;
-        //     }
-        //     else{
-        //         pre_addr = addr.clone();
-        //         pre_value = value.clone();
-        //     }
+        for (value, addr) in value_addr_iter{
             
-        // }
+            let borrow = pre_addr.sub(cs, &addr)?;
+            let is_zero = borrow.is_zero(cs)?;
+            if is_zero.get_value().unwrap() == true{
+                let (check, _) = AffinePoint::equals(cs, value.clone(), pre_value.clone())?;
+                Boolean::enforce_equal(cs, &check, &Boolean::constant(true))?;
+                borrow.enforce_equal(cs, &Num::<E>::Constant(E::Fr::zero()))?;
+            }
+
+            pre_value = value;
+            pre_addr = addr;
+
+        }
 
         Ok(())
 
@@ -250,45 +245,52 @@ where
 
 } 
 
-// mod test {
-//     use super::*;
+mod test {
+    use super::*;
 
-//     use crate::bellman::pairing::bn256::{Bn256, Fq, Fr, G1Affine};
-//     use crate::plonk::circuit::*;
+    use crate::bellman::pairing::bn256::{Bn256, Fq, Fr, G1Affine};
+    use crate::plonk::circuit::*;
 
-//     #[test]
-//     fn test_ram() {
-//         use rand::{Rng, SeedableRng, XorShiftRng};
-//         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+    #[test]
+    fn test_ram() {
 
-//         let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
+        use rand::{Rng, SeedableRng, XorShiftRng};
+        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
-//         let mut ram = Memory::new();
-//         let mut addres = 0 as u64;
-//         let mut vec_verif = vec![];
-//         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
-//         for i in 0..100 {
+        let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
 
-//             let a_f: G1Affine = rng.gen();
-//             let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
+        let mut ram = Memory::new();
+        let mut vec_verif = vec![];
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+        let mut array_addr = vec![];
+        for i in 0..100 {
 
-//             vec_verif.push(a.clone());
+            let a_f: G1Affine = rng.gen();
+            let a_fr: Fr = rng.gen();
 
-//             ram.block.push((addres, a.clone()));
-//             ram.witness_map.insert(addres, a.clone()); 
-//             addres+= 1 as u64;
-//         }
-//         let mut addr_get = 0 as u64; 
-//         for j in 0..100{
-//             let point = ram.read_and_alloc(&mut cs, addr_get, &params).unwrap();
-//             assert_eq!(vec_verif[j].value.unwrap(), point.value.unwrap());
-//             addr_get+= 1 as u64;
+            let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
+            let num_adr =Num::alloc(&mut cs, Some(a_fr)).unwrap();
+            array_addr.push(num_adr);
+
+
+            vec_verif.push(a.clone());
+
+            ram.block.push((num_adr, a.clone()));
+            let biguint = fe_to_biguint(&a_fr);
+            ram.witness_map.insert(biguint, a.clone()); 
+        }
+        for j in 0..100{
+            let addres = array_addr[j];
             
-//         }
+            let point = ram.read_and_alloc(&mut cs, addres, &params).unwrap();
+            assert_eq!(vec_verif[j].value.unwrap(), point.value.unwrap());
 
-//         ram.waksman_permutation(&mut cs);
+            
+        }
+
+        ram.waksman_permutation(&mut cs);
 
 
 
-//     }
-// }
+    }
+}

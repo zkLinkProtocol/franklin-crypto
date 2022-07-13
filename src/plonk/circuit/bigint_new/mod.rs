@@ -1,3 +1,5 @@
+use bellman::plonk::better_better_cs::cs::LookupTableApplication;
+
 use crate::bellman::pairing::Engine;
 use crate::bellman::pairing::ff::{Field, PrimeField, PrimeFieldRepr, BitIterator};
 use crate::bellman::SynthesisError;
@@ -6,11 +8,13 @@ use crate::bellman::plonk::better_better_cs::cs::{
     Gate, LinearCombinationOfTerms, PolynomialMultiplicativeTerm, PolynomialInConstraint, TimeDilation,
     Coefficient, PlonkConstraintSystemParams, PlonkCsWidth4WithNextStepParams, TrivialAssembly
 };
+use bellman::plonk::better_better_cs::data_structures::*;
 use crate::plonk::circuit::Assignment;
 use crate::plonk::circuit::utils::u64_to_fe;
 use super::allocated_num::*;
 use super::boolean::*;
 use std::iter::FromIterator;
+use std::sync::Arc;
 
 pub mod bigint;
 pub mod range_check_custom_gate2;
@@ -29,6 +33,7 @@ pub use self::field::*;
 
 
 pub const BITWISE_LOGICAL_OPS_TABLE_NAME: &'static str = "Table for bitwise logical ops";
+pub const DEFAULT_RANGE_TABLE_GRANULARITY: usize = 8;
 
 
 // splits an element into slices of fixed bit widths in LE order
@@ -99,6 +104,29 @@ pub fn get_optimal_strategy<E: Engine, CS: ConstraintSystem<E>>(cs: &CS) -> Rang
         return RangeConstraintStrategy::CustomTwoBitGate
     }
     RangeConstraintStrategy::NaiveSingleBit
+}
+
+pub fn inscribe_default_bitop_range_table<E, CS>(cs: &mut CS) -> Result<Arc<LookupTableApplication<E>>, SynthesisError> 
+where E: Engine, CS: ConstraintSystem<E>
+{
+    use crate::plonk::circuit::hashes_with_tables::get_or_create_table;
+
+    let columns3 = vec![
+        PolyIdentifier::VariablesPolynomial(0), 
+        PolyIdentifier::VariablesPolynomial(1), 
+        PolyIdentifier::VariablesPolynomial(2)
+    ];
+
+    get_or_create_table(
+        cs, BITWISE_LOGICAL_OPS_TABLE_NAME, || {
+            LookupTableApplication::new(
+                BITWISE_LOGICAL_OPS_TABLE_NAME, CombinedBitwiseLogicRangeTable::new(
+                    BITWISE_LOGICAL_OPS_TABLE_NAME, DEFAULT_RANGE_TABLE_GRANULARITY,
+                ),
+                columns3, None, true
+            )
+        }
+    )
 }
 
 

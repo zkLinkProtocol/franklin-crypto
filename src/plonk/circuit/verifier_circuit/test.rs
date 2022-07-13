@@ -328,7 +328,6 @@ mod test {
     use crate::rescue::RescueEngine;
     use crate::bellman::pairing::bn256::{Bn256};
     use crate::rescue::bn256::Bn256RescueParams;
-    use crate::rescue::rescue_transcript::RescueTranscriptForRNS;
     use crate::bellman::plonk::commitments::transcript::Transcript;
 
     // use crate::plonk::circuit::verifier_circuit::affine_point_wrapper::with_zero_flag::WrapperWithFlag;
@@ -438,9 +437,9 @@ mod test {
 
         let transcript_params = (&rescue_params, &rns_params);
  
-        recursion_test::<Bn256, RescueTranscriptForRNS<Bn256>, RescueChannelGadget<Bn256>, BN256AuxData, WrapperUnchecked<Bn256>>(
-            a, b, num_steps, &rescue_params, &rns_params, transcript_params,
-        );
+        // recursion_test::<Bn256, RescueTranscriptForRNS<Bn256>, RescueChannelGadget<Bn256>, BN256AuxData, WrapperUnchecked<Bn256>>(
+        //     a, b, num_steps, &rescue_params, &rns_params, transcript_params,
+        // );
     }
 }
 

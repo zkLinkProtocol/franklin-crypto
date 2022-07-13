@@ -84,22 +84,39 @@ impl<E: Engine> GateConstructorHelper<E> {
     pub fn add_linear_coefficients_for_free_variables(
         &mut self, var_map: &mut HashMap<Variable, E::Fr>, free_vars_set: &mut HashSet<Variable>
     ) {
-        let iter = &mut[
-            (self.a, self.a_linear_coef), (self.b, self.b_linear_coef), 
-            (self.c, self.c_linear_coef), (self.d, self.d_linear_coef)
-        ][self.free_vars_start_idx..self.free_vars_end_idx];
-    
-        for (var_ptr, coef_ptr) in iter {
+        println!("free range start: {}", self.free_vars_start_idx);
+        println!("free range end: {}", self.free_vars_end_idx);
+
+        // Rust is not an expressive language at all, that's why we unroll the loop manually
+        // How much better it would look in C++.. Mmm...
+        let mut vars = [self.a, self.b, self.c, self.d];
+        let mut coefs = [self.a_linear_coef, self.b_linear_coef, self.c_linear_coef, self.d_linear_coef];
+        
+        let num_elems = self.free_vars_end_idx - self.free_vars_start_idx;
+        for (var_ptr, coef_ptr) in vars.iter_mut().zip(coefs.iter_mut()).skip(self.free_vars_start_idx).take(num_elems) {
             if free_vars_set.is_empty() {
-                return;
+                break;
             }
+            println!("actually allocating free var");
             let elt = free_vars_set.iter().next().cloned().unwrap();
             let fr = var_map.remove(&elt).unwrap_or(E::Fr::zero());
+            println!("free fr: {}", fr);
             *var_ptr = elt;
             *coef_ptr = fr;
             free_vars_set.take(&elt).unwrap();
             self.free_vars_start_idx += 1;
         }
+
+        // boilerplate code, because it is rusty rust
+        self.a = vars[0];
+        self.b = vars[1];
+        self.c = vars[2];
+        self.d = vars[3];
+
+        self.a_linear_coef = coefs[0];
+        self.b_linear_coef = coefs[1];
+        self.c_linear_coef = coefs[2];
+        self.d_linear_coef = coefs[3];
     }
 
     pub fn materialize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
@@ -123,13 +140,15 @@ impl<E: Engine> GateConstructorHelper<E> {
         }
 
         coefs[index_for_constant_term] = self.cnst;
-        if self.is_final {
+        if !self.is_final {
             let mut minus_one = E::Fr::one();
             minus_one.negate();
             coefs[range_of_next_step_linear_terms.last().unwrap()] = minus_one;
         }
 
         let mg = CS::MainGate::default();
+        println!("coefs: {:?}", coefs);
+        println!("vars: {:?}", vars);
         cs.new_single_gate_for_trace_step(&mg, &coefs, &vars, &[])
     }
         
@@ -426,7 +445,7 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
         self.scale(&coeff);
     }
 
-    fn normalize(&mut self) {
+    pub fn normalize(&mut self) {
         self.linear_terms.retain(|&_, v| !v.is_zero());
         self.quadratic_terms.retain(|&_, v| !v.is_zero());
     }
@@ -466,20 +485,27 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
 
         for i in 0..flattened_arr_len {
             let (var_pair_i, fr_i) = flattened_quad_releations[i].clone();
-            for var in [var_pair_i.first, var_pair_i.second].iter() {
+            let mut insertion_flags = [true, true];
+            for (var, flag_ptr) in [var_pair_i.first, var_pair_i.second].iter().zip(insertion_flags.iter_mut()) {
                 if let Some(j) = arr_indexer.get(var) {
                     let (var_pair_j, fr_j) = flattened_quad_releations[*j].clone();
                     let gate = GateConstructorHelper::new_for_pair_of_muls(cs, var_pair_i, fr_i, var_pair_j, fr_j);
                     gate_templates.push(gate);
                     arr_indexer.remove(&var_pair_j.first);
                     arr_indexer.remove(&var_pair_j.second);
+                    *flag_ptr = false;
                     continue;
                 }
-                arr_indexer.insert(var_pair_i.first, i);
-                arr_indexer.insert(var_pair_i.second, i);
+            }
+            for (var, flag) in [var_pair_i.first, var_pair_i.second].iter().zip(insertion_flags.iter()) {
+                if *flag {
+                    arr_indexer.insert(*var, i);
+                }
             }
         }
+        println!("num gates allocated: {}", num_gates_allocated);
         let unconsumed_idxes = HashSet::<usize>::from_iter(arr_indexer.into_values());
+        println!("uncosumed idx-es len: {}", unconsumed_idxes.len());
         for i in unconsumed_idxes {
             let (var_pair, fr) = flattened_quad_releations[i];
             let gate_template = GateConstructorHelper::new_for_mul(cs, var_pair, fr);
@@ -500,6 +526,7 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
                 gate_template.add_next_trace_step_term(next_trace_step_var);
             }
             gate_template.add_linear_coefficients_for_bound_variables(&mut self.linear_terms);
+            println!("num of free linear terms: {}", linear_terms_only_vars.len());
             gate_template.add_linear_coefficients_for_free_variables(
                 &mut self.linear_terms, &mut linear_terms_only_vars
             );
@@ -520,7 +547,7 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
                 break
             }
         } 
-
+        println!("total num of gates: {}", num_gates_allocated);
         Ok(num_gates_allocated)
     }
 

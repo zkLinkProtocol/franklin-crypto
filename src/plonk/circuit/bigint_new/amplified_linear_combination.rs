@@ -84,9 +84,6 @@ impl<E: Engine> GateConstructorHelper<E> {
     pub fn add_linear_coefficients_for_free_variables(
         &mut self, var_map: &mut HashMap<Variable, E::Fr>, free_vars_set: &mut HashSet<Variable>
     ) {
-        println!("free range start: {}", self.free_vars_start_idx);
-        println!("free range end: {}", self.free_vars_end_idx);
-
         // Rust is not an expressive language at all, that's why we unroll the loop manually
         // How much better it would look in C++.. Mmm...
         let mut vars = [self.a, self.b, self.c, self.d];
@@ -97,10 +94,9 @@ impl<E: Engine> GateConstructorHelper<E> {
             if free_vars_set.is_empty() {
                 break;
             }
-            println!("actually allocating free var");
+
             let elt = free_vars_set.iter().next().cloned().unwrap();
             let fr = var_map.remove(&elt).unwrap_or(E::Fr::zero());
-            println!("free fr: {}", fr);
             *var_ptr = elt;
             *coef_ptr = fr;
             free_vars_set.take(&elt).unwrap();
@@ -147,8 +143,6 @@ impl<E: Engine> GateConstructorHelper<E> {
         }
 
         let mg = CS::MainGate::default();
-        println!("coefs: {:?}", coefs);
-        println!("vars: {:?}", vars);
         cs.new_single_gate_for_trace_step(&mg, &coefs, &vars, &[])
     }
         
@@ -503,9 +497,8 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
                 }
             }
         }
-        println!("num gates allocated: {}", num_gates_allocated);
+        
         let unconsumed_idxes = HashSet::<usize>::from_iter(arr_indexer.into_values());
-        println!("uncosumed idx-es len: {}", unconsumed_idxes.len());
         for i in unconsumed_idxes {
             let (var_pair, fr) = flattened_quad_releations[i];
             let gate_template = GateConstructorHelper::new_for_mul(cs, var_pair, fr);
@@ -526,7 +519,6 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
                 gate_template.add_next_trace_step_term(next_trace_step_var);
             }
             gate_template.add_linear_coefficients_for_bound_variables(&mut self.linear_terms);
-            println!("num of free linear terms: {}", linear_terms_only_vars.len());
             gate_template.add_linear_coefficients_for_free_variables(
                 &mut self.linear_terms, &mut linear_terms_only_vars
             );
@@ -547,7 +539,6 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
                 break
             }
         } 
-        println!("total num of gates: {}", num_gates_allocated);
         Ok(num_gates_allocated)
     }
 

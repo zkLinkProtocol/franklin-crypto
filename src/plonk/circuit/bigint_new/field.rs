@@ -107,7 +107,6 @@ impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
 
         let strategy = get_optimal_strategy(cs);
         let range_check_granularity = strategy.get_range_check_granularity();
-        println!("granularity: {}", range_check_granularity);
         assert!(limb_size % range_check_granularity == 0, "limb size is not a multiple of range check quant");
 
         let native_field_modulus = repr_to_biguint::<E::Fr>(&E::Fr::char());
@@ -251,7 +250,6 @@ fn get_limbs_product_in_diapason<'a, E: Engine>(
 ) -> impl Iterator<Item = (usize, &'a Limb<E>, &'a Limb<E>)> + 'a {
     let iter = itertools::iproduct!(x.iter().enumerate(), y.iter().enumerate()).filter_map(move |x| {
         let ((i, x_limb), (j, y_limb)) = x;
-        println!("i: {}, j: {}", i, j);
         if i + j >= start && i + j < end {
             Some((i + j, x_limb, y_limb))
         }
@@ -859,7 +857,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         };
         let max_val = self.get_maximal_possible_stored_value();
         let max_q_bits = (max_val / &params.represented_field_modulus).bits() as usize;
-        println!("max q bits: {}", max_q_bits);
         assert!(max_q_bits <= E::Fr::CAPACITY as usize, "for no quotient size can overflow capacity");
 
         let q_as_field_repr = if max_q_bits == 0 { 
@@ -1403,7 +1400,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             let max_btilen = params.represented_field_modulus_bitlength;
             (max_btilen - MAX_INTERMIDIATE_OVERFLOW_WIDTH - 1) / params.binary_limb_width - 1
         };
-        println!("limbs per cycle: {}", limbs_per_cycle);
 
         // construct shifts:
         let mut shifts = Vec::with_capacity(limbs_per_cycle as usize);
@@ -1422,8 +1418,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let mut input_carry = Term::zero();
         let p_limbs = Self::split_const_into_limbs(params.represented_field_modulus.clone(), params);
 
-        let mut debug_print = true;
-
         while left_border < rns_binary_modulus_width {
             let mut lc = AmplifiedLinearCombination::zero();
             lc.add_assign_term(&input_carry);
@@ -1433,14 +1427,12 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             let iter = get_limbs_product_in_diapason(&mul_a.binary_limbs, &mul_b.binary_limbs, left_border, right_border);
             for (idx, a_limb, b_limb) in iter {
                 let shift = shifts[idx - left_border];
-                println!("shift for product: {}", shift);
                 lc.add_assign_product_of_terms_with_coeff(&a_limb.term, &b_limb.term, shift);
             }
                
             // add limbs of addition_elements:
             for elem in addition_elements.iter() {
                 for (i, limb) in get_limbs_in_diapason(&elem.binary_limbs, left_border, right_border) {
-                    println!("shift for add elems: {}", shift);
                     lc.add_assign_term_with_coeff(&limb.term, shifts[i - left_border]);
                 }
             }
@@ -1455,16 +1447,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
             // sub remainder
             for (i, limb) in get_limbs_in_diapason(&remainder.binary_limbs, left_border, right_border) {
-                println!("negation of remainder");
                 lc.sub_assign_term_with_coeff(&limb.term, shifts[i - left_border]);
             }
 
-            if debug_print {
-                println!("ALCC: {:?}", lc);
-                debug_print = false;
-            }
             input_carry = Term::from_num(lc.into_num(cs)?);
-            println!("CARRY VALUE: {}", input_carry.get_value().unwrap());
             // carry could be both positive and negative but in any case the bitwidth of it absolute value is 
             // [0, chunk_bitlen + MAX_INTERMIDIATE_OVERFLOW_WIDTH]
             let (abs_flag_wit, abs_wit) = match input_carry.get_value() {
@@ -1486,7 +1472,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             //     cs, &abs_carry, bin_limb_width + MAX_INTERMIDIATE_OVERFLOW_WIDTH, params.range_check_strategy, true
             // )?;
             let abs_carry = Term::from_num(Num::Variable(abs_carry)); 
-            println!("ABS CARRY VALUE: {}", abs_carry.get_value().unwrap());
+           
             // we need to constraint: carry == (2 * abs_flag - 1) * abs_carry
             // 2 * abs_flag * abs_carry - carry - abs_carry == 0
             let mut lc = AmplifiedLinearCombination::zero();

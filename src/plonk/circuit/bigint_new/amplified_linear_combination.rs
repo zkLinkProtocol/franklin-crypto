@@ -393,12 +393,15 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
     }
 
     pub fn add_assign_product_of_terms_with_coeff(&mut self, a: &Term<E>, b: &Term<E>, coeff: E::Fr) {
-        if let Some(fr) = a.try_into_constant_value() {
+        let mut a_scaled = a.clone();
+        a_scaled.scale(&coeff);
+
+        if let Some(fr) = a_scaled.try_into_constant_value() {
             self.add_assign_term_with_coeff(b, fr);    
         } else if let Some(fr) = b.try_into_constant_value() {
-            self.add_assign_term_with_coeff(a, fr);
+            self.add_assign_term_with_coeff(&a_scaled, fr);
         } else {
-            self.value = match (self.value, a.get_value(), b.get_value()) {
+            self.value = match (self.value, a_scaled.get_value(), b.get_value()) {
                 (Some(lc_val), Some(a_val), Some(b_val)) => {
                     let mut tmp = a_val;
                     tmp.mul_assign(&b_val);
@@ -411,7 +414,7 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
             // let a = p_1 * x + c_1, b = p_2 * y + c_2, then:
             // a * b = (p_1 * x + c_1) * (p_2 * y + c_2) = 
             // = p_1 * p_2 * x * y + p_1 * c_2 * x + p_2 * c_1 * y + c_1 * c_2
-            let (x, p_1, c_1) = a.unpack(); 
+            let (x, p_1, c_1) = a_scaled.unpack(); 
             let (y, p_2, c_2) = b.unpack();
         
             // add p_1 * p_2 * x * y
@@ -435,8 +438,6 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
             coeff.mul_assign(&c_2);
             self.constant.add_assign(&coeff); 
         }
-
-        self.scale(&coeff);
     }
 
     pub fn normalize(&mut self) {

@@ -133,7 +133,6 @@ pub fn split_some_into_fixed_number_of_limbs(
 {
     if let Some(fe) = fe {
         let mut fe = fe;
-        println!("fe.bits: {}, bits_per_limb: {}, num_limbs: {}", fe.bits(), bits_per_limb, num_limbs);
         assert!(fe.bits() as usize <= bits_per_limb * num_limbs);
         let mut limbs = Vec::with_capacity(num_limbs);
 

@@ -13,6 +13,7 @@ use crate::bellman::pairing::ff::{BitIterator, Field, PrimeField, PrimeFieldRepr
 use super::super::allocated_num::{AllocatedNum};
 use super::super::linear_combination::LinearCombination;
 use plonk::circuit::bigint::RnsParameters;
+use std::cell::RefCell;
 
 use crate::bellman::plonk::better_better_cs::cs::{
     ArithmeticTerm, Coefficient, ConstraintSystem, Gate, GateInternal, LinearCombinationOfTerms,
@@ -53,7 +54,7 @@ where
 {
     pub block: Vec<(Num<E>, AffinePoint<'a, E, G>)>,
 
-    pub witness_map: HashMap<BigUint ,AffinePoint<'a, E, G>>
+    pub witness_map: HashMap<BigUint , RefCell<AffinePoint<'a, E, G>>>
 
 }
 
@@ -67,29 +68,22 @@ where
             witness_map: HashMap::new()
         }
     }
-    pub fn read_and_alloc<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, addr: Num<E>, params: &'a RnsParameters<E, G::Base>) -> Result<AffinePoint<E, G>, SynthesisError>{
+    pub fn read_and_alloc<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, addr: Num<E>, params: &'a RnsParameters<E, G::Base>) -> Result<RefCell<AffinePoint<'a, E, G>>, SynthesisError>{
+
         let addres = fe_to_biguint(&addr.get_value().unwrap());
-        let instance = self.witness_map.contains_key(&addres);
-        let mut vec = vec![];
-        if instance{
-            vec.push(self.witness_map.get(&addres).unwrap().clone());
-            let existing = self.witness_map.get(&addres).unwrap().clone();
-            let witness_alloc = AffinePoint::alloc(cs, existing.value, params).unwrap();
 
-            self.block.push((addr, witness_alloc));
-        }
-        else{
-            panic!();
-        }
-        let point = vec[0].clone();
+        let existing = self.witness_map.get(&addres).unwrap().clone();
+        let witness_alloc = AffinePoint::alloc(cs, existing.clone().into_inner().value.clone(), params).unwrap();
 
-        Ok(point)
+        self.block.push((addr, witness_alloc));
 
+        Ok(existing)
     }
 
     pub fn insert_witness(&mut self, addr: Num<E>, point: AffinePoint<'a, E, G>){
         let addres = fe_to_biguint(&addr.get_value().unwrap());
-        self.witness_map.insert(addres, point);
+        let value = RefCell::new(point);
+        self.witness_map.insert(addres, value);
     }
 
 
@@ -308,13 +302,13 @@ mod test {
 
             ram.block.push((num_adr, a.clone()));
             let biguint = fe_to_biguint(&a_fr);
-            ram.witness_map.insert(biguint, a.clone()); 
+            ram.witness_map.insert(biguint, RefCell::new(a.clone())); 
         }
         for j in 0..100{
             let addres = array_addr[j];
             
             let point = ram.read_and_alloc(&mut cs, addres, &params).unwrap();
-            assert_eq!(vec_verif[j].value.unwrap(), point.value.unwrap());
+            // assert_eq!(vec_verif[j].value.unwrap(), point.value.unwrap());
 
             
         }

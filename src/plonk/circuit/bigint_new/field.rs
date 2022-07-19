@@ -857,6 +857,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         };
         let max_val = self.get_maximal_possible_stored_value();
         let max_q_bits = (max_val / &params.represented_field_modulus).bits() as usize;
+        print!("max q bits: {}", max_q_bits);
         assert!(max_q_bits <= E::Fr::CAPACITY as usize, "for no quotient size can overflow capacity");
 
         let q_as_field_repr = if max_q_bits == 0 { 
@@ -864,7 +865,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         } else { 
             Self::alloc_for_known_bitwidth(cs, q, max_q_bits, &params, params.allow_coarse_allocation_for_temp_values)?
         };
-
         let r_fe = some_biguint_to_fe::<F>(&rem);
         let r_elem = Self::alloc(cs, r_fe, params)?;
 
@@ -962,6 +962,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         }
         let new_base_limb = self.base_field_limb.add(cs, &other.base_field_limb)?;
         let new_value = self.get_field_value().add(&other.get_field_value());
+
+        let debug_value = self.get_raw_value().unwrap();
+        println!("actual value3: {}", new_value.unwrap());
+        println!("debug value3: {}", biguint_to_fe::<F>(debug_value));
 
         let mut new = Self {
             binary_limbs: new_binary_limbs,
@@ -1070,13 +1074,11 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 if rem >= var_limb.max_value() {
                     const_constituent_chunks.push(rem);
                     tmp >>= bitlen;
-                    continue;
                 } else {
-                    let chunk = rem + (modulus << 1u64);
+                    let chunk = rem + modulus;
                     const_constituent_chunks.push(chunk);
                     tmp >>= bitlen;
                     tmp -= 1u64;
-                    continue;
                 }
             } else { 
                 const_constituent_chunks.push(tmp.clone());
@@ -1105,8 +1107,8 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let mut tmp = self.base_field_limb.clone();
         tmp.add_constant(&constant_as_fe);
         let new_field_limb = tmp.sub(cs, &other.base_field_limb)?;
-        
         let new_value = self.get_field_value().sub(&other.get_field_value());
+
         let mut new = Self {
             binary_limbs: new_binary_limbs,
             base_field_limb: new_field_limb,
@@ -1114,6 +1116,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             representation_params: params,
             reduction_status: ReductionStatus::Unreduced
         };
+
+        let debug_value = new.get_raw_value().unwrap();
+        println!("actual value: {}", new.get_field_value().unwrap());
+        println!("debug value: {}", biguint_to_fe::<F>(debug_value));
         
         new.reduce_if_necessary(cs, mode)?;
         Ok(new)
@@ -1255,7 +1261,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         let q_elem = Self::alloc_for_known_bitwidth(cs, q, q_max_bits as usize, params, coarsely)?;
         let r_elem = Self::alloc_for_known_bitwidth(cs, r, r_max_bits as usize, params, false)?;
-
+        println!("HERE AAA");
         Self::constraint_fma(cs, &a, &b, &chain.elems_to_add[..], &q_elem, &r_elem)?;
         Ok(r_elem)
     }
@@ -1409,6 +1415,8 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             shifts.push(el);
             el.mul_assign(&shift);
         }
+        let limb_shift_inverse =  params.shift_left_by_limb_constant.inverse().unwrap();
+        println!("LIMBS PER CYCLE: {}", limbs_per_cycle);
 
         // final goal is to prove that a*b + \sum addition_elements = q * p + r
         // we transform it into the following form for each limb : 
@@ -1418,22 +1426,18 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let mut input_carry = Term::zero();
         let p_limbs = Self::split_const_into_limbs(params.represented_field_modulus.clone(), params);
 
+        let mut debug_counter = 0;
+
         while left_border < rns_binary_modulus_width {
             let mut lc = AmplifiedLinearCombination::zero();
             lc.add_assign_term(&input_carry);
             let right_border = std::cmp::min(left_border + limbs_per_cycle, rns_binary_modulus_width_in_limbs);
-
-            let mut debug_lc = LinearCombination::zero();
             
             // add terms like a[i] * b[j], where i+j /in [left_border, right_border)
             let iter = get_limbs_product_in_diapason(&mul_a.binary_limbs, &mul_b.binary_limbs, left_border, right_border);
             for (idx, a_limb, b_limb) in iter {
                 let shift = shifts[idx - left_border];
                 lc.add_assign_product_of_terms_with_coeff(&a_limb.term, &b_limb.term, shift);
-               
-                let mut debug_shift = b_limb.term.into_constant_value();
-                debug_shift.mul_assign(&shift);
-                debug_lc.add_assign_term_with_coeff(&a_limb.term, debug_shift);
             }
                
             // add limbs of addition_elements:
@@ -1449,26 +1453,23 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 let mut shift = shifts[idx - left_border];
                 shift.negate();
                 lc.add_assign_product_of_terms_with_coeff(&q_limb.term, &p_limb.term, shift);
-                
-                let mut debug_shift = p_limb.term.into_constant_value();
-                debug_shift.mul_assign(&shift);
-                debug_lc.add_assign_term_with_coeff(&q_limb.term, debug_shift);
             }
 
             // sub remainder
             for (i, limb) in get_limbs_in_diapason(&remainder.binary_limbs, left_border, right_border) {
                 lc.sub_assign_term_with_coeff(&limb.term, shifts[i - left_border]);
-                
-                let mut debug_shift = shifts[i - left_border];
-                debug_shift.negate();
-                debug_lc.add_assign_term_with_coeff(&limb.term, debug_shift);
             }
 
+            lc.scale(&limb_shift_inverse);
+            lc.scale(&limb_shift_inverse);
+            
+            lc.normalize();
+            println!("alc in question: {:?}", lc);
             input_carry = Term::from_num(lc.into_num(cs)?);
-            let debug_carry = debug_lc.into_num(cs)?;
-
+    
             // carry could be both positive and negative but in any case the bitwidth of it absolute value is 
             // [0, chunk_bitlen + MAX_INTERMIDIATE_OVERFLOW_WIDTH]
+            // input_carry = +/- abs_carry * shift;
             let (abs_flag_wit, abs_wit) = match input_carry.get_value() {
                 Some(x) => {
                     let x_as_biguint = fe_to_biguint(&x);
@@ -1484,9 +1485,11 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             };
             let abs_flag = Term::from_boolean(&Boolean::Is(AllocatedBit::alloc(cs, abs_flag_wit)?)); 
             let abs_carry = AllocatedNum::alloc(cs, || abs_wit.grab())?;
+            println!("constrainting abs_carry");
             constraint_bit_length_ext_with_strategy(
                 cs, &abs_carry, bin_limb_width + MAX_INTERMIDIATE_OVERFLOW_WIDTH, params.range_check_strategy, true
             )?;
+            println!("abs carry constrainted");
             let abs_carry = Term::from_num(Num::Variable(abs_carry)); 
            
             // we need to constraint: carry == (2 * abs_flag - 1) * abs_carry
@@ -1498,8 +1501,13 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             lc.enforce_zero(cs)?;
 
             left_border = right_border;
+
+            debug_counter += 1;
+            if debug_counter == 2 {
+                break;
+            }
         }
-        
+        println!("after main cycle");
         // now much more trivial part - multiply elements modulo base field
         // a * b + \sum addition_elements - q * p - r == 0 (mod base_field)
         let mut lc = AmplifiedLinearCombination::zero();
@@ -1693,13 +1701,13 @@ mod test {
         let a_f: Fq = rng.gen();
         let b_f: Fq = rng.gen();
         let mut sum_f = a_f.clone();
-        sum_f.sub_assign(&b_f);
+        sum_f.mul_assign(&b_f);
         let mut a = FieldElement::alloc(&mut cs, Some(a_f), &params).unwrap();
         let mut b = FieldElement::alloc(&mut cs, Some(b_f), &params).unwrap();
         let mut sum = FieldElement::alloc(&mut cs, Some(sum_f), &params).unwrap();
 
-        let mut result = a.sub(&mut cs, &b).unwrap();
-        result.reduce_if_necessary(&mut cs, ReductionStatus::Loose).unwrap();
+        let mut result = a.mul(&mut cs, &b).unwrap();
+        //result.reduce_if_necessary(&mut cs, ReductionStatus::Loose).unwrap();
         //FieldElement::enforce_equal(&mut cs, &mut result, &mut sum).unwrap();
         assert!(cs.is_satisfied()); 
     }

@@ -21,6 +21,7 @@ mod test {
 
     struct TestBlake2sCircuit<E:Engine>{
         input: Vec<E::Fr>,
+        input_len_in_bytes: usize,
         output: [E::Fr; 8],
         use_additional_tables: bool,
         is_const_test: bool,
@@ -64,7 +65,7 @@ mod test {
                         input_vars.push(Num::Constant(value.clone()));
                     }
                 }
-                blake2s_gadget.digest(cs, &input_vars[..], 10)?
+                blake2s_gadget.digest(cs, &input_vars[..], self.input_len_in_bytes)?
             }
             else {
                 let mut input_vars = Vec::with_capacity(self.input.len());
@@ -124,6 +125,7 @@ mod test {
         
         let circuit = TestBlake2sCircuit::<Bn256>{
             input: input_fr_arr,
+            input_len_in_bytes: num_of_blocks * 16 * 4,
             output: output_fr_arr,
             use_additional_tables,
             is_const_test,
@@ -168,8 +170,72 @@ mod test {
         blake2s_gadget_test_impl(3, false, true, false) 
     }
 
-    fn blake2s_gadget_byte_input_test() 
-    {
-        blake2s_gadget_test_impl(1, false, false, true) 
+    #[test]
+    fn test_blake2s_on_real_prover() {
+        let num_of_blocks : usize = 1;
+        let seed: &[_] = &[1, 2, 3, 4, 5];
+        let mut rng: StdRng = SeedableRng::from_seed(seed);
+
+        let mut input = vec![0u8; 64 * num_of_blocks];
+        for i in 0..(64 * num_of_blocks) {
+            input[i] = rng.gen();
+        }
+
+        let mut hasher = Blake2s::new();
+        hasher.update(&input[..]);
+        let output = hasher.finalize();
+
+        let mut input_fr_arr = Vec::with_capacity(16 * num_of_blocks);
+        let mut output_fr_arr = [Fr::zero(); 8];
+
+        for block in input.chunks(4) {
+            input_fr_arr.push(slice_to_ff::<Fr>(block));
+        }
+
+        for (i, block) in output.chunks(4).enumerate() {
+            output_fr_arr[i] = slice_to_ff::<Fr>(block);
+        }
+        
+        let circuit = TestBlake2sCircuit::<Bn256>{
+            input: input_fr_arr,
+            input_len_in_bytes: num_of_blocks * 16 * 4,
+            output: output_fr_arr,
+            use_additional_tables: false,
+            is_const_test: false,
+            is_byte_test: false
+        };
+        
+        let mut assembly = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
+        circuit.synthesize(&mut assembly).expect("must work");
+        println!("Assembly contains {} gates", assembly.n());
+        println!("Total length of all tables: {}", assembly.total_length_of_all_tables);
+
+        let mut assembly = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
+        circuit.synthesize(&mut assembly).expect("must work");
+        assembly.finalize();
+        assert!(assembly.is_satisfied());
+
+        use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
+        use crate::bellman::worker::Worker;
+        use crate::bellman::plonk::commitments::transcript::keccak_transcript::RollingKeccakTranscript;
+        use crate::bellman::plonk::better_better_cs::setup::VerificationKey;
+        use crate::bellman::plonk::better_better_cs::verifier::verify;
+
+        let worker = Worker::new();
+        let setup_size = assembly.n().next_power_of_two();
+        let crs = Crs::<Bn256, CrsForMonomialForm>::dummy_crs(setup_size);
+        let setup = assembly.create_setup::<TestBlake2sCircuit::<Bn256>>(&worker).unwrap();
+        let vk = VerificationKey::from_setup(&setup, &worker, &crs).unwrap();
+
+        let proof = assembly
+            .create_proof::<_, RollingKeccakTranscript<Fr>>(&worker, &setup, &crs, None)
+            .unwrap();
+        let valid = verify::<_, _, RollingKeccakTranscript<Fr>>(&vk, &proof, None).unwrap();
+        assert!(valid);
+
+        
+        // let mut proof_as_bytes : Vec<u8> = vec![];
+        // vk.write(&mut proof_as_bytes).expect("should_write");
+        // println!("proof size: {}", proof_as_bytes.len());
     }
 }

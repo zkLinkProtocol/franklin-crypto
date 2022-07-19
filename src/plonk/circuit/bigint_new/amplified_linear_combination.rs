@@ -49,6 +49,8 @@ impl<E: Engine> GateConstructorHelper<E> {
         };
 
         let dummy = AllocatedNum::zero(cs).get_variable();
+        println!("first mul coef: {}", x_coef);
+        println!("second mul coef: {}", y_coef);
         GateConstructorHelper::<E> {
             a, b, c, d: dummy, a_mul_b_coef: x_coef, a_mul_c_coef: y_coef, a_linear_coef: E::Fr::zero(), 
             b_linear_coef: E::Fr::zero(), c_linear_coef: E::Fr::zero(), d_linear_coef: E::Fr::zero(), 
@@ -141,6 +143,9 @@ impl<E: Engine> GateConstructorHelper<E> {
             minus_one.negate();
             coefs[range_of_next_step_linear_terms.last().unwrap()] = minus_one;
         }
+
+        println!("vars: {:?}", vars);
+        println!("coefs: {:?}", coefs);
 
         let mg = CS::MainGate::default();
         cs.new_single_gate_for_trace_step(&mg, &coefs, &vars, &[])
@@ -480,20 +485,20 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
 
         for i in 0..flattened_arr_len {
             let (var_pair_i, fr_i) = flattened_quad_releations[i].clone();
-            let mut insertion_flags = [true, true];
-            for (var, flag_ptr) in [var_pair_i.first, var_pair_i.second].iter().zip(insertion_flags.iter_mut()) {
+            let mut insertion_flag = true;
+            for var in [var_pair_i.first, var_pair_i.second].iter() {
                 if let Some(j) = arr_indexer.get(var) {
                     let (var_pair_j, fr_j) = flattened_quad_releations[*j].clone();
                     let gate = GateConstructorHelper::new_for_pair_of_muls(cs, var_pair_i, fr_i, var_pair_j, fr_j);
                     gate_templates.push(gate);
                     arr_indexer.remove(&var_pair_j.first);
                     arr_indexer.remove(&var_pair_j.second);
-                    *flag_ptr = false;
+                    insertion_flag = false;
                     continue;
                 }
             }
-            for (var, flag) in [var_pair_i.first, var_pair_i.second].iter().zip(insertion_flags.iter()) {
-                if *flag {
+            for var in [var_pair_i.first, var_pair_i.second].iter() {
+                if insertion_flag {
                     arr_indexer.insert(*var, i);
                 }
             }

@@ -857,7 +857,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         };
         let max_val = self.get_maximal_possible_stored_value();
         let max_q_bits = (max_val / &params.represented_field_modulus).bits() as usize;
-        print!("max q bits: {}", max_q_bits);
         assert!(max_q_bits <= E::Fr::CAPACITY as usize, "for no quotient size can overflow capacity");
 
         let q_as_field_repr = if max_q_bits == 0 { 
@@ -963,10 +962,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let new_base_limb = self.base_field_limb.add(cs, &other.base_field_limb)?;
         let new_value = self.get_field_value().add(&other.get_field_value());
 
-        let debug_value = self.get_raw_value().unwrap();
-        println!("actual value3: {}", new_value.unwrap());
-        println!("debug value3: {}", biguint_to_fe::<F>(debug_value));
-
         let mut new = Self {
             binary_limbs: new_binary_limbs,
             base_field_limb: new_base_limb,
@@ -974,8 +969,14 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             representation_params: params,
             reduction_status: ReductionStatus::Unreduced
         };
+
+        if cfg!(debug_assertions) {
+            assert_eq!(&new.get_field_value().unwrap_or(F::zero()), )
+            let debug_value = new.get_raw_value().unwrap();
+       
+        }
+
         new.reduce_if_necessary(cs, mode)?;
-        
         Ok(new)
     }
 
@@ -1117,9 +1118,13 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             reduction_status: ReductionStatus::Unreduced
         };
 
-        let debug_value = new.get_raw_value().unwrap();
-        println!("actual value: {}", new.get_field_value().unwrap());
-        println!("debug value: {}", biguint_to_fe::<F>(debug_value));
+        if cfg!(debug_assertions) {
+            assert_eq!(&new.get_field_value().unwrap_or_default())
+            let debug_value = new.get_raw_value().unwrap();
+       
+        }
+
+        
         
         new.reduce_if_necessary(cs, mode)?;
         Ok(new)
@@ -1261,8 +1266,8 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         let q_elem = Self::alloc_for_known_bitwidth(cs, q, q_max_bits as usize, params, coarsely)?;
         let r_elem = Self::alloc_for_known_bitwidth(cs, r, r_max_bits as usize, params, false)?;
-        println!("HERE AAA");
         Self::constraint_fma(cs, &a, &b, &chain.elems_to_add[..], &q_elem, &r_elem)?;
+
         Ok(r_elem)
     }
 
@@ -1415,8 +1420,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             shifts.push(el);
             el.mul_assign(&shift);
         }
-        let limb_shift_inverse =  params.shift_left_by_limb_constant.inverse().unwrap();
-        println!("LIMBS PER CYCLE: {}", limbs_per_cycle);
+        let carry_shift_inverse = shifts[num_limbs].inverse().unwrap();
 
         // final goal is to prove that a*b + \sum addition_elements = q * p + r
         // we transform it into the following form for each limb : 
@@ -1462,9 +1466,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
             lc.scale(&limb_shift_inverse);
             lc.scale(&limb_shift_inverse);
-            
-            lc.normalize();
-            println!("alc in question: {:?}", lc);
             input_carry = Term::from_num(lc.into_num(cs)?);
     
             // carry could be both positive and negative but in any case the bitwidth of it absolute value is 
@@ -1483,13 +1484,12 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 },
                 None => (None, None)
             };
+            
             let abs_flag = Term::from_boolean(&Boolean::Is(AllocatedBit::alloc(cs, abs_flag_wit)?)); 
             let abs_carry = AllocatedNum::alloc(cs, || abs_wit.grab())?;
-            println!("constrainting abs_carry");
             constraint_bit_length_ext_with_strategy(
                 cs, &abs_carry, bin_limb_width + MAX_INTERMIDIATE_OVERFLOW_WIDTH, params.range_check_strategy, true
             )?;
-            println!("abs carry constrainted");
             let abs_carry = Term::from_num(Num::Variable(abs_carry)); 
            
             // we need to constraint: carry == (2 * abs_flag - 1) * abs_carry
@@ -1501,13 +1501,8 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             lc.enforce_zero(cs)?;
 
             left_border = right_border;
-
-            debug_counter += 1;
-            if debug_counter == 2 {
-                break;
-            }
         }
-        println!("after main cycle");
+        
         // now much more trivial part - multiply elements modulo base field
         // a * b + \sum addition_elements - q * p - r == 0 (mod base_field)
         let mut lc = AmplifiedLinearCombination::zero();
@@ -1700,20 +1695,23 @@ mod test {
 
         let a_f: Fq = rng.gen();
         let b_f: Fq = rng.gen();
-        let mut sum_f = a_f.clone();
-        sum_f.mul_assign(&b_f);
+        let mut sum_f = b_f.inverse().unwrap();
+        sum_f.mul_assign(&a_f);
         let mut a = FieldElement::alloc(&mut cs, Some(a_f), &params).unwrap();
         let mut b = FieldElement::alloc(&mut cs, Some(b_f), &params).unwrap();
         let mut sum = FieldElement::alloc(&mut cs, Some(sum_f), &params).unwrap();
 
-        let mut result = a.mul(&mut cs, &b).unwrap();
-        //result.reduce_if_necessary(&mut cs, ReductionStatus::Loose).unwrap();
-        //FieldElement::enforce_equal(&mut cs, &mut result, &mut sum).unwrap();
+        let mut result = a.div(&mut cs, &b).unwrap();
+        result.reduce_if_necessary(&mut cs, ReductionStatus::Loose).unwrap();
+        FieldElement::enforce_equal(&mut cs, &mut result, &mut sum).unwrap();
+      
         assert!(cs.is_satisfied()); 
     }
 }
 
-
+// functions remaining to check: is_zero, normalize, inverse, mul_with_chain (general_case),
+// div_with_chain (general_case), enfrorce_not_equal, equals, decompose_into_skewed_repr
+// also - check the actual length of carry on fma - may be it could be reduced to 16 bits
 
 
     

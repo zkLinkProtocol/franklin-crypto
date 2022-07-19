@@ -41,20 +41,14 @@ impl<E: Engine> GateConstructorHelper<E> {
     }
 
     pub fn new_for_pair_of_muls<CS: ConstraintSystem<E>>(
-        cs: &mut CS, x_pair: OrderedVariablePair, x_coef: E::Fr, y_pair: OrderedVariablePair, y_coef: E::Fr
+        cs: &mut CS, a: Variable, b: Variable, c: Variable, a_mul_b_coef: E::Fr, a_mul_c_coef: E::Fr
     ) -> Self {
-        let (a, b, c) = match (x_pair.first, x_pair.second, y_pair.first, y_pair.second) {
-            (k0, l, k1, m) | (l, k0, k1, m) | (k0, l, m, k1) | (l, k0, m, k1) if k0 == k1 => (k0, l, m),
-            _ => unreachable!(),
-        };
-
         let dummy = AllocatedNum::zero(cs).get_variable();
-        println!("first mul coef: {}", x_coef);
-        println!("second mul coef: {}", y_coef);
+        let zero = E::Fr::zero();
         GateConstructorHelper::<E> {
-            a, b, c, d: dummy, a_mul_b_coef: x_coef, a_mul_c_coef: y_coef, a_linear_coef: E::Fr::zero(), 
-            b_linear_coef: E::Fr::zero(), c_linear_coef: E::Fr::zero(), d_linear_coef: E::Fr::zero(), 
-            cnst: E::Fr::zero(), free_vars_start_idx: 3, free_vars_end_idx: REQUIRED_STATE_WIDTH, is_final: false 
+            a, b, c, d: dummy, a_mul_b_coef, a_mul_c_coef, 
+            a_linear_coef: zero, b_linear_coef: zero, c_linear_coef: zero, d_linear_coef: zero, 
+            cnst: zero, free_vars_start_idx: 3, free_vars_end_idx: REQUIRED_STATE_WIDTH, is_final: false 
         }
     }
 
@@ -144,9 +138,6 @@ impl<E: Engine> GateConstructorHelper<E> {
             coefs[range_of_next_step_linear_terms.last().unwrap()] = minus_one;
         }
 
-        println!("vars: {:?}", vars);
-        println!("coefs: {:?}", coefs);
-
         let mg = CS::MainGate::default();
         cs.new_single_gate_for_trace_step(&mg, &coefs, &vars, &[])
     }
@@ -190,6 +181,16 @@ impl OrderedVariablePair {
         };
         let (first, second) = if lt_flag { (a, b) } else { (b, a) };
         OrderedVariablePair { first, second }
+    }
+
+    pub fn get_associate(&self, elem: Variable) -> Variable {
+        if elem == self.first {
+            self.second
+        } else if elem == self.second {
+            self.first
+        } else {
+            unreachable!("element should be equal to at least one of components of Variable pair")
+        }
     }
 }
 
@@ -489,12 +490,17 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
             for var in [var_pair_i.first, var_pair_i.second].iter() {
                 if let Some(j) = arr_indexer.get(var) {
                     let (var_pair_j, fr_j) = flattened_quad_releations[*j].clone();
-                    let gate = GateConstructorHelper::new_for_pair_of_muls(cs, var_pair_i, fr_i, var_pair_j, fr_j);
+                    
+                    // construct gate from two multiplications:
+                    let a = *var;
+                    let b = var_pair_i.get_associate(a);
+                    let c = var_pair_j.get_associate(a);
+                    let gate = GateConstructorHelper::new_for_pair_of_muls(cs, a, b, c, fr_i, fr_j);
                     gate_templates.push(gate);
                     arr_indexer.remove(&var_pair_j.first);
                     arr_indexer.remove(&var_pair_j.second);
                     insertion_flag = false;
-                    continue;
+                    break;
                 }
             }
             for var in [var_pair_i.first, var_pair_i.second].iter() {

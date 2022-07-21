@@ -1,9 +1,11 @@
 use super::*;
 use super::bigint::*;
+use bellman::CurveProjective;
 use num_traits::{Zero, One};
 use num_integer::Integer;
 use num_derive::FromPrimitive;    
 use num_traits::FromPrimitive;
+use std::ops::ControlFlow;
 
 use num_bigint::BigUint;
 use super::super::allocated_num::{AllocatedNum, Num};
@@ -11,6 +13,9 @@ use super::super::linear_combination::LinearCombination;
 use super::super::simple_term::Term;
 use crate::plonk::circuit::hashes_with_tables::utils::IdentifyFirstLast;
 use crate::plonk::circuit::SomeField;
+
+
+// TODO and NB: the code here is very tight and dense. Every line should be carefully reviewed and double checked
 
 
 // this variable is used in fma implementation: it is set to the maximal numver of bits on which 
@@ -338,6 +343,24 @@ impl<'a, E: Engine, F: PrimeField> FieldElementsChain<'a, E, F> {
         self.elems_to_sub.push(elem.clone());
         self
     }
+
+    pub fn is_constant(&self) -> bool {
+        self.elems_to_add.iter().chain(self.elems_to_sub.iter()).all(|x| x.is_constant())
+    }
+
+    pub fn get_field_value(&self) -> Option<F> {
+        let pos_total_sum = self.elems_to_add.iter().fold(Some(F::zero()), |acc, x| acc.add(&x.get_field_value()));
+        let neg_total_sum = self.elems_to_sub.iter().fold(Some(F::zero()), |acc, x| acc.sub(&x.get_field_value()));
+        pos_total_sum.sub(&neg_total_sum)
+    }
+
+    pub fn negate(self) -> Self {
+        let FieldElementsChain { elems_to_add, elems_to_sub } = self;
+        FieldElementsChain {
+            elems_to_add: elems_to_sub,
+            elems_to_sub: elems_to_add
+        }
+    } 
 }
 
 
@@ -1162,14 +1185,14 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     }
 
     pub fn mul<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
-        Self::mul_with_chain(cs, &self, &other, &FieldElementsChain::new())
+        Self::mul_with_chain(cs, &self, &other, FieldElementsChain::new())
     }
 
     pub fn square<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        Self::mul_with_chain(cs, &self, &self, &FieldElementsChain::new())
+        Self::mul_with_chain(cs, &self, &self, FieldElementsChain::new())
     }
 
-    pub fn square_with_chain<CS>(&self, cs: &mut CS, chain: &FieldElementsChain<'a, E, F>) -> Result<Self, SynthesisError> 
+    pub fn square_with_chain<CS>(&self, cs: &mut CS, chain: FieldElementsChain<'a, E, F>) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         Self::mul_with_chain(cs, &self, &self, chain)
@@ -1178,162 +1201,61 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     pub fn div<CS: ConstraintSystem<E>>(&self, cs: &mut CS, den: &Self) -> Result<Self, SynthesisError> {
         let mut num_chain = FieldElementsChain::new();
         num_chain.add_pos_term(self);
-        Self::div_with_chain(cs, &num_chain, den)
+        Self::div_with_chain(cs, num_chain, den)
     }
 
     pub fn inverse<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
         let mut num_chain = FieldElementsChain::new();
         num_chain.add_pos_term(&Self::one(&self.representation_params));
-        Self::div_with_chain(cs, &num_chain, self)
+        Self::div_with_chain(cs, num_chain, self)
     }
 
     #[track_caller]
-    pub fn div_with_chain<CS>(cs: &mut CS, num_chain: &FieldElementsChain<'a, E, F>, den: &Self) -> Result<Self, SynthesisError> 
+    pub fn div_with_chain<CS>(cs: &mut CS, chain: FieldElementsChain<'a, E, F>, den: &Self) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
-        let num = &num_chain.elems_to_add[0];
-        let params = num.representation_params;
-        assert!(Self::check_params_equivalence(num, den));
-        // we do self/den = result mod p, where we assume that den != 0
-        // so naively we should constraint: result * den = q * p + self
+        let sample_elem = chain.elems_to_add.get(0).unwrap_or_else(|| chain.elems_to_sub.get(0).expect("Chain is empty"));
+        let params = &sample_elem.representation_params;
+        // we do chain/den = result mod p, where we assume that den != 0
         assert!(!den.get_field_value().unwrap_or(F::one()).is_zero());
 
-        if num.is_constant() && den.is_constant() {
-            let mut tmp = den.get_field_value().unwrap().inverse().unwrap();
-            tmp.mul_assign(&num.get_field_value().unwrap());
-            let new = Self::constant(tmp, params);
-            return Ok(new);
-        }
+        let numerator_value = chain.get_field_value();
+        let den_inverse_value = den.get_field_value().map(|x| x.inverse().expect("denominator is zero"));
+        let final_value = numerator_value.mul(&den_inverse_value);
+        let all_constants = den.is_constant() && chain.is_constant();
         
-        let (result_wit, q_wit) = match (num.get_raw_value(), den.get_raw_value()) {
-            (Some(this), Some(den)) => {
-                let inv = mod_inverse(&den, &params.represented_field_modulus);
-                let result = (this.clone() * &inv) % &params.represented_field_modulus;
-                let value = den.clone() * &result - &this;
-                let (q, rem) = value.div_rem(&params.represented_field_modulus);
-                
-                assert!(rem.is_zero(), "remainder = {}", rem.to_str_radix(16));
-                (Some(result), Some(q))
-            },
-            _ => (None, None),
-        };
-
-        let bit_width = params.represented_field_modulus_bitlength;
-        let coarsely = params.allow_coarse_allocation_for_temp_values;
-        let res = Self::alloc_for_known_bitwidth(cs, result_wit, bit_width, params, false)?;
-
-        // estimate q bit width: result * den = q * p + self, 
-        // so we say that self min value == 0 (as it goes into LHS with - sign) and worst case for q is
-        let q_max_value = {
-            let tmp = res.get_maximal_possible_stored_value() * den.get_maximal_possible_stored_value();
-            tmp / &params.represented_field_modulus
-        };
-        let q_max_bits = q_max_value.bits();
-        let q_elem = Self::alloc_for_known_bitwidth(cs, q_wit, q_max_bits as usize, params, coarsely)?;
-
-        Self::constraint_fma(cs, &den, &res, &[], &q_elem, &num)?;
-        Ok(res)
+        if all_constants {
+            let res = Self::constant(final_value.unwrap(), params);
+            Ok(res)
+        }
+        else {
+            let res = Self::alloc(cs, final_value, params)?;
+            let chain = chain.negate();
+            Self::constraint_fma(cs, &res, &den, chain)?;
+            Ok(res)
+        }
     }
 
     #[track_caller]
     pub fn mul_with_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, a: &Self, b: &Self, chain: &FieldElementsChain<'a, E, F>
+        cs: &mut CS, a: &Self, b: &Self, mut chain: FieldElementsChain<'a, E, F>,
     ) -> Result<Self, SynthesisError> {
         let params = &a.representation_params;
-        assert!(Self::check_params_equivalence(a, b));
-        assert!(chain.elems_to_add.iter().all(|x| Self::check_params_equivalence(a, x)));
-        assert!(chain.elems_to_sub.iter().all(|x| Self::check_params_equivalence(a, x)));
-
-        // we are goint to enforce the following relation:
-        // a * b + /sum positive_chain_elements - /sum negative_chain_elements = q * p + r (*)
-        // however, there may be situations when the lhs term is negative: take a = 0, and chain with only negative
-        // and no positive elements
-        // one of possible solutions would be to transform (*) into equaivalent representation:
-        // a * b + /sum positive_chain_elements = /sum negative_chain_elements = sign_bit * q * p + r
-        // but this approach is expensive in terms of constrains as there will be additional multiplications 
-        // of q by the sign (which would be an allocated bit) and we would pay additional multiplication gate for 
-        // EVERY limb of q
-        // we take another way, borrowing the approach taken in sub function: instead of simply subtracting 
-        // /sum negative_chain_elements = x we instead add (k * p - x) (**), where k - is constant, taken in such a way
-        // that the difference (**) is positive is for every value of x (that's one of the reasons, 
-        // we are tracking the maximal possible of FieldElement)
-        // this apporach reduces the problem of handling negative chain elements to ONE constant addition 
-        // in constaint system. Nobody could deny that this price is neglectable!
-
         let mut final_value = a.get_field_value();
         final_value = final_value.mul(&b.get_field_value());
-        for r in chain.elems_to_add.iter() {
-            final_value = final_value.add(&r.get_field_value());
-        }
-        for r in chain.elems_to_sub.iter() {
-            final_value = final_value.sub(&r.get_field_value());
-        }
-
-        let mut raw_value_is_none = false;
-        let mut raw_value = BigUint::from(0u64);
-        match (a.get_raw_value(), b.get_raw_value()) {
-            (Some(t), Some(m)) => raw_value += t * m,
-            _ => raw_value_is_none = true,
-        }
-        let mut all_constants = a.is_constant() && b.is_constant();
+        final_value = final_value.add(&chain.get_field_value());
+        let all_constants = a.is_constant() && b.is_constant() && chain.is_constant();
         
-        // deal with negative elements and use the trick we have explained at the start of this fucntion
-        let (const_delta_value, const_delta_chunks) = {
-            let mut limbs_max_vals = vec![BigUint::zero(); params.num_binary_limbs];
-            let mut max_val = BigUint::zero();
-            for r in chain.elems_to_sub.iter() {
-                max_val += r.get_maximal_possible_stored_value();
-                for (r_limb, out_limb) in r.binary_limbs.iter().zip(limbs_max_vals.iter_mut()) {
-                    *out_limb += r_limb.max_value();
-                }
-            }
-            Self::subtraction_helper(max_val, limbs_max_vals, params)
-        };
-        raw_value += const_delta_value;
-
-        for r in chain.elems_to_add.iter() {
-            if let Some(v) = r.get_raw_value() {
-                raw_value += v;
-            } else {
-                raw_value_is_none = true;
-            }
-            all_constants = all_constants & r.is_constant();
-        }
-
-        for r in chain.elems_to_sub.iter() {
-            if let Some(v) = r.get_raw_value() {
-                raw_value -= v;
-            } else {
-                raw_value_is_none = true;
-            }
-            all_constants = all_constants & r.is_constant();
-        }
-       
-        let (q, r) = raw_value.div_rem(&params.represented_field_modulus);
         if all_constants {
-            let r = biguint_to_fe::<F>(r);
-            let new = Self::constant(r, params);
-            return Ok(new);
+            let r = Self::constant(final_value.unwrap(), params);
+            Ok(r)
         }
-
-        // so we constraint a * b + [to_add] = q * p + r
-        // we we estimate q width
-        let mut lhs_max_value = a.get_maximal_possible_stored_value() * b.get_maximal_possible_stored_value();
-        for el in chain.elems_to_add.iter() {
-            lhs_max_value += el.get_maximal_possible_stored_value();
+        else {
+            let r = Self::alloc(cs, final_value, params)?;
+            chain.add_neg_term(&r);
+            Self::constraint_fma(cs, &a, &b, chain)?;
+            Ok(r)
         }
-        let q_max_value = lhs_max_value / &params.represented_field_modulus;
-        let q_max_bits = q_max_value.bits();
-
-        let (q, r) = if raw_value_is_none { (None, None) } else { (Some(q), Some(r)) };
-        let coarsely = params.allow_coarse_allocation_for_temp_values;
-        let r_max_bits = params.represented_field_modulus_bitlength;
-
-        let q_elem = Self::alloc_for_known_bitwidth(cs, q, q_max_bits as usize, params, coarsely)?;
-        let r_elem = Self::alloc_for_known_bitwidth(cs, r, r_max_bits as usize, params, false)?;
-        Self::constraint_fma(cs, &a, &b, &chain.elems_to_add[..], &q_elem, &r_elem)?;
-
-        Ok(r_elem)
     }
 
     #[track_caller]
@@ -1452,8 +1374,93 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     #[track_caller]
     fn constraint_fma<CS: ConstraintSystem<E>>(
-        cs: &mut CS, mul_a: &Self, mul_b: &Self, addition_elements: &[Self], quotient: &Self, remainder: &Self
-    ) -> Result<(), SynthesisError> {
+        cs: &mut CS, mul_a: &Self, mul_b: &Self, chain: FieldElementsChain<'a, E, F>
+    ) -> Result<(), SynthesisError> {  
+        assert!(Self::check_params_equivalence(a, b));
+        assert!(chain.elems_to_add.iter().all(|x| Self::check_params_equivalence(a, x)));
+        assert!(chain.elems_to_sub.iter().all(|x| Self::check_params_equivalence(a, x)));
+
+        // we are goint to enforce the following relation:
+        // a * b + /sum positive_chain_elements - /sum negative_chain_elements = q * p (*)
+        // however, there may be situations when the lhs term is negative: take a = 0, and chain with only negative
+        // and no positive elements
+        // one of possible solutions would be to transform (*) into equaivalent representation:
+        // a * b + /sum positive_chain_elements = /sum negative_chain_elements = sign_bit * q * p
+        // but this approach is expensive in terms of constrains as there will be additional multiplications 
+        // of q by the sign (which would be an allocated bit) and we would pay additional multiplication gate for 
+        // EVERY limb of q
+        // we take another way, borrowing the approach taken in sub function: instead of simply subtracting 
+        // /sum negative_chain_elements = x we instead add (k * p - x) (**), where k - is constant, taken in such a way
+        // that the difference (**) is positive is for every value of x (that's one of the reasons, 
+        // we are tracking the maximal possible of FieldElement)
+        // this apporach reduces the problem of handling negative chain elements to ONE constant addition 
+        // in constaint system. Nobody could deny that this price is neglectable!
+
+        let mut raw_value_is_none = false;
+        let mut raw_value = BigUint::from(0u64);
+        match (a.get_raw_value(), b.get_raw_value()) {
+            (Some(t), Some(m)) => raw_value += t * m,
+            _ => raw_value_is_none = true,
+        }
+        let mut all_constants = a.is_constant() && b.is_constant();
+        
+        // deal with negative elements and use the trick we have explained at the start of this fucntion
+        let (const_delta_value, const_delta_chunks) = {
+            let mut limbs_max_vals = vec![BigUint::zero(); params.num_binary_limbs];
+            let mut max_val = BigUint::zero();
+            for r in chain.elems_to_sub.iter() {
+                max_val += r.get_maximal_possible_stored_value();
+                for (r_limb, out_limb) in r.binary_limbs.iter().zip(limbs_max_vals.iter_mut()) {
+                    *out_limb += r_limb.max_value();
+                }
+            }
+            Self::subtraction_helper(max_val, limbs_max_vals, params)
+        };
+        raw_value += const_delta_value;
+
+        for r in chain.elems_to_add.iter() {
+            if let Some(v) = r.get_raw_value() {
+                raw_value += v;
+            } else {
+                raw_value_is_none = true;
+            }
+            all_constants = all_constants & r.is_constant();
+        }
+
+        for r in chain.elems_to_sub.iter() {
+            if let Some(v) = r.get_raw_value() {
+                raw_value -= v;
+            } else {
+                raw_value_is_none = true;
+            }
+            all_constants = all_constants & r.is_constant();
+        }
+       
+        let (q, r) = raw_value.div_rem(&params.represented_field_modulus);
+        if all_constants {
+            let r = biguint_to_fe::<F>(r);
+            let new = Self::constant(r, params);
+            return Ok(new);
+        }
+
+        // so we constraint a * b + [to_add] = q * p + r
+        // we we estimate q width
+        let mut lhs_max_value = a.get_maximal_possible_stored_value() * b.get_maximal_possible_stored_value();
+        for el in chain.elems_to_add.iter() {
+            lhs_max_value += el.get_maximal_possible_stored_value();
+        }
+        let q_max_value = lhs_max_value / &params.represented_field_modulus;
+        let q_max_bits = q_max_value.bits();
+
+        let (q, r) = if raw_value_is_none { (None, None) } else { (Some(q), Some(r)) };
+        let coarsely = params.allow_coarse_allocation_for_temp_values;
+        let r_max_bits = params.represented_field_modulus_bitlength;
+
+        let q_elem = Self::alloc_for_known_bitwidth(cs, q, q_max_bits as usize, params, coarsely)?;
+        let r_elem = Self::alloc_for_known_bitwidth(cs, r, r_max_bits as usize, params, false)?;
+        Self::constraint_fma(cs, &a, &b, &chain, & &q_elem, &r_elem, &const_delta_value, &const_delta_chunks)?;
+
+
         let params = &mul_a.representation_params;
         let bin_limb_width = params.binary_limb_width;
         let mut two = E::Fr::one();

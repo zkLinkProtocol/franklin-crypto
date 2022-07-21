@@ -52,6 +52,11 @@ use crate::plonk::circuit::bigint_new::*;
 pub struct AffinePoint<'a, E: Engine, G: GenericCurveAffine> where <G as GenericCurveAffine>::Base: PrimeField {
     pub x: FieldElement<'a, E, G::Base>,
     pub y: FieldElement<'a, E, G::Base>,
+    // the used paradigm is zero abstraction: we won't pay for this flag if it is never used and 
+    // all our points are regular (i.e. not points at infinity)
+    // for this purpose we introduce lazy_select
+    // if current point is actually a point at infinity than x, y may contain any values and are actually meaningless
+    //pub is_infinity: Boolean,
     pub value: Option<G>,
 }
 

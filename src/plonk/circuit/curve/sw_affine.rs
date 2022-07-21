@@ -1249,8 +1249,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         let params = self.x.representation_params;
         let beta = FieldElement::new_constant(endomorphism_params.beta_g1, params);
 
-        let value = self.value;
-        let endo_value = value.map(|el| endomorphism_params.apply_to_g1_point(el));
+        let endo_value = self.value.map(|el| endomorphism_params.apply_to_g1_point(el));
 
         let x = self.x.clone();
         let y = self.y.clone();
@@ -1264,18 +1263,10 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             value: endo_value,
         };
 
-        let this_value = self.get_value();
-        let this_copy = self.clone();
+        let this_value = self.get_value().unwrap();
+        let other_value = q_endo.get_value().unwrap();
 
-        let other_copy = q_endo.clone();
-        let other_value = q_endo.get_value();
-
-
-        let bit_limit = if let Some(limit) = bit_limit {
-            Some(limit/2)
-        } else {
-            Some(127 as usize)
-        };
+        let bit_limit = Some(127 as usize);
 
 
         let mut minus_one = E::Fr::one();
@@ -1288,7 +1279,6 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         decomposition_lc.add_assign_number_with_coeff(&k2, endomorphism_params.lambda);
         decomposition_lc.add_assign_number_with_coeff(&scalar, E::Fr::one());
         decomposition_lc.add_assign_number_with_coeff(&k1, minus_one);
-
         decomposition_lc.enforce_zero(cs)?;
 
         let v_1 = k1.get_variable();
@@ -1306,11 +1296,11 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
         let (mut acc_1, (_, _)) = self.add_unequal(cs, generator.clone())?;
 
-        let mut x_1 = this_copy.clone().x;
-        let y_1 = this_copy.clone().y;
+        let mut x_1 = self.clone().x;
+        let y_1 = self.clone().y;
 
-        let mut x_2 = other_copy.x;
-        let y_2 = other_copy.y;
+        let mut x_2 = q_endo.clone().x;
+        let y_2 = q_endo.clone().y;
 
         let entries_1_without_first_and_last = &entries_1[1..(entries_1.len() - 1)];
         let entries_1_without_first_and_last_vec: Vec<_> = entries_1_without_first_and_last.iter().collect(); 
@@ -1324,10 +1314,11 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
         let (mut acc, (_, _)) = acc_1.add_unequal(cs, q_endo.clone())?;
         let cycle = 2^window; 
+
         //precompute 
         use plonk::circuit::curve::point_ram::Memory;
         let mut memory =  Memory::new();
-        let mut count = 1 as u64;
+        let mut count = 0 as u64;
         for i in 0..cycle{
             for j in 0..cycle{
                 let flag_1 = Boolean::Constant(i!=0);
@@ -1368,7 +1359,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
                     y: selected_y_2,
                     value: t_value_2,
                 };
-                let (c, (_, _)) = t_1.clone().add_unequal(cs, t_2.clone())?;
+                let (c, (_, _)) = this_value.clone().add_unequal(cs, other_value.clone())?;
                 use plonk::circuit::hashes_with_tables::utils::u64_to_ff;
 
                 let number: E::Fr = u64_to_ff(count);

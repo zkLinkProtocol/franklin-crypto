@@ -1427,7 +1427,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         };
         let const_limbs : Vec<_> = const_delta_chunks.into_iter().map(|x| Limb::<E>::constant_from_biguint(x)).collect();
 
-        raw_value.as_mut().map(|x| *x += const_delta_value);
+        raw_value.as_mut().map(|x| *x += const_delta_value.clone());
         raw_value = chain.add_raw_value_to_accumulator(raw_value);
         let q = raw_value.map(|x| {
             let (q, r) = x.div_rem(&params.represented_field_modulus);
@@ -1574,7 +1574,11 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         
         // now much more trivial part - multiply elements modulo base field
         // a * b + \sum positive_chain_terms - /sum negative_chain_terms - q * p == 0 (mod base_field)
+        let residue_to_add = const_delta_value % &params.native_field_modulus;
+        let constant_as_fe = biguint_to_fe::<E::Fr>(residue_to_add.clone());
+
         let mut lc = AmplifiedLinearCombination::zero();
+        lc.add_assign_constant(constant_as_fe);
         lc.add_assign_product_of_terms(&a.base_field_limb, &b.base_field_limb);
         for elem in chain.elems_to_add.iter() {
             lc.add_assign_term(&elem.base_field_limb)

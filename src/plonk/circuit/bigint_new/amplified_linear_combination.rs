@@ -398,6 +398,12 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
         self.add_assign_product_of_terms_with_coeff(a, b, E::Fr::one())
     }
 
+    pub fn sub_assign_product_of_terms(&mut self, a: &Term<E>, b: &Term<E>) {
+        let mut minus_one = E::Fr::one();
+        minus_one.negate();
+        self.add_assign_product_of_terms_with_coeff(a, b, minus_one)
+    }
+
     pub fn add_assign_product_of_terms_with_coeff(&mut self, a: &Term<E>, b: &Term<E>, coeff: E::Fr) {
         let mut a_scaled = a.clone();
         a_scaled.scale(&coeff);

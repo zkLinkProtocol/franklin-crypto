@@ -16,7 +16,7 @@ use crate::plonk::circuit::SomeField;
 // this variable is used in fma implementation: it is set to the maximal numver of bits on which 
 // new_of * shift + /sum_{i+j = k} a[i] * b[j] + \sum addition_elements[k] may overflow the limb width border
 // NB: this value is chosen more or less randomly - may be it is better to add some heuristics here
-const MAX_INTERMIDIATE_OVERFLOW_WIDTH : usize = 16;
+const MAX_INTERMIDIATE_OVERFLOW_WIDTH : usize = 8;
 
 // TODO: coarsely is completely unnecessary - get rid of it everywhere!
 // There is no problem to pay for one addtional constraint on exact allocation
@@ -390,11 +390,9 @@ pub fn slice_some_into_limbs_non_exact(
 }
 
 #[track_caller]
-pub fn slice_into_limbs_non_exact(
-    value: BigUint, max_width: usize, limb_width: usize
-) -> (Vec<BigUint>, usize) {
+pub fn slice_into_limbs_non_exact(value: BigUint, total_width: usize, limb_width: usize) -> (Vec<BigUint>, usize) {
     // here msl stands for Most Significant Limb
-    let (chunks, msl_width) = slice_some_into_limbs_non_exact(Some(value), max_width, limb_width);
+    let (chunks, msl_width) = slice_some_into_limbs_non_exact(Some(value), total_width, limb_width);
     let chunks : Vec<BigUint> = chunks.into_iter().map(|x| x.unwrap()).collect();
     (chunks, msl_width) 
 } 
@@ -780,7 +778,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     #[track_caller]
     // negates if true
-    // TODO: we could create optimized conditional negation
+    // TODO: we could create optimized conditional negation by p +/ sign_bit * x
     pub fn conditionally_negate<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
@@ -888,14 +886,17 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     pub fn enforce_if_normalized<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
         if self.is_constant() { return Ok(()) }
         let params = self.representation_params;
-        let shift = params.shift_left_by_limb_constant;
         let mut minus_one = E::Fr::one();
         minus_one.negate();
 
         // msl here stands for Most Significant Limb
         let (modulus_limbs, msl_width) = slice_into_limbs_non_exact(
-            params.represented_field_modulus.clone(), params.binary_limb_width, params.num_binary_limbs
+            params.represented_field_modulus.clone(), 
+            params.represented_field_modulus_bitlength, params.binary_limb_width
         ); 
+
+        let ordinary_shift = params.shift_left_by_limb_constant;
+        let msl_shift = biguint_to_fe::<E::Fr>(BigUint::one() << msl_width);
 
         let mut borrow = Limb::zero();
         let mut is_const_term = true;
@@ -903,20 +904,23 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         for (_is_first, is_last, (l, m)) in  iter {
             // l - borrow - m + new_borrow * shift = r
             // check if l >= borrow + m to fing the value of new_borrow
+            let width = if is_last { msl_width } else { params.binary_limb_width };
             let (new_borrow_wit, r_wit) = match (l.get_value_as_biguint(), borrow.get_value_as_biguint()) {
                 (Some(l), Some(borrow)) => {
                     if l >= borrow.clone() + m {
                         (Some(false), Some(l - borrow - m))
                     } else {
-                        (Some(true), Some((BigUint::one() << params.binary_limb_width) + l - borrow - m))
+                        (Some(true), Some((BigUint::one() << width) + l - borrow - m))
                     }
                 }
                 (_, _) => (None, None)
             }; 
             is_const_term &= l.is_constant(); 
             
-            let b = if is_const_term || is_last {
-                Boolean::constant(if is_last { true } else { new_borrow_wit.unwrap() as bool })
+            let b = if is_last {
+                Boolean::constant(true)
+            } else if is_const_term {
+                Boolean::constant(new_borrow_wit.unwrap() as bool)
             } else {
                 Boolean::Is(AllocatedBit::alloc(cs, new_borrow_wit.map(|x| x as bool))?)
             };
@@ -926,17 +930,18 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 Num::Constant(biguint_to_fe::<E::Fr>(r_wit.unwrap()))
             } else {
                 let var = AllocatedNum::alloc(cs, || r_wit.map(|x| biguint_to_fe::<E::Fr>(x)).grab())?;
-                let width = if is_last { msl_width } else { params.binary_limb_width };
                 constraint_bit_length_with_strategy(cs, &var, width, params.range_check_strategy)?;
                 Num::Variable(var) 
             };
             let r_term = Term::<E>::from_num(r);
 
             // enforce constraint: l - borrow - m + new_borrow * shift - r = 0
+            let shift = if is_last { msl_shift } else { ordinary_shift };
             let mut lc = LinearCombination::zero();
             lc.add_assign_term(&l.term);
             lc.add_assign_term_with_coeff(&borrow.term, minus_one.clone());
-            lc.add_assign_term_with_coeff(&new_borrow, shift.clone());
+            lc.sub_assign_constant(biguint_to_fe::<E::Fr>(m.clone()));
+            lc.add_assign_term_with_coeff(&new_borrow, shift);
             lc.add_assign_term_with_coeff(&r_term, minus_one.clone());
             lc.enforce_zero(cs)?;
             
@@ -1342,7 +1347,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // construct first_gate:
         let mut lc = AmplifiedLinearCombination::zero();
         lc.add_assign_product_of_terms(&a, &this.binary_limbs[0].term);
-        lc.add_assign_product_of_terms(&a, &other.binary_limbs[0].term);
+        lc.sub_assign_product_of_terms(&a, &other.binary_limbs[0].term);
         lc.sub_assign_constant(E::Fr::one());
         let (tmp, num_gates) = lc.into_num_ext(cs)?;
         assert_eq!(num_gates, 1);
@@ -1413,7 +1418,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // now we need to select t - multiple of range check granularity to be large enough, so that:
         // max_value < 2^t * native_field_modulus
         let granularity = params.range_check_granularity;
-        println!("range check granularity: {}", granularity);
         let mut rns_binary_modulus_width = round_up(params.represented_field_modulus_bitlength, granularity);
         let mut dynamic_binary_modulus = BigUint::one() << rns_binary_modulus_width; 
         while max_value >= dynamic_binary_modulus.clone() * params.native_field_modulus.clone() {
@@ -1447,7 +1451,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let mut left_border : usize = 0;
         let mut input_carry = Term::zero();
         let p_limbs = Self::split_const_into_limbs(params.represented_field_modulus.clone(), params);
-        println!("rns_modulus_width_in_limbs: {}", rns_binary_modulus_width_in_limbs);
+       
         while left_border < rns_binary_modulus_width_in_limbs {
             let mut lc = AmplifiedLinearCombination::zero();
             lc.add_assign_term(&input_carry);
@@ -1480,16 +1484,21 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 lc.sub_assign_term_with_coeff(&limb.term, shifts[i - left_border]);
             }
 
-            lc.scale(&carry_shift_inverse);
+            let limb_range = right_border - left_border;
+            let scale_coef = if limb_range == limbs_per_cycle {
+                carry_shift_inverse
+            } else {
+                shifts[limb_range].inverse().unwrap()
+            };
+            lc.scale(&scale_coef);
+
             input_carry = Term::from_num(lc.into_num(cs)?);
-            println!("input carry: {}", input_carry.get_value().unwrap());
             // carry could be both positive and negative but in any case the bitwidth of it absolute value is 
             // [0, chunk_bitlen + MAX_INTERMIDIATE_OVERFLOW_WIDTH]
             // input_carry = +/- abs_carry * shift;
             let (abs_flag_wit, abs_wit) = match input_carry.get_value() {
                 Some(x) => {
                     let x_as_biguint = fe_to_biguint(&x);
-                    println!("x bitwidth: {}", x_as_biguint.bits());
                     if x_as_biguint <= BigUint::one() << (bin_limb_width + MAX_INTERMIDIATE_OVERFLOW_WIDTH) {
                         (Some(true), Some(x.clone()))
                     } else {
@@ -1503,7 +1512,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             
             let abs_flag = Term::from_boolean(&Boolean::Is(AllocatedBit::alloc(cs, abs_flag_wit)?)); 
             let abs_carry = AllocatedNum::alloc(cs, || abs_wit.grab())?;
-            println!("abs carry: {}", abs_carry.get_value().unwrap());
             constraint_bit_length_ext_with_strategy(
                 cs, &abs_carry, bin_limb_width + MAX_INTERMIDIATE_OVERFLOW_WIDTH, params.range_check_strategy, true
             )?;
@@ -1711,7 +1719,7 @@ mod test {
         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
         let params = RnsParameters::<Bn256, Fq>::new_optimal(&mut cs, 64usize);
-        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+        let mut rng = rand::thread_rng();
 
         let a_f: Fq = rng.gen();
         let b_f: Fq = rng.gen();
@@ -1749,12 +1757,6 @@ mod test {
         let r_raw = &r.binary_limbs;
         let p_raw = FieldElement::split_const_into_limbs(params.represented_field_modulus.clone(), &params);
 
-        println!("a raw val: {}", a.get_raw_value().unwrap());
-        println!("b raw val: {}", b.get_raw_value().unwrap());
-        println!("q raw val: {}", q.get_raw_value().unwrap());
-        println!("r raw val: {}", r.get_raw_value().unwrap());
-        println!("p raw val: {}", params.represented_field_modulus);
-
         // construct shifts:
         let mut shifts = Vec::with_capacity(limbs_per_window as usize);
         let shift = params.shift_left_by_limb_constant.clone();
@@ -1765,7 +1767,6 @@ mod test {
         }
         shifts.push(el);
         let carry_shift_inverse = shifts[limbs_per_window].inverse().unwrap();
-        println!("limbs per window: {}, carry_inv: {}", limbs_per_window, carry_shift_inverse);
 
         let mut input_carry = Term::zero();
         let mut left_border : usize = 0;
@@ -1811,7 +1812,6 @@ mod test {
             // [0, chunk_bitlen + MAX_INTERMIDIATE_OVERFLOW_WIDTH]
             // input_carry = +/- abs_carry * shift;
             let mut x = input_carry.get_value().unwrap();
-            println!("x value: {}", x);
             let (abs_flag_wit, abs_wit) = {
                 let x_as_biguint = fe_to_biguint(&x);
                 if x_as_biguint <= BigUint::one() << carry_bitlen {
@@ -1824,7 +1824,6 @@ mod test {
             
             let abs_flag = Term::from_boolean(&Boolean::Is(AllocatedBit::alloc(&mut cs, abs_flag_wit).unwrap())); 
             let abs_carry = AllocatedNum::alloc(&mut cs, || abs_wit.grab()).unwrap();
-            println!("abs_carry: {}", abs_carry.get_value().unwrap());
             constraint_bit_length_ext_with_strategy(
                 &mut cs, &abs_carry, carry_bitlen, params.range_check_strategy, true
             ).unwrap();
@@ -1875,11 +1874,29 @@ mod test {
       
         assert!(cs.is_satisfied()); 
     }
+
+    #[test]
+    fn testing_remaining_stuff() {
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let params = RnsParameters::<Bn256, Fq>::new_optimal(&mut cs, 64usize);
+        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+
+        let x: Fq = rng.gen();
+        let y: Fq = rng.gen();
+        let mut a = FieldElement::alloc(&mut cs, Some(x), &params).unwrap();
+        let mut b = FieldElement::alloc(&mut cs, Some(y), &params).unwrap();
+
+        let result = FieldElement::equals(&mut cs, &mut a, &mut b).unwrap();
+        assert!(cs.is_satisfied()); 
+    }
 }
 
-// functions remaining to check: is_zero, normalize, inverse, mul_with_chain (general_case),
-// div_with_chain (general_case), enfrorce_not_equal, equals, decompose_into_skewed_repr
-// also - check the actual length of carry on fma - may be it could be reduced to 16 bits
+// functions remaining to check: mul_with_chain (general_case),
+// div_with_chain (general_case), 
+
+// ALSO ADD assertion for possible overflows of MAX_INTERMIDIATE_OVERFLOW_WIDTH
+// add remove signed/unsigned carry when it is not necess
 
 
     

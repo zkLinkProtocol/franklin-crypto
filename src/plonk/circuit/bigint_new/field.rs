@@ -951,6 +951,44 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok(())
     }
 
+    // helper function used in sub, mul_with_chain and div_with_chain functions:
+    // instead of substracting x we compute the least possible multiple of represented_field_modulus = k,
+    // such that k - x is nonzero
+    // the function returns k - x and chunk division of k - x
+    #[track_caller]
+    fn subtraction_helper(
+        max_val: BigUint, limbs_max_vals: Vec<BigUint>, params: &RnsParameters<E, F>
+    ) -> (BigUint, Vec<BigUint>) {
+        let mut multiples_to_add_at_least = params.represented_field_modulus.clone();
+        while multiples_to_add_at_least < max_val {
+            multiples_to_add_at_least += params.represented_field_modulus.clone();
+        }
+
+        let mut const_constituent_chunks = Vec::with_capacity(params.num_binary_limbs);
+        let mut tmp = multiples_to_add_at_least.clone();
+
+        for (_is_first, is_last, limb) in limbs_max_vals.into_iter().identify_first_last() {
+            if !is_last { 
+                let bitlen = limb.bits();
+                let modulus = BigUint::one() << bitlen;
+                let rem = tmp.clone() % modulus.clone();
+                if rem >= limb {
+                    const_constituent_chunks.push(rem);
+                    tmp >>= bitlen;
+                } else {
+                    let chunk = rem + modulus;
+                    const_constituent_chunks.push(chunk);
+                    tmp >>= bitlen;
+                    tmp -= 1u64;
+                }
+            } else { 
+                const_constituent_chunks.push(tmp.clone());
+            };
+        }
+
+        (multiples_to_add_at_least, const_constituent_chunks)
+    }
+
     #[track_caller]
     pub fn add_with_reduction<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, other: &Self, mode: ReductionStatus
@@ -1071,33 +1109,9 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         // now we can determine how many moduluses of the represented field we have to add to never underflow
         let max_val = other.get_maximal_possible_stored_value();
-        let mut multiples_to_add_at_least = params.represented_field_modulus.clone();
-        while multiples_to_add_at_least < max_val {
-            multiples_to_add_at_least += params.represented_field_modulus.clone();
-        }
-
-        let mut const_constituent_chunks = Vec::with_capacity(params.num_binary_limbs);
-        let mut tmp = multiples_to_add_at_least.clone();
-
-        for (_is_first, is_last, var_limb) in other.binary_limbs.iter().identify_first_last() {
-            if !is_last { 
-                let bitlen = var_limb.max_value().bits();
-                let modulus = BigUint::one() << bitlen;
-                let rem = tmp.clone() % modulus.clone();
-                if rem >= var_limb.max_value() {
-                    const_constituent_chunks.push(rem);
-                    tmp >>= bitlen;
-                } else {
-                    let chunk = rem + modulus;
-                    const_constituent_chunks.push(chunk);
-                    tmp >>= bitlen;
-                    tmp -= 1u64;
-                }
-            } else { 
-                const_constituent_chunks.push(tmp.clone());
-            };
-        }
-
+        let limbs_max_vals = other.binary_limbs.iter().map(|x| x.max_value()).collect::<Vec<BigUint>>();
+        let (multiples_to_add_at_least, const_constituent_chunks) = Self::subtraction_helper(max_val, limbs_max_vals, params);
+        
         // create new limbs
         let mut new_binary_limbs = vec![];
         let iter = itertools::multizip((&self.binary_limbs, &other.binary_limbs, const_constituent_chunks));
@@ -1228,11 +1242,31 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let params = &a.representation_params;
         assert!(Self::check_params_equivalence(a, b));
         assert!(chain.elems_to_add.iter().all(|x| Self::check_params_equivalence(a, x)));
+        assert!(chain.elems_to_sub.iter().all(|x| Self::check_params_equivalence(a, x)));
+
+        // we are goint to enforce the following relation:
+        // a * b + /sum positive_chain_elements - /sum negative_chain_elements = q * p + r (*)
+        // however, there may be situations when the lhs term is negative: take a = 0, and chain with only negative
+        // and no positive elements
+        // one of possible solutions would be to transform (*) into equaivalent representation:
+        // a * b + /sum positive_chain_elements = /sum negative_chain_elements = sign_bit * q * p + r
+        // but this approach is expensive in terms of constrains as there will be additional multiplications 
+        // of q by the sign (which would be an allocated bit) and we would pay additional multiplication gate for 
+        // EVERY limb of q
+        // we take another way, borrowing the approach taken in sub function: instead of simply subtracting 
+        // /sum negative_chain_elements = x we instead add (k * p - x) (**), where k - is constant, taken in such a way
+        // that the difference (**) is positive is for every value of x (that's one of the reasons, 
+        // we are tracking the maximal possible of FieldElement)
+        // this apporach reduces the problem of handling negative chain elements to ONE constant addition 
+        // in constaint system. Nobody could deny that this price is neglectable!
 
         let mut final_value = a.get_field_value();
         final_value = final_value.mul(&b.get_field_value());
         for r in chain.elems_to_add.iter() {
             final_value = final_value.add(&r.get_field_value());
+        }
+        for r in chain.elems_to_sub.iter() {
+            final_value = final_value.sub(&r.get_field_value());
         }
 
         let mut raw_value_is_none = false;
@@ -1241,8 +1275,22 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             (Some(t), Some(m)) => raw_value += t * m,
             _ => raw_value_is_none = true,
         }
-        
         let mut all_constants = a.is_constant() && b.is_constant();
+        
+        // deal with negative elements and use the trick we have explained at the start of this fucntion
+        let (const_delta_value, const_delta_chunks) = {
+            let mut limbs_max_vals = vec![BigUint::zero(); params.num_binary_limbs];
+            let mut max_val = BigUint::zero();
+            for r in chain.elems_to_sub.iter() {
+                max_val += r.get_maximal_possible_stored_value();
+                for (r_limb, out_limb) in r.binary_limbs.iter().zip(limbs_max_vals.iter_mut()) {
+                    *out_limb += r_limb.max_value();
+                }
+            }
+            Self::subtraction_helper(max_val, limbs_max_vals, params)
+        };
+        raw_value += const_delta_value;
+
         for r in chain.elems_to_add.iter() {
             if let Some(v) = r.get_raw_value() {
                 raw_value += v;
@@ -1250,9 +1298,18 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 raw_value_is_none = true;
             }
             all_constants = all_constants & r.is_constant();
-        } 
-        let (q, r) = raw_value.div_rem(&params.represented_field_modulus);
+        }
 
+        for r in chain.elems_to_sub.iter() {
+            if let Some(v) = r.get_raw_value() {
+                raw_value -= v;
+            } else {
+                raw_value_is_none = true;
+            }
+            all_constants = all_constants & r.is_constant();
+        }
+       
+        let (q, r) = raw_value.div_rem(&params.represented_field_modulus);
         if all_constants {
             let r = biguint_to_fe::<F>(r);
             let new = Self::constant(r, params);
@@ -1778,6 +1835,13 @@ mod test {
             let mut lc = AmplifiedLinearCombination::zero();
             lc.add_assign_term(&input_carry);
             let right_border = std::cmp::min(left_border + limbs_per_window, total_num_of_limbs);
+
+            // we optimistically assume that all intermidiate overflows do not exceed special
+            // apriori chosen constant - MAX_INTERMIDIATE_OVERFLOW_WIDTH
+            // however, we are a "validium" solution, so we are going to check that 
+            // all overflows are indeed small enough
+            let mut dbg_lhs_max_value = BigUint::zero();
+            let mut dhg_rhs_max_value = BigUint::zero();
             
             // add terms like a[i] * b[j], where i+j /in [left_border, right_border)
             let iter = get_limbs_product_in_diapason(a_raw, b_raw, left_border, right_border);
@@ -1895,8 +1959,6 @@ mod test {
 // functions remaining to check: mul_with_chain (general_case),
 // div_with_chain (general_case), 
 
-// ALSO ADD assertion for possible overflows of MAX_INTERMIDIATE_OVERFLOW_WIDTH
-// add remove signed/unsigned carry when it is not necess
 
 
     

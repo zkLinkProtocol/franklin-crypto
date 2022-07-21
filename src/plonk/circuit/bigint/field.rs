@@ -34,7 +34,7 @@ use super::super::allocated_num::{AllocatedNum, Num};
 use super::super::linear_combination::LinearCombination;
 use super::super::simple_term::Term;
 use super::super::boolean::{Boolean, AllocatedBit};
-use crate::plonk::circuit::SomeField;
+use crate::plonk::circuit::SomeArithmetizable;
 
 use super::*;
 use super::bigint::*;

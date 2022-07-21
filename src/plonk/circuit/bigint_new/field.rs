@@ -6,13 +6,14 @@ use num_integer::Integer;
 use num_derive::FromPrimitive;    
 use num_traits::FromPrimitive;
 use std::ops::ControlFlow;
+use std::os::raw;
 
 use num_bigint::BigUint;
 use super::super::allocated_num::{AllocatedNum, Num};
 use super::super::linear_combination::LinearCombination;
 use super::super::simple_term::Term;
 use crate::plonk::circuit::hashes_with_tables::utils::IdentifyFirstLast;
-use crate::plonk::circuit::SomeField;
+use crate::plonk::circuit::SomeArithmetizable;
 
 
 // TODO and NB: the code here is very tight and dense. Every line should be carefully reviewed and double checked
@@ -354,11 +355,46 @@ impl<'a, E: Engine, F: PrimeField> FieldElementsChain<'a, E, F> {
         pos_total_sum.sub(&neg_total_sum)
     }
 
+    pub fn get_maximal_positive_stored_value(&self) -> BigUint {
+        self.elems_to_add.iter().fold(BigUint::zero(), |acc, x| acc + x.get_maximal_possible_stored_value())
+    } 
+
+    pub fn get_maximal_negative_stored_value(&self) -> BigUint {
+        self.elems_to_sub.iter().fold(BigUint::zero(), |acc, x| acc + x.get_maximal_possible_stored_value())
+    }
+
     pub fn negate(self) -> Self {
         let FieldElementsChain { elems_to_add, elems_to_sub } = self;
         FieldElementsChain {
             elems_to_add: elems_to_sub,
             elems_to_sub: elems_to_add
+        }
+    } 
+
+    fn add_raw_value_to_accumulator(&self, init_acc_val: Option<BigUint>) -> Option<BigUint> {
+        if init_acc_val.is_none() {
+            return None;
+        }
+
+        let final_acc_value = self.elems_to_add.iter().map(|x| (x, true)).chain(
+            self.elems_to_sub.iter().map(|x| (x, false))
+        ) .try_fold(init_acc_val.unwrap(), |prev, (x, is_pos_term)| {
+            if let Some(val) = x.get_raw_value() {
+                let next = match is_pos_term { 
+                    true => prev + val,
+                    false => {
+                        assert!(prev >= val);
+                        prev - val
+                    },
+                };
+                ControlFlow::Continue(next)
+            } else {
+                ControlFlow::Break(prev)
+            }
+        });
+        match final_acc_value {
+            ControlFlow::Break(_) => None,
+            ControlFlow::Continue(x) => Some(x)
         }
     } 
 }
@@ -675,15 +711,19 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     // return maximum value based on maximum limb values
     fn get_maximal_possible_stored_value(&self) -> BigUint {
-        let shift = self.representation_params.binary_limb_width;
-        let mut result = BigUint::from(0u64);
+        if self.is_constant() {
+            self.get_raw_value().unwrap()
+        } else {
+            let shift = self.representation_params.binary_limb_width;
+            let mut result = BigUint::from(0u64);
 
-        for l in self.binary_limbs.iter().rev() {
-            result <<= shift;
-            result += l.max_value();
+            for l in self.binary_limbs.iter().rev() {
+                result <<= shift;
+                result += l.max_value();
+            }
+
+            result
         }
-
-        result
     }
 
     fn check_params_equivalence(a: &Self, b: &Self) -> bool {
@@ -874,34 +914,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     #[track_caller]
     fn reduction_impl<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
         let params = self.representation_params;
-
-        // in order to reduce the value x, we calculate y = x (mod F::char) and k, such that y = x - k * F::char
-        // which is equaivalent to x = y + k * F::char, and k is small enough
-        // first perform actual reduction in the field that we try to represent
-        let (q, rem) = if let Some(v) = self.get_raw_value() {
-            let (q, rem) = v.div_rem(&params.represented_field_modulus);
-            debug_assert_eq!(fe_to_biguint(&self.get_field_value().unwrap()), rem);
-            (Some(q), Some(rem))
-        } else {
-            (None, None)
-        };
-        let max_val = self.get_maximal_possible_stored_value();
-        let max_q_bits = (max_val / &params.represented_field_modulus).bits() as usize;
-        assert!(max_q_bits <= E::Fr::CAPACITY as usize, "for no quotient size can overflow capacity");
-
-        let q_as_field_repr = if max_q_bits == 0 { 
-            Self::zero(&params)
-        } else { 
-            Self::alloc_for_known_bitwidth(cs, q, max_q_bits, &params, params.allow_coarse_allocation_for_temp_values)?
-        };
-        let r_fe = some_biguint_to_fe::<F>(&rem);
-        let r_elem = Self::alloc(cs, r_fe, params)?;
-
-        // perform constraining by implementing multiplication: x = q*p + r
         let one = Self::one(self.representation_params);
-        Self::constraint_fma(cs, &self, &one, &[], &q_as_field_repr, &r_elem.clone())?;
+        let reduced = self.mul(cs, &one)?;
         
-        *self = r_elem;
+        *self = reduced;
         Ok(())
     }
 
@@ -1374,11 +1390,12 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     #[track_caller]
     fn constraint_fma<CS: ConstraintSystem<E>>(
-        cs: &mut CS, mul_a: &Self, mul_b: &Self, chain: FieldElementsChain<'a, E, F>
+        cs: &mut CS, a: &Self, b: &Self, chain: FieldElementsChain<'a, E, F>
     ) -> Result<(), SynthesisError> {  
         assert!(Self::check_params_equivalence(a, b));
         assert!(chain.elems_to_add.iter().all(|x| Self::check_params_equivalence(a, x)));
         assert!(chain.elems_to_sub.iter().all(|x| Self::check_params_equivalence(a, x)));
+        let params = &a.representation_params;
 
         // we are goint to enforce the following relation:
         // a * b + /sum positive_chain_elements - /sum negative_chain_elements = q * p (*)
@@ -1396,14 +1413,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // this apporach reduces the problem of handling negative chain elements to ONE constant addition 
         // in constaint system. Nobody could deny that this price is neglectable!
 
-        let mut raw_value_is_none = false;
-        let mut raw_value = BigUint::from(0u64);
-        match (a.get_raw_value(), b.get_raw_value()) {
-            (Some(t), Some(m)) => raw_value += t * m,
-            _ => raw_value_is_none = true,
-        }
-        let mut all_constants = a.is_constant() && b.is_constant();
-        
+        let mut raw_value = a.get_raw_value().zip(b.get_raw_value()).map(|(x, y)| x * y);
         // deal with negative elements and use the trick we have explained at the start of this fucntion
         let (const_delta_value, const_delta_chunks) = {
             let mut limbs_max_vals = vec![BigUint::zero(); params.num_binary_limbs];
@@ -1416,67 +1426,28 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             }
             Self::subtraction_helper(max_val, limbs_max_vals, params)
         };
-        raw_value += const_delta_value;
-
-        for r in chain.elems_to_add.iter() {
-            if let Some(v) = r.get_raw_value() {
-                raw_value += v;
-            } else {
-                raw_value_is_none = true;
-            }
-            all_constants = all_constants & r.is_constant();
-        }
-
-        for r in chain.elems_to_sub.iter() {
-            if let Some(v) = r.get_raw_value() {
-                raw_value -= v;
-            } else {
-                raw_value_is_none = true;
-            }
-            all_constants = all_constants & r.is_constant();
-        }
+        raw_value.and_then(|x| Some(x + const_delta_value));
+        raw_value = chain.add_raw_value_to_accumulator(raw_value);
+        let q = raw_value.map(|x| {
+            let (q, r) = x.div_rem(&params.represented_field_modulus);
+            assert!(r.is_zero());
+            q
+        });
        
-        let (q, r) = raw_value.div_rem(&params.represented_field_modulus);
-        if all_constants {
-            let r = biguint_to_fe::<F>(r);
-            let new = Self::constant(r, params);
-            return Ok(new);
-        }
-
-        // so we constraint a * b + [to_add] = q * p + r
-        // we we estimate q width
+        // so we constraint a * b + [chain_elems_to_add] = q * p + [chain_elems_to_sub] 
+        // we start ny estimating q width
         let mut lhs_max_value = a.get_maximal_possible_stored_value() * b.get_maximal_possible_stored_value();
-        for el in chain.elems_to_add.iter() {
-            lhs_max_value += el.get_maximal_possible_stored_value();
-        }
+        lhs_max_value += chain.get_maximal_positive_stored_value(); 
         let q_max_value = lhs_max_value / &params.represented_field_modulus;
         let q_max_bits = q_max_value.bits();
-
-        let (q, r) = if raw_value_is_none { (None, None) } else { (Some(q), Some(r)) };
         let coarsely = params.allow_coarse_allocation_for_temp_values;
-        let r_max_bits = params.represented_field_modulus_bitlength;
-
-        let q_elem = Self::alloc_for_known_bitwidth(cs, q, q_max_bits as usize, params, coarsely)?;
-        let r_elem = Self::alloc_for_known_bitwidth(cs, r, r_max_bits as usize, params, false)?;
-        Self::constraint_fma(cs, &a, &b, &chain, & &q_elem, &r_elem, &const_delta_value, &const_delta_chunks)?;
-
-
-        let params = &mul_a.representation_params;
-        let bin_limb_width = params.binary_limb_width;
-        let mut two = E::Fr::one();
-        two.double();
+        let quotient = Self::alloc_for_known_bitwidth(cs, q, q_max_bits as usize, params, coarsely)?;
         
-        // We start with finding the RNS binary modulus - we perform an exhaustive check here: 
-        // a * b + [addition_elements] < RNS composite_modulus = RNS_binary_modulus * RNS_native_modulus
-        // result_quotient * p + r < RNS composite_modulus
-        let mut lhs_max_value = BigUint::zero();
-        lhs_max_value += mul_a.get_maximal_possible_stored_value() * mul_b.get_maximal_possible_stored_value();
-        for el in addition_elements.iter() {
-            lhs_max_value += el.get_maximal_possible_stored_value();
-        }
-        let mut rhs_max_value = BigUint::zero();
-        rhs_max_value += quotient.get_maximal_possible_stored_value() * &params.represented_field_modulus;
-        rhs_max_value += remainder.get_maximal_possible_stored_value();
+        // next with finding the RNS binary modulus - we perform an exhaustive check here: 
+        // a * b + [chain_elems_to_add] < RNS composite_modulus = RNS_binary_modulus * RNS_native_modulus
+        // q * p + [chain_elems_to_sub] < RNS composite_modulus
+        let mut rhs_max_value = quotient.get_maximal_possible_stored_value() * &params.represented_field_modulus;
+        rhs_max_value += chain.get_maximal_negative_stored_value(); 
         let max_value = BigUint::max(lhs_max_value, rhs_max_value);
 
         // now we need to select t - multiple of range check granularity to be large enough, so that:
@@ -1507,6 +1478,8 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         }
         shifts.push(el);
         let carry_shift_inverse = shifts[limbs_per_cycle].inverse().unwrap();
+        let mut two = E::Fr::one();
+        two.double();
 
         // final goal is to prove that a*b + \sum addition_elements = q * p + r
         // we transform it into the following form for each limb : 
@@ -1522,16 +1495,23 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             let right_border = std::cmp::min(left_border + limbs_per_cycle, rns_binary_modulus_width_in_limbs);
             
             // add terms like a[i] * b[j], where i+j /in [left_border, right_border)
-            let iter = get_limbs_product_in_diapason(&mul_a.binary_limbs, &mul_b.binary_limbs, left_border, right_border);
+            let iter = get_limbs_product_in_diapason(&a.binary_limbs, &b.binary_limbs, left_border, right_border);
             for (idx, a_limb, b_limb) in iter {
                 let shift = shifts[idx - left_border];
                 lc.add_assign_product_of_terms_with_coeff(&a_limb.term, &b_limb.term, shift);
             }
-               
-            // add limbs of addition_elements:
-            for elem in addition_elements.iter() {
+               s
+            // add limbs of elements that are added:
+            for elem in chain.elems_to_add.iter() {
                 for (i, limb) in get_limbs_in_diapason(&elem.binary_limbs, left_border, right_border) {
                     lc.add_assign_term_with_coeff(&limb.term, shifts[i - left_border]);
+                }
+            }
+
+            // add limbs of elements that are subtracted:
+            for elem in chain.elems_to_sub.iter() {
+                for (i, limb) in get_limbs_in_diapason(&elem.binary_limbs, left_border, right_border) {
+                    lc.sub_assign_term_with_coeff(&limb.term, shifts[i - left_border]);
                 }
             }
 
@@ -1541,11 +1521,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 let mut shift = shifts[idx - left_border];
                 shift.negate();
                 lc.add_assign_product_of_terms_with_coeff(&q_limb.term, &p_limb.term, shift);
-            }
-
-            // sub remainder
-            for (i, limb) in get_limbs_in_diapason(&remainder.binary_limbs, left_border, right_border) {
-                lc.sub_assign_term_with_coeff(&limb.term, shifts[i - left_border]);
             }
 
             let limb_range = right_border - left_border;
@@ -1593,7 +1568,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         }
         
         // now much more trivial part - multiply elements modulo base field
-        // a * b + \sum addition_elements - q * p - r == 0 (mod base_field)
+        // a * b + \sum positive_chain_terms - /sum negative_chain_terms - q * p == 0 (mod base_field)
         let mut lc = AmplifiedLinearCombination::zero();
         lc.add_assign_product_of_terms(&mul_a.base_field_limb, &mul_b.base_field_limb);
         for elem in addition_elements.iter() {
@@ -1964,7 +1939,8 @@ mod test {
 }
 
 // functions remaining to check: mul_with_chain (general_case),
-// div_with_chain (general_case), 
+// div_with_chain (general_case), write some very huge test
+// add debugging support for carry propagation
 
 
 

@@ -3,7 +3,7 @@ use std::iter;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::plonk::circuit::linear_combination::*;
-use crate::plonk::circuit::SomeField;
+use crate::plonk::circuit::SomeArithmetizable;
 use crate::plonk::circuit::assignment::Assignment;
 use crate::plonk::circuit::hashes_with_tables::utils::IdentifyFirstLast;
 use crate::bellman::plonk::better_better_cs::lookup_tables::LookupTableApplication;

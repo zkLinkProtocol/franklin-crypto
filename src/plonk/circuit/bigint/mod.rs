@@ -247,7 +247,7 @@ pub fn create_range_constraint_chain<E: Engine, CS: ConstraintSystem<E>>(
 
         let four = Some(four);
 
-        use crate::plonk::circuit::SomeField;
+        use crate::plonk::circuit::SomeArithmetizable;
 
         let mut previous_value = to_constraint.get_value();
 

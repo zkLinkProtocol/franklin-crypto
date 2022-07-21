@@ -262,18 +262,18 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let other_x_minus_this_x = other.x.add(cs, &self.x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&other.y).add_neg_term(&self.y);
-        let lambda = FieldElement::div_with_chain(cs, &chain, &other_x_minus_this_x)?;
+        let lambda = FieldElement::div_with_chain(cs, chain, &other_x_minus_this_x)?;
         
         // lambda^2 + (-x' - x)
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&other.x).add_neg_term(&self.x);
-        let new_x = lambda.square_with_chain(cs, &chain)?;
+        let new_x = lambda.square_with_chain(cs, chain)?;
 
         // lambda * (x - new_x) + (- y)
         let this_x_minus_new_x = self.x.sub(cs, &new_x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&self.y);
-        let new_y = FieldElement::mul_with_chain(cs, &lambda, &this_x_minus_new_x, &chain)?;
+        let new_y = FieldElement::mul_with_chain(cs, &lambda, &this_x_minus_new_x, chain)?;
 
         let new_value = match (self.value, other.value) {
             (Some(this), Some(other)) => {
@@ -317,18 +317,18 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let other_x_minus_this_x = other.x.add(cs, &self.x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&other.y).add_pos_term(&self.y);
-        let lambda = FieldElement::div_with_chain(cs, &chain, &other_x_minus_this_x)?;
+        let lambda = FieldElement::div_with_chain(cs, chain, &other_x_minus_this_x)?;
 
         // lambda^2 + (-x' - x)
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&self.x).add_neg_term(&other.x);
-        let new_x = lambda.square_with_chain(cs, &chain)?;
+        let new_x = lambda.square_with_chain(cs, chain)?;
 
         // lambda * -(x - new_x) + (- y)
         let new_x_minus_this_x = new_x.sub(cs, &self.x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&self.y);
-        let new_y = FieldElement::mul_with_chain(cs, &lambda, &new_x_minus_this_x, &chain)?;
+        let new_y = FieldElement::mul_with_chain(cs, &lambda, &new_x_minus_this_x, chain)?;
 
         let new_value = match (self.value, other.value) {
             (Some(this), Some(other)) => {
@@ -371,12 +371,12 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let other_x_minus_this_x = other.x.sub(cs, &self.x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&other.y).add_neg_term(&self.y); 
-        let lambda = FieldElement::div_with_chain(cs, &chain, &other_x_minus_this_x)?;
+        let lambda = FieldElement::div_with_chain(cs, chain, &other_x_minus_this_x)?;
 
         // lambda^2 + (-x' - x)
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&other.x).add_neg_term(&self.x);
-        let new_x = lambda.square_with_chain(cs, &chain)?;
+        let new_x = lambda.square_with_chain(cs, chain)?;
         
         let new_x_minus_this_x = new_x.sub(cs, &self.x)?;
         let two_y = self.y.double(cs)?;
@@ -384,12 +384,12 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let t1 = lambda.add(cs, &t0)?;
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&self.x).add_neg_term(&new_x);
-        let new_x = t1.square_with_chain(cs, &chain)?;
+        let new_x = t1.square_with_chain(cs, chain)?;
 
         let new_x_minus_x= new_x.sub(cs, &self.x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&self.y);
-        let new_y = FieldElement::mul_with_chain(cs, &t1, &new_x_minus_x, &chain)?;
+        let new_y = FieldElement::mul_with_chain(cs, &t1, &new_x_minus_x, chain)?;
 
         let new_value = match (self.value, other.value) {
             (Some(this), Some(other)) => {

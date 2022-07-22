@@ -141,6 +141,7 @@ pub fn constraint_bit_length_ext_with_strategy<E: Engine, CS: ConstraintSystem<E
             enforce_range_check_using_naive_approach(cs, var, num_bits)
         },
         RangeConstraintStrategy::CustomTwoBitGate => {
+            unreachable!();
             enforce_range_check_using_custom_gate(cs, var, num_bits, coarsely)
         },
         RangeConstraintStrategy::WithBitwiseOpTable(_table_width) => {  

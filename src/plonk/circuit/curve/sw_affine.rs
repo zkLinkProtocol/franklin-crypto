@@ -52,6 +52,15 @@ use super::super::bigint::bigint::*;
 
 use plonk::circuit::bigint_new::BITWISE_LOGICAL_OPS_TABLE_NAME;
 
+pub fn bit_window_decompose(window: usize) -> usize{
+    let mut bit_window = 0;
+    let two = 2 as u32;
+    for i in 0..window{
+        bit_window += two.pow(i as u32);
+    }
+    (bit_window as usize)
+}
+
 #[derive(Clone, Debug)]
 pub struct AffinePoint<'a, E: Engine, G: GenericCurveAffine> where <G as GenericCurveAffine>::Base: PrimeField {
     pub x: FieldElement<'a, E, G::Base>,
@@ -1294,7 +1303,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
         let generator = Self::constant(offset_generator, params);
 
-        let (mut acc_1, (_, _)) = self.add_unequal(cs, generator.clone())?;
+        let (mut acc_1, (_, _)) = self.clone().add_unequal(cs, generator.clone())?;
 
         let mut x_1 = self.clone().x;
         let y_1 = self.clone().y;
@@ -1313,89 +1322,58 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         let (minus_y_2, y_2) = y_2.negated(cs)?;
 
         let (mut acc, (_, _)) = acc_1.add_unequal(cs, q_endo.clone())?;
-        let cycle = 2^window; 
+        let bit_window = bit_window_decompose(window);
+        println!("bit_window{}", bit_window);
 
         //precompute 
         use plonk::circuit::curve::point_ram::Memory;
         let mut memory =  Memory::new();
         let mut count = 0 as u64;
-        for i in 0..cycle{
-            for j in 0..cycle{
-                let flag_1 = Boolean::Constant(i!=0);
-                let flag_2 = Boolean::Constant(j!=0);
-                let (selected_y_1, _) = FieldElement::select(cs, &flag_1, minus_y_1.clone(), y_1.clone())?;
-                let (selected_y_2, _) = FieldElement::select(cs, &flag_2, minus_y_2.clone(), y_2.clone())?;
-
-                let t_value_1 = match (this_value, flag_1.get_value()) {
-                    (Some(val), Some(bit)) => {
-                        let mut val = val;
-                        if bit {
-                            val.negate();
-                        }
-    
-                        Some(val)
-                    }
-                    _ => None,
-                };
-                let t_value_2 = match (other_value, flag_2.get_value()) {
-                    (Some(val), Some(bit)) => {
-                        let mut val = val;
-                        if bit {
-                            val.negate();
-                        }
-    
-                        Some(val)
-                    }
-                    _ => None,
-                };
-    
-                let t_1 = Self {
-                    x: x_1.clone(),
-                    y: selected_y_1,
-                    value: t_value_1,
-                };
-                let t_2 = Self {
-                    x: x_2.clone(),
-                    y: selected_y_2,
-                    value: t_value_2,
-                };
-                let (c, (_, _)) = this_value.clone().add_unequal(cs, other_value.clone())?;
+        for i in 0..bit_window+1{
+            for j in 0..bit_window+1{
+                let (c, (_, _)) = self.clone().add_unequal(cs, q_endo.clone())?;
                 use plonk::circuit::hashes_with_tables::utils::u64_to_ff;
 
                 let number: E::Fr = u64_to_ff(count);
                 let address = Num::Variable(AllocatedNum::alloc(cs, || Ok(number))?);
+                println!("address      {:?}", address); 
 
                 memory.clone().block.push((address, c.clone()));
                 memory.insert_witness(address, c);
                 count+=1;
             }
-            count+=1;
         }
 
-        let d = bit_limit.unwrap()/window; 
+        let d = bit_limit.unwrap()/window - 2; 
         use plonk::circuit::bigint_new::compute_shifts;
         let shifts = compute_shifts::<E::Fr>();
         let mut step = 0;
+        // We create addresses according to the following scheme: 
+        // First, there is a simple numbering addres = 0 + 1, 0+2, 0+3 ... 0+n where n is bits of the window.
+        // Then the following happens. Just as a new cycle begins, we add n and add to the current number.
+        // This is done to prevent address overlap. For example: 2 P + 3 Q addrx will be 5 and 3 P + 2 Q addrx will also be 5.
+        // According to our trick, when n = 4, the address will be 11 in the first case, and 14 in the second.
+
         for l in 0..d{
             let mut lc = LinearCombination::zero();
             let mut j = 0;
             for i in 0..window{
-                lc.add_assign_boolean_with_coeff(entries_1_without_first_and_last_vec[i], shifts[j]);
-                j+= window;
-            }
-            for i in 0..window{
-                lc.add_assign_boolean_with_coeff(entries_2_without_first_and_last_vec[i], shifts[i]);
+                lc.add_assign_boolean_with_coeff(entries_1_without_first_and_last_vec[i+step], shifts[j]);
+                lc.add_assign_boolean_with_coeff(entries_2_without_first_and_last_vec[i+step], shifts[i]);
+                j+= bit_window;
+
             }
             let addres = lc.into_num(cs)?;
+            println!("addres  {:?}, l {}", addres, l);
 
             let point = unsafe { memory.read_and_alloc(cs, addres, params)? };
             let (new_acc, (_, t)) = acc.clone().double_and_add(cs, point.into_inner())?;
 
             num_doubles += 1;
             acc = new_acc;
-            step += window*2;
+            step += window;
         }
-        let (with_skew, (acc, this)) = acc.sub_unequal(cs, this_copy.clone())?;
+        let (with_skew, (acc, this)) = acc.sub_unequal(cs, self.clone())?;
         let (with_skew, (acc, this)) = acc.sub_unequal(cs, q_endo.clone())?;
         let last_entry_1 = entries_1.last().unwrap();
         let last_entry_2 = entries_2.last().unwrap();
@@ -3368,7 +3346,7 @@ mod test {
 
             let endo_parameters = super::super::endomorphism::bn254_endomorphism_parameters();
 
-            let (result, a) = a.mul_split_scalar_2(&mut cs, &b, None, endo_parameters.clone(), 1).unwrap();
+            let (result, a) = a.mul_split_scalar_2(&mut cs, &b, None, endo_parameters.clone(), 2).unwrap();
 
             let result_recalculated = a_f.mul(b_f.into_repr()).into_affine();
 
@@ -3414,7 +3392,7 @@ mod test {
             if i == 0 {
                 crate::plonk::circuit::counter::reset_counter();
                 let base = cs.n();
-                let _ = a.mul_split_scalar_2(&mut cs, &b, None, endo_parameters, 1).unwrap();
+                let _ = a.mul_split_scalar_2(&mut cs, &b, None, endo_parameters, 2).unwrap();
                 println!("single multiplication taken {} gates", cs.n() - base);
                 println!(
                     "Affine spent {} gates in equality checks",

@@ -137,18 +137,22 @@ impl<'a, E: Engine, G: GenericCurveAffine> ProjectivePoint<'a, E, G> where <G as
 
     pub fn convert_to_affine_or_default<CS: ConstraintSystem<E>>(
         &mut self, cs: &mut CS, default: &AffinePoint<'a, E, G>
-    ) -> Result<AffinePoint<'a, E, G>, SynthesisError> {
+    ) -> Result<(AffinePoint<'a, E, G>, Boolean), SynthesisError> {
         let params = self.x.representation_params;
         let is_point_at_infty = self.z.is_zero(cs)?;
-        let safe_z = FieldElement::conditionally_select(cs, &is_point_at_infty, &FieldElement::one(), &self.z)?;
-        let x = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.x, self.x.div(cs, &safe_z)?);
-        let y = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.y, &self.y.div(cs, &safe_z)?);
+        let safe_z = FieldElement::conditionally_select(cs, &is_point_at_infty, &FieldElement::one(params), &self.z)?;
+        let x_for_safe_z = self.x.div(cs, &safe_z)?;
+        let y_for_safe_z = self.y.div(cs, &safe_z)?;
+        let x = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.x, &x_for_safe_z)?;
+        let y = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.y, &y_for_safe_z)?;
 
-        let value = map (is_point_at_infty.get_value(), ) {
+        let value = match (is_point_at_infty.get_value(), self.get_value(), default.get_value()) {
+            (Some(true), _, Some(val)) | (Some(false), Some(val), _) => Some(val),
+            _ => None,
+        };
 
-        }
-
-        Ok(AffinePoint { x, y, value })
+        let new = AffinePoint { x, y, value };
+        Ok((new, is_point_at_infty))
     }
 
     #[track_caller]

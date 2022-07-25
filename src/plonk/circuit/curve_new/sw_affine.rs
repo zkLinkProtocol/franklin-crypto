@@ -47,6 +47,8 @@ use num_bigint::BigUint;
 use num_integer::Integer;
 
 use crate::plonk::circuit::bigint_new::*;
+use crate::plonk::circuit::curve_new::sw_projective::*;
+
 
 #[derive(Clone, Debug)]
 pub struct AffinePoint<'a, E: Engine, G: GenericCurveAffine> where <G as GenericCurveAffine>::Base: PrimeField {
@@ -412,9 +414,12 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     }
 }
 
+
+// we are particularly interested in three curves: secp256k1, bn256 and bls12-281
+// unfortunately, only bls12-381 has a cofactor
 impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand> AffinePoint<'a, E, G> where <G as GenericCurveAffine>::Base: PrimeField {
     #[track_caller]
-    pub fn mul_by_scalar<CS: ConstraintSystem<E>>(
+    pub fn mul_by_scalar_for_composite_order_curve<CS: ConstraintSystem<E>>(
         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>
     ) -> Result<Self, SynthesisError> {
         if let Some(value) = scalar.get_field_value() {
@@ -504,6 +509,26 @@ impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand> AffinePoint<'a, E, G> wh
         let result = result.sub_unequal(cs, &mut offset)?;
 
         Ok(result)
+    }
+}
+
+
+impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as GenericCurveAffine>::Base: PrimeField {
+    pub fn mul_by_scalar_for_prime_order_curve<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>
+    ) -> Result<ProjectivePoint<'a, E, G>, SynthesisError> {
+        let params = self.x.representation_params;
+        let scalar_decomposition = scalar.decompose_into_binary_representation(cs)?;
+
+        // TODO: use standard double-add algorithm for now, optimize later
+        let mut acc = ProjectivePoint::<E, G>::zero(params);
+        for bit in scalar_decomposition.into_iter() {
+            let added = acc.add_mixed(cs, &self)?;
+            acc = ProjectivePoint::conditionally_select(cs, &bit, &added, &acc)?;
+            acc = acc.double(cs)?;
+        }
+        
+        Ok(acc)
     }
 }
 

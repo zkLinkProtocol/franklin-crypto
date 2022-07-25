@@ -209,9 +209,6 @@ mod test {
         circuit.synthesize(&mut assembly).expect("must work");
         println!("Assembly contains {} gates", assembly.n());
         println!("Total length of all tables: {}", assembly.total_length_of_all_tables);
-
-        let mut assembly = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
-        circuit.synthesize(&mut assembly).expect("must work");
         assembly.finalize();
         assert!(assembly.is_satisfied());
 
@@ -223,7 +220,7 @@ mod test {
 
         let worker = Worker::new();
         let setup_size = assembly.n().next_power_of_two();
-        let crs = Crs::<Bn256, CrsForMonomialForm>::dummy_crs(setup_size);
+        let crs = Crs::<Bn256, CrsForMonomialForm>::crs_42(setup_size, &worker);
         let setup = assembly.create_setup::<TestBlake2sCircuit::<Bn256>>(&worker).unwrap();
         let vk = VerificationKey::from_setup(&setup, &worker, &crs).unwrap();
 
@@ -232,10 +229,72 @@ mod test {
             .unwrap();
         let valid = verify::<_, _, RollingKeccakTranscript<Fr>>(&vk, &proof, None).unwrap();
         assert!(valid);
+    }
 
-        
-        // let mut proof_as_bytes : Vec<u8> = vec![];
-        // vk.write(&mut proof_as_bytes).expect("should_write");
-        // println!("proof size: {}", proof_as_bytes.len());
+    struct TestBlake2sWordsDigest<E:Engine>{
+        input: Vec<u32>,
+        _marker: std::marker::PhantomData<E>
+    }
+
+    impl<E: Engine> Circuit<E> for TestBlake2sWordsDigest<E> {
+        type MainGate = Width4MainGateWithDNext;
+
+        fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
+            Ok(
+                vec![
+                    Width4MainGateWithDNext::default().into_internal(),
+                ]
+            )
+        }
+
+        fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+            use plonk::circuit::bigint_new::inscribe_default_bitop_range_table;
+            inscribe_default_bitop_range_table(cs)?;
+
+            let input_as_nums = self.input.iter().map(|x| {
+                let var = AllocatedNum::alloc(cs, || Ok(u64_to_ff::<E::Fr>(*x as u64)))?;
+                Ok(Num::Variable(var))
+            }).collect::<Result<Vec<Num<E>>, SynthesisError>>()?;
+            
+            let blake2s_gadget = Blake2sGadget::new(cs, false)?;
+            blake2s_gadget.digest_words32(cs, &input_as_nums[..])?;
+            let public_input = AllocatedNum::alloc_input(cs, || Ok(E::Fr::one()))?;
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_blake2s_digest_words() {
+        let input = vec![
+            0xb19e846f, 0xc81dcb26, 0xc388b57e, 0xeb82d44f, 0x9513868e, 0x73b092c9, 0x79df880b, 0x8a1b262f,
+            0x142ba2e1, 0x8df6d502, 0x7d01cf7d, 0x318b4d4a, 0x3a4068cb, 0x3d1d3655, 0x29dbfa1b, 0x255f0103
+        ];
+
+        let circuit = TestBlake2sWordsDigest { input, _marker: std::marker::PhantomData::<Bn256> };
+        let mut assembly = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
+        circuit.synthesize(&mut assembly).expect("must work");
+        println!("Assembly contains {} gates", assembly.n());
+        println!("Total length of all tables: {}", assembly.total_length_of_all_tables);
+        assembly.finalize();
+        assert!(assembly.is_satisfied());
+
+        use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
+        use crate::bellman::worker::Worker;
+        use crate::bellman::plonk::commitments::transcript::keccak_transcript::RollingKeccakTranscript;
+        use crate::bellman::plonk::better_better_cs::setup::VerificationKey;
+        use crate::bellman::plonk::better_better_cs::verifier::verify;
+
+        let worker = Worker::new();
+        let setup_size = assembly.n().next_power_of_two();
+        let crs = Crs::<Bn256, CrsForMonomialForm>::crs_42(setup_size, &worker);
+        let setup = assembly.create_setup::<TestBlake2sWordsDigest::<Bn256>>(&worker).unwrap();
+        let vk = VerificationKey::from_setup(&setup, &worker, &crs).unwrap();
+
+        let proof = assembly
+            .create_proof::<_, RollingKeccakTranscript<Fr>>(&worker, &setup, &crs, None)
+            .unwrap();
+        let valid = verify::<_, _, RollingKeccakTranscript<Fr>>(&vk, &proof, None).unwrap();
+        assert!(valid);
     }
 }

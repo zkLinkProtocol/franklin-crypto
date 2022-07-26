@@ -243,7 +243,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     where CS: ConstraintSystem<E>
     {
         // only enforce that x != x'
-        FieldElement::enforce_not_equal(cs, &mut self.x, &mut other.x)?;
+        //FieldElement::enforce_not_equal(cs, &mut self.x, &mut other.x)?;
         self.add_unequal_unchecked(cs, other)
     }
 
@@ -529,6 +529,39 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         }
         
         Ok(acc)
+    }
+}
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::bellman::pairing::bn256::{Fq, Bn256, Fr, G1Affine};
+    use plonk::circuit::Width4WithCustomGates;
+    use bellman::plonk::better_better_cs::gates::{selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext, self};
+    use rand::{XorShiftRng, SeedableRng, Rng};
+    use bellman::plonk::better_better_cs::cs::*;
+
+    #[test]
+    fn test_arithmetic_for_bn256_curve() {
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let params = RnsParameters::<Bn256, Fq>::new_optimal(&mut cs, 80usize);
+        let mut rng = rand::thread_rng();
+
+        let a: G1Affine = rng.gen();
+        let b: G1Affine = rng.gen();
+        let mut tmp = a.into_projective();
+        tmp.add_assign_mixed(&b);
+        let result = tmp.into_affine();
+        
+        let mut a = AffinePoint::alloc(&mut cs, Some(a), &params).unwrap();
+        let mut b = AffinePoint::alloc(&mut cs, Some(b), &params).unwrap();
+        let mut actual_result = AffinePoint::alloc(&mut cs, Some(result), &params).unwrap();
+        let mut result = a.add_unequal(&mut cs, &mut b).unwrap();
+
+        AffinePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
+        assert!(cs.is_satisfied()); 
     }
 }
 

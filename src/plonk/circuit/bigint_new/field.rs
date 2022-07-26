@@ -1834,6 +1834,7 @@ mod test {
     use plonk::circuit::Width4WithCustomGates;
     use bellman::plonk::better_better_cs::gates::{selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext, self};
     use rand::{XorShiftRng, SeedableRng, Rng};
+    use bellman::plonk::better_better_cs::cs::*;
 
     // the reason for this test is twofold:
     // first we would like to measure the efficiency of RNS-approach (in terms of number of resulting constraints),
@@ -1979,69 +1980,86 @@ mod test {
         println!("number of constraints for naive approach: {}", naive_mul_end - naive_mul_start);
         println!("number of constraints for rns approach: {}", rns_mul_end - rns_mul_start);
     } 
-          
-    #[test]
-    fn test_bn_254() {
-        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
-        inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let params = RnsParameters::<Bn256, Fq>::new_optimal(&mut cs, 64usize);
-        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
-
-        let a_f: Fq = rng.gen();
-        let b_f: Fq = rng.gen();
-        let mut actual_result_f = a_f.clone();
-        actual_result_f.mul_assign(&b_f);
-        let mut a = FieldElement::alloc(&mut cs, Some(a_f), &params).unwrap();
-        let mut b = FieldElement::alloc(&mut cs, Some(b_f), &params).unwrap();
-        let mut actual_result = FieldElement::alloc(&mut cs, Some(actual_result_f), &params).unwrap();
-
-        let mut result = a.mul(&mut cs, &b).unwrap();
-        FieldElement::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
-      
-        assert!(cs.is_satisfied()); 
-    }
 
     #[test]
     fn testing_remaining_stuff() {
+        struct TestCircuit<E:Engine>{
+            _marker: std::marker::PhantomData<E>
+        }
+    
+        impl<E: Engine> Circuit<E> for TestCircuit<E> {
+            type MainGate = SelectorOptimizedWidth4MainGateWithDNext;
+            fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
+                Ok(
+                    vec![ SelectorOptimizedWidth4MainGateWithDNext::default().into_internal() ]
+                )
+            }
+    
+            fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+                let params = RnsParameters::<E, E::Fq>::new_optimal(cs, 64usize);
+                let mut rng = rand::thread_rng();
+
+                let a: E::Fq = rng.gen();
+                let b: E::Fq = rng.gen();
+                let elem_to_add_0 = rng.gen();
+                let elem_to_add_1 = rng.gen();
+                let elem_to_sub_0 = rng.gen();
+                let elem_to_sub_1 = rng.gen();
+                let mut actual_res = a;
+                actual_res.add_assign(&elem_to_add_0); 
+                actual_res.add_assign(&elem_to_add_1); 
+                actual_res.sub_assign(&elem_to_sub_0);
+                actual_res.sub_assign(&elem_to_sub_1);
+                let b_inv = b.inverse().unwrap();
+                actual_res.mul_assign(&b_inv);
+
+                let a = FieldElement::alloc(cs, Some(a), &params)?;
+                let b = FieldElement::alloc(cs, Some(b), &params)?;
+                let elem_to_add_0 = FieldElement::alloc(cs, Some(elem_to_add_0), &params)?;
+                let elem_to_add_1 = FieldElement::alloc(cs, Some(elem_to_add_1), &params)?;
+                let elem_to_sub_0 = FieldElement::alloc(cs, Some(elem_to_sub_0), &params)?;
+                let elem_to_sub_1 = FieldElement::alloc(cs, Some(elem_to_sub_1), &params)?;
+                let mut actual_res = FieldElement::alloc(cs, Some(actual_res), &params)?;
+
+                let mut chain = FieldElementsChain::new();
+                chain.add_pos_term(&a).add_pos_term(&elem_to_add_0).add_pos_term(&elem_to_add_1);
+                chain.add_neg_term(&elem_to_sub_0).add_neg_term(&elem_to_sub_1);
+                let mut result = FieldElement::div_with_chain(cs, chain, &b)?;
+
+                FieldElement::enforce_equal(cs, &mut result, &mut actual_res)
+            }
+        }
+
+        use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
+        use crate::bellman::worker::Worker;
+        use crate::bellman::plonk::commitments::transcript::keccak_transcript::RollingKeccakTranscript;
+        use crate::bellman::plonk::better_better_cs::setup::VerificationKey;
+        use crate::bellman::plonk::better_better_cs::verifier::verify;
+      
         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let params = RnsParameters::<Bn256, Fq>::new_optimal(&mut cs, 64usize);
-        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
-
-        let a: Fq = rng.gen();
-        let b: Fq = rng.gen();
-        let elem_to_add_0 = rng.gen();
-        let elem_to_add_1 = rng.gen();
-        let elem_to_sub_0 = rng.gen();
-        let elem_to_sub_1 = rng.gen();
-        let mut actual_res = a;
-        actual_res.add_assign(&elem_to_add_0); 
-        actual_res.add_assign(&elem_to_add_1); 
-        actual_res.sub_assign(&elem_to_sub_0);
-        actual_res.sub_assign(&elem_to_sub_1);
-        let b_inv = b.inverse().unwrap();
-        actual_res.mul_assign(&b_inv);
-
-        let mut a = FieldElement::alloc(&mut cs, Some(a), &params).unwrap();
-        let mut b = FieldElement::alloc(&mut cs, Some(b), &params).unwrap();
-        let mut elem_to_add_0 = FieldElement::alloc(&mut cs, Some(elem_to_add_0), &params).unwrap();
-        let mut elem_to_add_1 = FieldElement::alloc(&mut cs, Some(elem_to_add_1), &params).unwrap();
-        let mut elem_to_sub_0 = FieldElement::alloc(&mut cs, Some(elem_to_sub_0), &params).unwrap();
-        let mut elem_to_sub_1 = FieldElement::alloc(&mut cs, Some(elem_to_sub_1), &params).unwrap();
-        let mut actual_res = FieldElement::alloc(&mut cs, Some(actual_res), &params).unwrap();
-
-        let mut chain = FieldElementsChain::new();
-        chain.add_pos_term(&a).add_pos_term(&elem_to_add_0).add_pos_term(&elem_to_add_1).add_neg_term(&elem_to_sub_0).add_neg_term(&elem_to_sub_1);
-        let mut result = FieldElement::div_with_chain(&mut cs, chain, &b).unwrap();
-
-        FieldElement::enforce_equal(&mut cs, &mut result, &mut actual_res).unwrap();
+        let circuit = TestCircuit::<Bn256> {_marker: std::marker::PhantomData};
+        circuit.synthesize(&mut cs).expect("must work");
+        cs.finalize();
         assert!(cs.is_satisfied()); 
+        let worker = Worker::new();
+        let setup_size = cs.n().next_power_of_two();
+        let crs = Crs::<Bn256, CrsForMonomialForm>::crs_42(setup_size, &worker);
+        let setup = cs.create_setup::<TestCircuit::<Bn256>>(&worker).unwrap();
+        let vk = VerificationKey::from_setup(&setup, &worker, &crs).unwrap();
+        
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let circuit = TestCircuit::<Bn256> {_marker: std::marker::PhantomData};
+        circuit.synthesize(&mut cs).expect("must work");
+        cs.finalize();
+        assert!(cs.is_satisfied()); 
+        let proof = cs.create_proof::<_, RollingKeccakTranscript<Fr>>(&worker, &setup, &crs, None).unwrap();
+        let valid = verify::<_, _, RollingKeccakTranscript<Fr>>(&vk, &proof, None).unwrap();
+        assert!(valid);
     }
 }
 
-// functions remaining to check: mul_with_chain (general_case),
-// div_with_chain (general_case), write some very huge test
-// add debugging support for carry propagation
 
 
 

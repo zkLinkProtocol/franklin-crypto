@@ -4,8 +4,7 @@ use crate::bellman::plonk::better_better_cs::cs::{
 };
 use super::super::simple_term::Term;
 use crate::bellman::plonk::better_better_cs::cs::PlonkConstraintSystemParams;
-use std::collections::hash_map::{HashMap, Entry};
-use std::collections::HashSet;
+use crate::indexmap::{IndexMap, IndexSet};
 use crate::plonk::circuit::utils::is_selector_specialized_gate;
 
 const REQUIRED_STATE_WIDTH : usize = 4;
@@ -66,7 +65,7 @@ impl<E: Engine> GateConstructorHelper<E> {
         self.free_vars_end_idx -= 1;
     }
 
-    pub fn add_linear_coefficients_for_bound_variables(&mut self, var_map: &mut HashMap<Variable, E::Fr>) {
+    pub fn add_linear_coefficients_for_bound_variables(&mut self, var_map: &mut IndexMap<Variable, E::Fr>) {
         let iter = std::array::IntoIter::new([
             (self.a, &mut self.a_linear_coef), (self.b, &mut self.b_linear_coef), 
             (self.c, &mut self.c_linear_coef), (self.d, &mut self.d_linear_coef)
@@ -78,7 +77,7 @@ impl<E: Engine> GateConstructorHelper<E> {
     }
 
     pub fn add_linear_coefficients_for_free_variables(
-        &mut self, var_map: &mut HashMap<Variable, E::Fr>, free_vars_set: &mut HashSet<Variable>
+        &mut self, var_map: &mut IndexMap<Variable, E::Fr>, free_vars_set: &mut IndexSet<Variable>
     ) {
         // Rust is not an expressive language at all, that's why we unroll the loop manually
         // How much better it would look in C++.. Mmm...
@@ -198,8 +197,8 @@ impl OrderedVariablePair {
 // module containing amplified version of linear combination that supports both linear and multiplicative terms
 pub struct AmplifiedLinearCombination<E: Engine> {
     value: Option<E::Fr>,
-    linear_terms: HashMap<Variable, E::Fr>,
-    quadratic_terms: HashMap<OrderedVariablePair, E::Fr>,
+    linear_terms: IndexMap<Variable, E::Fr>,
+    quadratic_terms: IndexMap<OrderedVariablePair, E::Fr>,
     constant: E::Fr,
 }
 
@@ -219,8 +218,8 @@ impl<E: Engine> From<AllocatedNum<E>> for AmplifiedLinearCombination<E> {
     fn from(num: AllocatedNum<E>) -> AmplifiedLinearCombination<E> {
         Self {
             value: num.value,
-            linear_terms: HashMap::from([(num.variable, E::Fr::one())]),
-            quadratic_terms: HashMap::new(),
+            linear_terms: IndexMap::from([(num.variable, E::Fr::one())]),
+            quadratic_terms: IndexMap::new(),
             constant: E::Fr::zero()
         }
     }
@@ -235,8 +234,8 @@ impl<E: Engine> From<Num<E>> for AmplifiedLinearCombination<E> {
             Num::Constant(constant) => {
                 Self {
                     value: Some(constant),
-                    linear_terms: HashMap::new(),
-                    quadratic_terms: HashMap::new(),
+                    linear_terms: IndexMap::new(),
+                    quadratic_terms: IndexMap::new(),
                     constant: constant
                 }
             }
@@ -259,8 +258,8 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
     pub fn zero() -> Self {
         Self {
             value: Some(E::Fr::zero()),
-            linear_terms: HashMap::new(),
-            quadratic_terms: HashMap::new(),
+            linear_terms: IndexMap::new(),
+            quadratic_terms: IndexMap::new(),
             constant: E::Fr::zero(),
         }
     }
@@ -457,19 +456,19 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
         self.quadratic_terms.retain(|&_, v| !v.is_zero());
     }
 
-    fn get_linear_terms_only_variables(&self) -> HashSet<Variable> {
-        let mut quad = HashSet::new();
+    fn get_linear_terms_only_variables(&self) -> IndexSet<Variable> {
+        let mut quad = IndexSet::new();
         for var_pair in self.quadratic_terms.keys() {
             quad.insert(var_pair.first);
             quad.insert(var_pair.second);
         }
         
-        let mut lin = HashSet::new();
+        let mut lin = IndexSet::new();
         for var in self.linear_terms.keys() {
             lin.insert(var.clone());
         }
 
-        lin.difference(&quad).cloned().collect::<HashSet<_>>()
+        lin.difference(&quad).cloned().collect::<IndexSet<_>>()
     }
 
     #[track_caller]
@@ -486,7 +485,7 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
         let mut linear_terms_only_vars = self.get_linear_terms_only_variables();
         let flattened_quad_releations : Vec<(OrderedVariablePair, E::Fr)> = self.quadratic_terms.into_iter().collect();
         let flattened_arr_len = flattened_quad_releations.len();
-        let mut arr_indexer : HashMap<Variable, usize> = HashMap::new();
+        let mut arr_indexer : IndexMap<Variable, usize> = IndexMap::new();
         let mut gate_templates : Vec<GateConstructorHelper<E>> = vec![];
         let mut num_gates_allocated : usize = 0;
 
@@ -516,7 +515,7 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
             }
         }
         
-        let unconsumed_idxes = HashSet::<usize>::from_iter(arr_indexer.into_values());
+        let unconsumed_idxes = IndexSet::<usize>::from_iter(arr_indexer.into_values());
         for i in unconsumed_idxes {
             let (var_pair, fr) = flattened_quad_releations[i];
             let gate_template = GateConstructorHelper::new_for_mul(cs, var_pair, fr);

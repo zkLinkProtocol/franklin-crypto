@@ -374,7 +374,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> ProjectivePoint<'a, E, G> where <G as
         // 10. Y3 ← X2 · Z1 
         let y3 = x2.mul(cs, &z1)?;
         // 11. Y3 ← Y3 + X1 
-        let y3 = y3.mul(cs, &x1)?;
+        let y3 = y3.add(cs, &x1)?;
         // 12. X3 ← t0 + t0
         let x3 = t0.double(cs)?;
         // 13. t0 ← X3 + t0 
@@ -472,10 +472,9 @@ mod test {
         let mut a_affine = AffinePoint::alloc(&mut cs, Some(a), &params).unwrap();
         let mut a_proj = ProjectivePoint::from(a_affine);
         let mut b_affine = AffinePoint::alloc(&mut cs, Some(b), &params).unwrap();
-        let mut b_proj = ProjectivePoint::from(b_affine);
         let mut actual_result = AffinePoint::alloc(&mut cs, Some(result), &params).unwrap();
         let naive_mul_start = cs.get_current_step_number();
-        let mut result = a_proj.add(&mut cs, &mut b_proj).unwrap();
+        let mut result = a_proj.add_mixed(&mut cs, &b_affine).unwrap();
         let naive_mul_end = cs.get_current_step_number();
         println!("num of gates: {}", naive_mul_end - naive_mul_start);
 
@@ -485,7 +484,7 @@ mod test {
         // result.y.normalize(&mut cs).unwrap();
         AffinePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
         assert!(cs.is_satisfied()); 
-        println!("PROJ SCALAR MULTIPLICATION ");
+        println!("PROJ MIXED ADD 2");
     }
 }
 

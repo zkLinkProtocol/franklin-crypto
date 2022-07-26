@@ -568,8 +568,9 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             base_field_lc.add_assign_variable_with_coeff(&a, current_constant);
             current_constant.mul_assign(&shift_constant);
         }
-        assert!(binary_limbs_allocated.len() <= params.num_binary_limbs);
-        binary_limbs_allocated.resize(params.num_binary_limbs, Limb::zero());
+        if binary_limbs_allocated.len() < params.num_binary_limbs {
+            binary_limbs_allocated.resize(params.num_binary_limbs, Limb::zero());
+        }
         
         let base_field_limb_num = base_field_lc.into_num(cs)?;
         let base_field_term = Term::<E>::from_num(base_field_limb_num);

@@ -555,10 +555,12 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
 
         // TODO: use standard double-add algorithm for now, optimize later
         let mut acc = ProjectivePoint::<E, G>::zero(params);
+        let mut tmp = self.clone();
+
         for bit in scalar_decomposition.into_iter() {
-            let added = acc.add_mixed(cs, &self)?;
+            let added = acc.add_mixed(cs, &mut tmp)?;
             acc = ProjectivePoint::conditionally_select(cs, &bit, &added, &acc)?;
-            acc = acc.double(cs)?;
+            tmp = tmp.double(cs)?;
         }
         
         Ok(acc)
@@ -594,15 +596,51 @@ mod test {
         let mut actual_result = AffinePoint::alloc(&mut cs, Some(result), &params).unwrap();
         let naive_mul_start = cs.get_current_step_number();
         let mut result = a.mul_by_scalar_for_prime_order_curve(&mut cs, &mut scalar).unwrap();
+        let mut result = unsafe { result.convert_to_affine(&mut cs).unwrap() };
         let naive_mul_end = cs.get_current_step_number();
         println!("num of gates: {}", naive_mul_end - naive_mul_start);
 
         // println!("actual result: x: {}, y: {}", actual_result.x.get_field_value().unwrap(), actual_result.y.get_field_value().unwrap());
         // println!("computed result: x: {}, y: {}", result.x.get_field_value().unwrap(), result.y.get_field_value().unwrap());
 
-        //AffinePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
+        AffinePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
         assert!(cs.is_satisfied()); 
-        println!("SCALAR MULTIPLICATION");
+        println!("SCALAR MULTIPLICATION final");
+    }
+
+    #[test]
+    fn test_arithmetic_for_secp256k1_curve() {
+        use super::super::secp256k1::fq::Fq as SecpFq;
+        use super::super::secp256k1::fr::Fr as SecpFr;
+        use super::super::secp256k1::PointAffine as SecpG1;
+
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let params = RnsParameters::<Bn256, SecpFq>::new_optimal(&mut cs, 64usize);
+        let scalar_params = RnsParameters::<Bn256, SecpFr>::new_optimal(&mut cs, 80usize);
+        let mut rng = rand::thread_rng();
+
+        let a: SecpG1 = rng.gen();
+        let scalar : SecpFr = rng.gen();
+        let mut tmp = a.into_projective();
+        tmp.mul_assign(scalar);
+        let result = tmp.into_affine();
+        
+        let mut a = AffinePoint::alloc(&mut cs, Some(a), &params).unwrap();
+        let mut scalar = FieldElement::alloc(&mut cs, Some(scalar), &scalar_params).unwrap();
+        let mut actual_result = AffinePoint::alloc(&mut cs, Some(result), &params).unwrap();
+        let naive_mul_start = cs.get_current_step_number();
+        let mut result = a.mul_by_scalar_for_prime_order_curve(&mut cs, &mut scalar).unwrap();
+        let mut result = unsafe { result.convert_to_affine(&mut cs).unwrap() };
+        let naive_mul_end = cs.get_current_step_number();
+        println!("num of gates: {}", naive_mul_end - naive_mul_start);
+
+        // println!("actual result: x: {}, y: {}", actual_result.x.get_field_value().unwrap(), actual_result.y.get_field_value().unwrap());
+        // println!("computed result: x: {}, y: {}", result.x.get_field_value().unwrap(), result.y.get_field_value().unwrap());
+
+        AffinePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
+        assert!(cs.is_satisfied()); 
+        println!("SCALAR MULTIPLICATION final");
     }
 }
 

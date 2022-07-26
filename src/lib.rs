@@ -1,5 +1,7 @@
 #![allow(dead_code, unused_imports, unused_macros)]
+#![allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
 #![warn(unused_assignments)]
+
 
 pub extern crate bellman;
 extern crate blake2_rfc_bellman_edition as blake2_rfc;
@@ -18,6 +20,10 @@ extern crate blake2;
 extern crate serde;
 extern crate num_derive;
 extern crate indexmap;
+
+use bellman::pairing;
+use bellman::pairing::ff;
+
 
 #[macro_use]
 extern crate lazy_static;

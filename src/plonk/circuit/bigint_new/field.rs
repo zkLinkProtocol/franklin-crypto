@@ -543,7 +543,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let mut current_constant = E::Fr::one();
 
         let (limb_values, msl_width) = slice_some_into_limbs_non_exact(
-            value.clone(), params.represented_field_modulus_bitlength, params.binary_limb_width
+            value.clone(), bit_width, params.binary_limb_width
         );
         let msl_width_padded = if coarsely { round_up(msl_width, params.range_check_granularity) } else { msl_width };
         let msl_max_val = get_max_possible_value_for_bit_width(msl_width_padded);
@@ -1447,9 +1447,8 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let q_max_value = lhs_max_value.clone() / &params.represented_field_modulus;
         let q_max_bits = q_max_value.bits();
         let coarsely = params.allow_coarse_allocation_for_temp_values;
-        println!("alloc quotient before: {}", q_max_bits);
+        println!("alloc quotient with bitlen: {}", q_max_bits);
         let quotient = Self::alloc_for_known_bitwidth(cs, q, q_max_bits as usize, params, coarsely)?;
-        println!("alloc quotient: {}", q_max_bits);
 
         // next with finding the RNS binary modulus - we perform an exhaustive check here: 
         // a * b + [chain_elems_to_add] < RNS composite_modulus = RNS_binary_modulus * RNS_native_modulus

@@ -43,7 +43,8 @@ use num_integer::Integer;
 use num_traits::Zero;
 
 // Parameters of the representation
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(bound = "")]
 pub struct RnsParameters<E: Engine, F: PrimeField>{
     // this is kind-of normal UintX limbs
     pub binary_limbs_params: LimbedRepresentationParameters<E>,
@@ -77,6 +78,9 @@ pub struct RnsParameters<E: Engine, F: PrimeField>{
     pub prefer_single_limb_allocation: bool,
     pub prefer_single_limb_carry_propagation: bool,
 
+    #[serde(skip_serializing, default)]
+    #[serde(bound(serialize = ""))]
+    #[serde(bound(deserialize = ""))]
     pub (crate) _marker: std::marker::PhantomData<F>
 }
 
@@ -1830,6 +1834,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok((new, (this, other)))
     }
 
+    #[track_caller]
     pub fn mul<CS: ConstraintSystem<E>>(
         self,
         cs: &mut CS,
@@ -1884,6 +1889,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok((r_elem, (this, other)))
     }
 
+    #[track_caller]
     pub fn square<CS: ConstraintSystem<E>>(
         self,
         cs: &mut CS,
@@ -2520,6 +2526,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok(())
     }
 
+    #[track_caller]
     fn constraint_square_with_multiple_additions<CS: ConstraintSystem<E>>(
         cs: &mut CS,
         this: &Self,

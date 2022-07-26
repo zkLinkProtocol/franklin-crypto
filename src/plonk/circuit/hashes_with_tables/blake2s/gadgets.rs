@@ -27,6 +27,7 @@ use super::super::utils::*;
 use super::super::tables::*;
 use super::super::{NumExtension, AllocatedNumExtension};
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use crate::splitmut::SplitMut;
 use std::{ iter, mem };
@@ -208,8 +209,8 @@ pub struct Blake2sGadget<E: Engine> {
     iv0_twist: u64,
     sigmas : [[usize; 16]; 10],
 
-    declared_cnsts: RefCell<HashMap<E::Fr, AllocatedNum<E>>>,
-    allocated_cnsts : RefCell<HashMap<E::Fr, AllocatedNum<E>>>,
+    declared_cnsts: RefCell<BTreeMap<<E::Fr as PrimeField>::Repr, AllocatedNum<E>>>,
+    allocated_cnsts : RefCell<BTreeMap<<E::Fr as PrimeField>::Repr, AllocatedNum<E>>>,
 
     // constants heavily used
     zero: E::Fr,
@@ -433,8 +434,8 @@ impl<E: Engine> Blake2sGadget<E> {
             [ 10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0 ]
         ];
 
-        let declared_cnsts = RefCell::new(HashMap::new());
-        let allocated_cnsts = RefCell::new(HashMap::new());
+        let declared_cnsts = RefCell::new(BTreeMap::new());
+        let allocated_cnsts = RefCell::new(BTreeMap::new());
 
         let zero = E::Fr::zero();
         let one = E::Fr::one();
@@ -551,16 +552,21 @@ impl<E: Engine> Blake2sGadget<E> {
 
     fn constraint_all_allocated_cnsts<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<()> {
         let mut allocated_cnsts_dict = self.allocated_cnsts.borrow_mut(); 
-        for (fr, variable) in self.declared_cnsts.borrow_mut().drain() {
+        let declared_cnsts_dict = std::mem::replace(&mut *self.declared_cnsts.borrow_mut(), BTreeMap::new());
+        for (fr_repr, variable) in declared_cnsts_dict {
+        // for fr in keys.into_iter() {
+            // let variable = declared_cnsts_dict.remove(&fr).unwrap();
             let self_term = ArithmeticTerm::from_variable(variable.get_variable());
-            let other_term = ArithmeticTerm::constant(fr.clone());
+            let fr = E::Fr::from_repr(fr_repr).unwrap();
+            let other_term = ArithmeticTerm::constant(fr);
         
             let mut term = MainGateTerm::new();
             term.add_assign(self_term);
             term.sub_assign(other_term);
             cs.allocate_main_gate(term)?;
 
-            allocated_cnsts_dict.insert(fr, variable);
+            let prev = allocated_cnsts_dict.insert(fr_repr, variable);
+            assert!(prev.is_none());
         }
 
         Ok(())
@@ -576,14 +582,19 @@ impl<E: Engine> Blake2sGadget<E> {
                 else {
                     let allocated_map = self.allocated_cnsts.borrow();
                     let mut declared_map = self.declared_cnsts.borrow_mut();
-
-                    let var = match allocated_map.get(&fr) {
+                    let fr_repr = fr.into_repr();
+                    let var = match allocated_map.get(&fr_repr) {
                         Some(entry) => entry.clone(),
                         None => {
-                            let var = declared_map.entry(*fr).or_insert_with(|| { 
-                                AllocatedNum::alloc(cs, || Ok(*fr)).expect("should allocate")
-                            });
-                            var.clone()
+                            if let Some(var) = declared_map.get(&fr_repr).cloned() {
+                                var 
+                            } else {
+                                let var = AllocatedNum::alloc(cs, || Ok(*fr))?;
+                                let prev = declared_map.insert(fr_repr, var);
+                                assert!(prev.is_none());
+    
+                                var
+                            }
                         },
                     };
                     Num::Variable(var)
@@ -1053,20 +1064,24 @@ impl<E: Engine> Blake2sGadget<E> {
             let b = self.to_allocated(cs, &y.decomposed[start_idx])?;
             let c = qs[0].clone();
 
-            let is_empty_flag = self.declared_cnsts.borrow().is_empty();
+            let is_empty_flag = self.declared_cnsts.borrow_mut().is_empty();
             let (d, cnst_sel) = match is_empty_flag {
                 true => (Num::Variable(AllocatedNum::zero(cs)), E::Fr::zero()),
                 false => {
-                    let mut input_dict = self.declared_cnsts.borrow_mut();
+
                     let mut output_dict = self.allocated_cnsts.borrow_mut();
+                    let mut input_dict = self.declared_cnsts.borrow_mut();
+
                     let key = input_dict.keys().next().unwrap().clone();
                     let val = input_dict.remove(&key).unwrap();
                     
                     let d = Num::Variable(val.clone());
-                    let mut cnst_sel = key.clone();
+                    let mut cnst_sel = E::Fr::from_repr(key).unwrap();
                     cnst_sel.negate();
 
-                    output_dict.insert(key, val);
+                    let prev = output_dict.insert(key, val);
+                    assert!(prev.is_none());
+                    
                     (d, cnst_sel)
                 },
             };
@@ -1406,10 +1421,12 @@ impl<E: Engine> Blake2sGadget<E> {
                     let val = input_dict.remove(&key).unwrap();
                     
                     let d = Num::Variable(val.clone());
-                    let mut cnst_sel = key.clone();
+                    let mut cnst_sel = E::Fr::from_repr(key).unwrap();
                     cnst_sel.negate();
 
-                    output_dict.insert(key, val);
+                    let prev = output_dict.insert(key, val);
+                    assert!(prev.is_none());
+                    
                     (d, cnst_sel)
                 }
             };

@@ -243,7 +243,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     where CS: ConstraintSystem<E>
     {
         // only enforce that x != x'
-        //FieldElement::enforce_not_equal(cs, &mut self.x, &mut other.x)?;
+        FieldElement::enforce_not_equal(cs, &mut self.x, &mut other.x)?;
         self.add_unequal_unchecked(cs, other)
     }
 
@@ -261,7 +261,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         // we also do not want to have branching here, so this function implicitly requires that points are not equal
         // we need to calculate lambda = (y' - y)/(x' - x). We don't care about a particular
         // value of y' - y, so we don't add them explicitly and just use in inversion witness
-        let other_x_minus_this_x = other.x.add(cs, &self.x)?;
+        let other_x_minus_this_x = other.x.sub(cs, &self.x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&other.y).add_neg_term(&self.y);
         let lambda = FieldElement::div_with_chain(cs, chain, &other_x_minus_this_x)?;
@@ -314,9 +314,8 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
             },
             _ => {}
         }
-        FieldElement::enforce_not_equal(cs, &mut self.x, &mut other.x)?;
 
-        let other_x_minus_this_x = other.x.add(cs, &self.x)?;
+        let other_x_minus_this_x = other.x.sub(cs, &self.x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&other.y).add_pos_term(&self.y);
         let lambda = FieldElement::div_with_chain(cs, chain, &other_x_minus_this_x)?;
@@ -345,6 +344,40 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
             _ => None
         };
    
+        let new = Self {
+            x: new_x,
+            y: new_y,
+            value: new_value
+        };
+        Ok(new)
+    }
+
+    #[track_caller]
+    pub fn double<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        // this formula is only valid for curve with zero j-ivariant
+        assert!(G::a_coeff().is_zero());
+
+        let x_squared = self.x.square(cs)?;
+        let mut chain = FieldElementsChain::new();
+        chain.add_pos_term(&x_squared).add_pos_term(&x_squared).add_pos_term(&x_squared);
+        let two_y = self.y.double(cs)?;
+        let lambda = FieldElement::div_with_chain(cs, chain, &two_y)?;
+
+        let mut chain = FieldElementsChain::new();
+        chain.add_neg_term(&self.x).add_neg_term(&self.x);
+        let new_x = lambda.square_with_chain(cs, chain)?;
+
+        let x_minus_new_x = self.x.sub(cs, &new_x)?;
+        let mut chain = FieldElementsChain::new();
+        chain.add_neg_term(&self.y);
+        let new_y = FieldElement::mul_with_chain(cs, &lambda, &x_minus_new_x, chain)?;
+
+        let new_value = self.get_value().map(|this| {
+            let mut tmp = this.into_projective();
+            tmp.double();
+            tmp.into_affine()
+        });
+        
         let new = Self {
             x: new_x,
             y: new_y,
@@ -552,16 +585,24 @@ mod test {
         let a: G1Affine = rng.gen();
         let b: G1Affine = rng.gen();
         let mut tmp = a.into_projective();
+        tmp.double();
         tmp.add_assign_mixed(&b);
         let result = tmp.into_affine();
         
         let mut a = AffinePoint::alloc(&mut cs, Some(a), &params).unwrap();
         let mut b = AffinePoint::alloc(&mut cs, Some(b), &params).unwrap();
         let mut actual_result = AffinePoint::alloc(&mut cs, Some(result), &params).unwrap();
-        let mut result = a.add_unequal(&mut cs, &mut b).unwrap();
+        let naive_mul_start = cs.get_current_step_number();
+        let mut result = a.double_and_add(&mut cs, &mut b).unwrap();
+        let naive_mul_end = cs.get_current_step_number();
+        println!("num of gates: {}", naive_mul_end - naive_mul_start);
+
+        println!("actual result: x: {}, y: {}", actual_result.x.get_field_value().unwrap(), actual_result.y.get_field_value().unwrap());
+        println!("computed result: x: {}, y: {}", result.x.get_field_value().unwrap(), result.y.get_field_value().unwrap());
 
         AffinePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
         assert!(cs.is_satisfied()); 
+        println!("CHECK DOUBLE and ADD");
     }
 }
 

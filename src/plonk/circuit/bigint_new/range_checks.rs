@@ -3,7 +3,7 @@ use std::iter;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::plonk::circuit::linear_combination::*;
-use crate::plonk::circuit::SomeField;
+use crate::plonk::circuit::SomeArithmetizable;
 use crate::plonk::circuit::assignment::Assignment;
 use crate::plonk::circuit::hashes_with_tables::utils::IdentifyFirstLast;
 use crate::bellman::plonk::better_better_cs::lookup_tables::LookupTableApplication;
@@ -445,7 +445,7 @@ pub fn enforce_range_check_using_custom_gate<E: Engine, CS: ConstraintSystem<E>>
 
 pub fn apply_range_table_gate<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, a: &AllocatedNum<E>, b: &AllocatedNum<E>, acc: &AllocatedNum<E>, 
-    shift_a: &E::Fr, shift_b: &E::Fr, shift_d_next: &E::Fr,
+    shift_a: &E::Fr, shift_b: &E::Fr, shift_acc: &E::Fr, shift_d_next: &E::Fr,
     table: Arc<LookupTableApplication<E>>, is_final: bool
 ) -> Result<AllocatedNum<E>, SynthesisError>
 {
@@ -486,7 +486,7 @@ pub fn apply_range_table_gate<E: Engine, CS: ConstraintSystem<E>>(
     // new_acc * shift_d_next = prev_acc - a * shift_a - b * shift_b
     // or: a * shift_a + b * shift_b + new_acc * shift_d_next - prev_acc = 0;
     let vars = [a.get_variable(), b.get_variable(), a_xor_b.get_variable(), acc.get_variable()];
-    let coeffs = [shift_a.clone(), shift_b.clone(), E::Fr::zero(), minus_one];
+    let coeffs = [shift_a.clone(), shift_b.clone(), E::Fr::zero(), shift_acc.clone()];
 
     cs.begin_gates_batch_for_step()?;
     cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
@@ -514,7 +514,7 @@ pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>
 ) -> Result<RangeCheckDecomposition<E>, SynthesisError> 
 {
     let chunk_width = (crate::log2_floor(table.size()) / 2) as usize;
-    let num_chunks = num_bits / chunk_width;
+    let num_chunks = (num_bits + chunk_width - 1) / chunk_width;
     let should_enforce_for_shifted_chunk = (num_bits % chunk_width) != 0 && !coarsely;
 
     increment_invocation_count();
@@ -547,14 +547,15 @@ pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>
         // a + b * shift - acc + acc_next * shift^2;
         let (a, b) = (&pair[0], &pair[1]);
         is_final &= is_even_num_of_chunks; 
-        acc = apply_range_table_gate(cs, a, b, &acc, &shift_a, &shift_b, &shift_d_next, table.clone(), is_final)?;
+        acc = apply_range_table_gate(cs, a, b, &acc, &shift_a, &shift_b, &minus_one.clone(), &shift_d_next, table.clone(), is_final)?;
     }
 
     if !is_even_num_of_chunks || should_enforce_for_shifted_chunk {
         // if we should_enforce_for_shifted_chunk than our last gate would be of the form:
-        // [a, b, a ^ b, acc] with arithmetic condition: b = a * shift, acc = a * shift_a;
+        // [a, b, a ^ b, a] with arithmetic condition: b = a * shift
+        // else it is just [a, 0, a^0, a]
         let shift = u64_to_fe::<E::Fr>(1 << (chunk_width - (num_bits % chunk_width)));
-        let a = if is_even_num_of_chunks { &dummy } else { &last_chunk };
+        let a = last_chunk;
         let b = if should_enforce_for_shifted_chunk {
             AllocatedNum::alloc(cs, || {
                 let mut res = last_chunk.get_value().grab()?;
@@ -565,9 +566,10 @@ pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>
         else {
             dummy.clone()
         };
-    
-        let shift_b = if should_enforce_for_shifted_chunk { shift } else { E::Fr::zero() };
-        apply_range_table_gate(cs, a, &b, &acc, &shift_a, &shift_b, &E::Fr::zero(), table.clone(), true)?;
+        
+        let shift_a = if should_enforce_for_shifted_chunk { shift } else { E::Fr::zero() };
+        let shift_b = if should_enforce_for_shifted_chunk { minus_one.clone() } else { E::Fr::zero() };
+        apply_range_table_gate(cs, &a, &b, &a, &shift_a, &shift_b, &E::Fr::zero(), &E::Fr::zero(), table.clone(), true)?;
     } 
 
     Ok(RangeCheckDecomposition {
@@ -663,4 +665,21 @@ mod test {
             None
         ).unwrap();
     }
+
+    #[cfg(test)]
+mod test {
+    use super::*;
+    use crate::bellman::pairing::bn256::{Fq, Bn256, Fr};
+    use plonk::circuit::Width4WithCustomGates;
+    
+    #[test]
+    fn test_unalligned_range_check_via_table() {
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let var = AllocatedNum::alloc(&mut cs, || Ok(u64_to_fe::<Fr>(0b1111111))).unwrap();
+        constraint_bit_length(&mut cs, &var, 8).unwrap();
+
+        assert!(cs.is_satisfied()); 
+    }
+}
 }

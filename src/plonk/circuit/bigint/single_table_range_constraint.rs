@@ -142,7 +142,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable<E: Engine, CS: Con
     }
     let num_slices = num_gates_for_coarse_constraint;
 
-    use crate::plonk::circuit::SomeField;
+    use crate::plonk::circuit::SomeArithmetizable;
 
     let value_to_constraint = to_constraint.get_value().mul(&Some(shift));
     let slices = split_some_into_slices(value_to_constraint, width_per_gate, num_slices);
@@ -289,7 +289,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized<E: Engin
     }
     let num_slices = num_gates_for_coarse_constraint;
 
-    use crate::plonk::circuit::SomeField;
+    use crate::plonk::circuit::SomeArithmetizable;
 
     let value_to_constraint = to_constraint.get_value().mul(&Some(shift));
     let slices = split_some_into_slices(value_to_constraint, width_per_gate, num_slices);
@@ -452,7 +452,7 @@ pub fn enforce_using_single_column_table_for_shifted_variable_optimized_for_mult
 
     let num_slices = num_gates_for_coarse_constraint;
 
-    use crate::plonk::circuit::SomeField;
+    use crate::plonk::circuit::SomeArithmetizable;
 
     let value_to_constraint = to_constraint.get_value().mul(&Some(shift));
     let slices = split_some_into_slices(value_to_constraint, width_per_gate, num_slices);
@@ -592,7 +592,7 @@ fn enforce_shorter_range_into_single_gate_for_shifted_variable<E: Engine, CS: Co
 
     use super::bigint::make_multiple;
 
-    use crate::plonk::circuit::SomeField;
+    use crate::plonk::circuit::SomeArithmetizable;
 
     let mut term = MainGateTerm::<E>::new();
     let value = to_constraint.get_value().mul(&Some(shift));

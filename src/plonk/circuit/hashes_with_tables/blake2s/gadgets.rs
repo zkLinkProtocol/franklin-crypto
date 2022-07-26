@@ -1638,14 +1638,14 @@ impl<E: Engine> Blake2sGadget<E> {
     pub fn digest_bytes<CS: ConstraintSystem<E>>(&self, cs: &mut CS, bytes: &[Byte<E>]) -> Result<Vec<Num<E>>> 
     {
         // padding with zeroes until length of message is multiple of 64
-        let last_block_size = bytes.len() % 128;
-        let num_of_zero_bytes = if last_block_size > 0 { 128 - last_block_size} else {0};
+        let last_block_size = bytes.len() % 64;
+        let num_of_zero_bytes = if last_block_size > 0 { 64 - last_block_size} else {0};
         
         let mut padded = vec![];
         padded.extend(bytes.iter().cloned());
         padded.extend(iter::repeat(Byte::from_cnst(E::Fr::zero())).take(num_of_zero_bytes));
 
-        assert_eq!(padded.len() % 128, 0);
+        assert_eq!(padded.len() % 64, 0);
 
         // now convert the byte array to array of 32-bit words
         let mut words32 = Vec::with_capacity(padded.len() % 4);

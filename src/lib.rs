@@ -17,6 +17,7 @@ extern crate splitmut;
 extern crate blake2;
 extern crate serde;
 extern crate num_derive;
+extern crate indexmap;
 
 #[macro_use]
 extern crate lazy_static;

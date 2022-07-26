@@ -47,11 +47,18 @@ use num_bigint::BigUint;
 use num_integer::Integer;
 
 use crate::plonk::circuit::bigint_new::*;
+use crate::plonk::circuit::curve_new::sw_projective::*;
+
 
 #[derive(Clone, Debug)]
 pub struct AffinePoint<'a, E: Engine, G: GenericCurveAffine> where <G as GenericCurveAffine>::Base: PrimeField {
     pub x: FieldElement<'a, E, G::Base>,
     pub y: FieldElement<'a, E, G::Base>,
+    // the used paradigm is zero abstraction: we won't pay for this flag if it is never used and 
+    // all our points are regular (i.e. not points at infinity)
+    // for this purpose we introduce lazy_select
+    // if current point is actually a point at infinity than x, y may contain any values and are actually meaningless
+    //pub is_infinity: Boolean,
     pub value: Option<G>,
 }
 
@@ -236,7 +243,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     where CS: ConstraintSystem<E>
     {
         // only enforce that x != x'
-        FieldElement::enforce_not_equal(cs, &mut self.x, &mut other.x)?;
+        //FieldElement::enforce_not_equal(cs, &mut self.x, &mut other.x)?;
         self.add_unequal_unchecked(cs, other)
     }
 
@@ -257,18 +264,18 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let other_x_minus_this_x = other.x.add(cs, &self.x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&other.y).add_neg_term(&self.y);
-        let lambda = FieldElement::div_with_chain(cs, &chain, &other_x_minus_this_x)?;
+        let lambda = FieldElement::div_with_chain(cs, chain, &other_x_minus_this_x)?;
         
         // lambda^2 + (-x' - x)
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&other.x).add_neg_term(&self.x);
-        let new_x = lambda.square_with_chain(cs, &chain)?;
+        let new_x = lambda.square_with_chain(cs, chain)?;
 
         // lambda * (x - new_x) + (- y)
         let this_x_minus_new_x = self.x.sub(cs, &new_x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&self.y);
-        let new_y = FieldElement::mul_with_chain(cs, &lambda, &this_x_minus_new_x, &chain)?;
+        let new_y = FieldElement::mul_with_chain(cs, &lambda, &this_x_minus_new_x, chain)?;
 
         let new_value = match (self.value, other.value) {
             (Some(this), Some(other)) => {
@@ -312,18 +319,18 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let other_x_minus_this_x = other.x.add(cs, &self.x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&other.y).add_pos_term(&self.y);
-        let lambda = FieldElement::div_with_chain(cs, &chain, &other_x_minus_this_x)?;
+        let lambda = FieldElement::div_with_chain(cs, chain, &other_x_minus_this_x)?;
 
         // lambda^2 + (-x' - x)
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&self.x).add_neg_term(&other.x);
-        let new_x = lambda.square_with_chain(cs, &chain)?;
+        let new_x = lambda.square_with_chain(cs, chain)?;
 
         // lambda * -(x - new_x) + (- y)
         let new_x_minus_this_x = new_x.sub(cs, &self.x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&self.y);
-        let new_y = FieldElement::mul_with_chain(cs, &lambda, &new_x_minus_this_x, &chain)?;
+        let new_y = FieldElement::mul_with_chain(cs, &lambda, &new_x_minus_this_x, chain)?;
 
         let new_value = match (self.value, other.value) {
             (Some(this), Some(other)) => {
@@ -366,12 +373,12 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let other_x_minus_this_x = other.x.sub(cs, &self.x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&other.y).add_neg_term(&self.y); 
-        let lambda = FieldElement::div_with_chain(cs, &chain, &other_x_minus_this_x)?;
+        let lambda = FieldElement::div_with_chain(cs, chain, &other_x_minus_this_x)?;
 
         // lambda^2 + (-x' - x)
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&other.x).add_neg_term(&self.x);
-        let new_x = lambda.square_with_chain(cs, &chain)?;
+        let new_x = lambda.square_with_chain(cs, chain)?;
         
         let new_x_minus_this_x = new_x.sub(cs, &self.x)?;
         let two_y = self.y.double(cs)?;
@@ -379,12 +386,12 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let t1 = lambda.add(cs, &t0)?;
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&self.x).add_neg_term(&new_x);
-        let new_x = t1.square_with_chain(cs, &chain)?;
+        let new_x = t1.square_with_chain(cs, chain)?;
 
         let new_x_minus_x= new_x.sub(cs, &self.x)?;
         let mut chain = FieldElementsChain::new();
         chain.add_neg_term(&self.y);
-        let new_y = FieldElement::mul_with_chain(cs, &t1, &new_x_minus_x, &chain)?;
+        let new_y = FieldElement::mul_with_chain(cs, &t1, &new_x_minus_x, chain)?;
 
         let new_value = match (self.value, other.value) {
             (Some(this), Some(other)) => {
@@ -407,9 +414,12 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     }
 }
 
+
+// we are particularly interested in three curves: secp256k1, bn256 and bls12-281
+// unfortunately, only bls12-381 has a cofactor
 impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand> AffinePoint<'a, E, G> where <G as GenericCurveAffine>::Base: PrimeField {
     #[track_caller]
-    pub fn mul_by_scalar<CS: ConstraintSystem<E>>(
+    pub fn mul_by_scalar_for_composite_order_curve<CS: ConstraintSystem<E>>(
         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>
     ) -> Result<Self, SynthesisError> {
         if let Some(value) = scalar.get_field_value() {
@@ -499,6 +509,59 @@ impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand> AffinePoint<'a, E, G> wh
         let result = result.sub_unequal(cs, &mut offset)?;
 
         Ok(result)
+    }
+}
+
+
+impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as GenericCurveAffine>::Base: PrimeField {
+    pub fn mul_by_scalar_for_prime_order_curve<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>
+    ) -> Result<ProjectivePoint<'a, E, G>, SynthesisError> {
+        let params = self.x.representation_params;
+        let scalar_decomposition = scalar.decompose_into_binary_representation(cs)?;
+
+        // TODO: use standard double-add algorithm for now, optimize later
+        let mut acc = ProjectivePoint::<E, G>::zero(params);
+        for bit in scalar_decomposition.into_iter() {
+            let added = acc.add_mixed(cs, &self)?;
+            acc = ProjectivePoint::conditionally_select(cs, &bit, &added, &acc)?;
+            acc = acc.double(cs)?;
+        }
+        
+        Ok(acc)
+    }
+}
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::bellman::pairing::bn256::{Fq, Bn256, Fr, G1Affine};
+    use plonk::circuit::Width4WithCustomGates;
+    use bellman::plonk::better_better_cs::gates::{selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext, self};
+    use rand::{XorShiftRng, SeedableRng, Rng};
+    use bellman::plonk::better_better_cs::cs::*;
+
+    #[test]
+    fn test_arithmetic_for_bn256_curve() {
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let params = RnsParameters::<Bn256, Fq>::new_optimal(&mut cs, 80usize);
+        let mut rng = rand::thread_rng();
+
+        let a: G1Affine = rng.gen();
+        let b: G1Affine = rng.gen();
+        let mut tmp = a.into_projective();
+        tmp.add_assign_mixed(&b);
+        let result = tmp.into_affine();
+        
+        let mut a = AffinePoint::alloc(&mut cs, Some(a), &params).unwrap();
+        let mut b = AffinePoint::alloc(&mut cs, Some(b), &params).unwrap();
+        let mut actual_result = AffinePoint::alloc(&mut cs, Some(result), &params).unwrap();
+        let mut result = a.add_unequal(&mut cs, &mut b).unwrap();
+
+        AffinePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
+        assert!(cs.is_satisfied()); 
     }
 }
 

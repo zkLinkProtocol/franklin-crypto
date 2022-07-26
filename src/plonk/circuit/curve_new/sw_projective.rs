@@ -128,8 +128,9 @@ impl<'a, E: Engine, G: GenericCurveAffine> ProjectivePoint<'a, E, G> where <G as
 
     pub unsafe fn convert_to_affine<CS>(&self, cs: &mut CS) -> Result<AffinePoint<'a, E, G>, SynthesisError> 
     where CS: ConstraintSystem<E> {
+        println!("z value: {}", self.z.get_field_value().unwrap());
         let x = self.x.div(cs, &self.z)?;
-        let y = self.y.div(cs, &self.y)?;
+        let y = self.y.div(cs, &self.z)?;
         let value = self.get_value();
 
         Ok(AffinePoint { x, y, value })
@@ -441,6 +442,50 @@ impl<'a, E: Engine, G: GenericCurveAffine> ProjectivePoint<'a, E, G> where <G as
 
         let selected = Self { x, y, z, value };
         Ok(selected)
+    }
+}
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::bellman::pairing::bn256::{Fq, Bn256, Fr, G1Affine};
+    use plonk::circuit::Width4WithCustomGates;
+    use bellman::plonk::better_better_cs::gates::{selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext, self};
+    use rand::{XorShiftRng, SeedableRng, Rng};
+    use bellman::plonk::better_better_cs::cs::*;
+
+    #[test]
+    fn test_arithmetic_for_projective_bn256_curve() {
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let params = RnsParameters::<Bn256, Fq>::new_optimal(&mut cs, 80usize);
+        let scalar_params = RnsParameters::<Bn256, Fr>::new_optimal(&mut cs, 80usize);
+        let mut rng = rand::thread_rng();
+
+        let a: G1Affine = rng.gen();
+        let b: G1Affine = rng.gen();
+        let mut tmp = a.into_projective();
+        tmp.add_assign_mixed(&b);
+        let result = tmp.into_affine();
+        
+        let mut a_affine = AffinePoint::alloc(&mut cs, Some(a), &params).unwrap();
+        let mut a_proj = ProjectivePoint::from(a_affine);
+        let mut b_affine = AffinePoint::alloc(&mut cs, Some(b), &params).unwrap();
+        let mut b_proj = ProjectivePoint::from(b_affine);
+        let mut actual_result = AffinePoint::alloc(&mut cs, Some(result), &params).unwrap();
+        let naive_mul_start = cs.get_current_step_number();
+        let mut result = a_proj.add(&mut cs, &mut b_proj).unwrap();
+        let naive_mul_end = cs.get_current_step_number();
+        println!("num of gates: {}", naive_mul_end - naive_mul_start);
+
+        let mut result = unsafe { result.convert_to_affine(&mut cs).unwrap() };
+        println!("WOW");
+        // //result.x.normalize(&mut cs).unwrap();
+        // result.y.normalize(&mut cs).unwrap();
+        AffinePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
+        assert!(cs.is_satisfied()); 
+        println!("PROJ SCALAR MULTIPLICATION ");
     }
 }
 

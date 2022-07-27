@@ -1,3 +1,5 @@
+use itertools::Itertools;
+
 use crate::bellman::plonk::better_better_cs::cs::*;
 use crate::bellman::plonk::better_better_cs::lookup_tables::*;
 use crate::bellman::plonk::better_better_cs::utils;
@@ -9,12 +11,16 @@ use crate::plonk::circuit::allocated_num::{
     AllocatedNum,
     Num,
 };
+use crate::plonk::circuit::bigint_new::*;
+use crate::plonk::circuit::boolean::*;
 use crate::plonk::circuit::byte::{
     Byte,
 };
 use crate::plonk::circuit::assignment::{
     Assignment
 };
+use crate::plonk::circuit::bigint_new::range_checks::enforce_range_check_using_bitop_table;
+use crate::plonk::circuit::bigint_new::bigint::split_some_into_fixed_number_of_limbs;
 
 use super::tables::*;
 use super::super::utils::*;
@@ -225,6 +231,91 @@ impl<E: Engine> Blake2sGadget<E> {
         }
     }
 
+    fn num_to_reg<CS: ConstraintSystem<E>>(&self, cs: &mut CS, num: Num<E>) -> Result<Reg<E>> {
+        let res = match num {
+            Num::Constant(fr) => self.u64_to_reg(ff_to_u64(&fr)),
+            Num::Variable(var) => {
+                let table = self.xor_table.clone();
+                let x = enforce_range_check_using_bitop_table(cs, &var, 32, table, false)?;
+                let dcmps = x.get_vars();
+                Reg {
+                    full: num.clone(), 
+                    decomposed: DecomposedNum { 
+                        r0: Num::Variable(dcmps[0].clone()), r1: Num::Variable(dcmps[1].clone()), 
+                        r2: Num::Variable(dcmps[2].clone()), r3: Num::Variable(dcmps[3].clone())
+                    }
+                }
+            },
+        };
+        
+        Ok(res)
+    }
+
+    fn decompose_total_len_var<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, var: &AllocatedNum<E>, max_total_len: u64
+    ) -> Result<(Reg<E>, Reg<E>)> 
+    {
+        let val = some_fe_to_biguint(&var.get_value());
+        let table = self.xor_table.clone();
+        let max_low_val = max_total_len & ((1 << REG_WIDTH) - 1);
+        let max_high_val = max_total_len >> REG_WIDTH;
+        let bitlens = [num_bits::<u64>(max_low_val), num_bits::<u64>(max_high_val)];
+        
+        if bitlens[1] == 0 {
+            let x = enforce_range_check_using_bitop_table(cs, &var, bitlens[0], table.clone(), false)?;
+            let dcmps = x.get_vars();
+            let low = Reg {
+                full: Num::Variable(var.clone()), 
+                decomposed: DecomposedNum { 
+                    r0: Num::Variable(dcmps[0].clone()), r1: Num::Variable(dcmps[1].clone()), 
+                    r2: Num::Variable(dcmps[2].clone()), r3: Num::Variable(dcmps[3].clone())
+                }
+            };
+            return Ok((low, Reg::default()));
+        }
+
+        let chunks_wit = split_some_into_fixed_number_of_limbs(val, REG_WIDTH, 2);
+        let mut regs = [Reg::default(), Reg::default()];
+        let iter = itertools::multizip((chunks_wit.into_iter(), bitlens.iter(), regs.iter_mut()));
+
+        for (wit, bitlen, out) in iter {
+            let fr = some_biguint_to_fe::<E::Fr>(&wit);
+            if *bitlen > 0 {
+                let var = AllocatedNum::alloc(cs, || fr.grab())?;
+                let x = enforce_range_check_using_bitop_table(cs, &var, *bitlen, table.clone(), false)?;
+                let dcmps = x.get_vars();
+
+                let reg = Reg {
+                    full: Num::Variable(var), 
+                    decomposed: DecomposedNum { 
+                        r0: Num::Variable(dcmps[0].clone()), r1: Num::Variable(dcmps[1].clone()), 
+                        r2: Num::Variable(dcmps[2].clone()), r3: Num::Variable(dcmps[3].clone())
+                    }
+                };
+                *out = reg;
+            };
+        };
+
+        let mut shift = E::Fr::one();
+        for _ in 0..REG_WIDTH {
+            shift.double();
+        }
+        
+        let low_term = ArithmeticTerm::from_variable(regs[0].full.get_variable().get_variable());
+        let high_term = ArithmeticTerm::from_variable_and_coeff(
+            regs[1].full.get_variable().get_variable(), shift
+        );
+        let total_term = ArithmeticTerm::from_variable(var.get_variable());
+        
+        let mut gate = MainGateTerm::new();
+        gate.add_assign(low_term);
+        gate.add_assign(high_term);
+        gate.sub_assign(total_term);
+        cs.allocate_main_gate(gate)?;
+
+        Ok((regs[0].clone(), regs[1].clone()))
+    }
+
     fn alloc_num_from_u64<CS: ConstraintSystem<E>>(&self, cs: &mut CS, n: Option<u64>) -> Result<Num<E>> {
         let val = n.map(|num| { u64_to_ff(num) });
         let new_var = AllocatedNum::alloc(cs, || {val.grab()})?;
@@ -276,7 +367,7 @@ impl<E: Engine> Blake2sGadget<E> {
             None,
             true
         );
-        let xor_table = cs.add_table(xor_table)?;
+        let xor_table = add_table_once(cs, xor_table)?;
 
         let xor_rotate4_table = if use_additional_tables {
             let name2 : &'static str = "xor_rotate4_table";
@@ -287,7 +378,7 @@ impl<E: Engine> Blake2sGadget<E> {
                 None,
                 true
             );
-            Some(cs.add_table(xor_rotate4_table)?)
+            Some(add_table_once(cs, xor_rotate4_table)?)
         }
         else {
             None
@@ -302,7 +393,7 @@ impl<E: Engine> Blake2sGadget<E> {
                 None,
                 true
             );
-            Some(cs.add_table(xor_rotate7_table)?)
+            Some(add_table_once(cs, xor_rotate7_table)?)
         }
         else {
             None
@@ -317,7 +408,7 @@ impl<E: Engine> Blake2sGadget<E> {
                 None,
                 true
             );
-            Some(cs.add_table(compound_rot4_7_table)?)
+            Some(add_table_once(cs, compound_rot4_7_table)?)
         }
         else {
             None
@@ -1398,8 +1489,20 @@ impl<E: Engine> Blake2sGadget<E> {
         self.var_xor_const(cs, &reg.decomposed, cnst)
     }
 
-    fn f<CS>(&self, cs: &mut CS, hash_state: HashState<E>, m: &[Num<E>], total_len: u64, last_block: bool) -> Result<HashState<E>>
-    where CS: ConstraintSystem<E>
+    fn apply_xor<CS: ConstraintSystem<E>>(&self, cs: &mut CS, a: &Reg<E>, b: &Reg<E>) -> Result<Reg<E>>
+    {
+        match (a.is_const(), b.is_const()) {
+            (true, true) | (false, true) => self.apply_xor_with_const(cs, a, ff_to_u64(&b.get_value().unwrap())),
+            (true, false) => self.var_xor_const(cs, &b.decomposed, ff_to_u64(&a.get_value().unwrap())),
+            (false, false) => self.var_xor_var(cs, &a.decomposed, &b.decomposed)
+        }
+    }
+
+    fn f<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, hash_state: HashState<E>, m: &[Num<E>], total_len: &Num<E>, 
+        is_last_block: Boolean, max_total_len: u64
+    ) -> Result<HashState<E>>
+    where 
     {
         // Initialize local work vector v[0..15]
         let mut v = HashState(Vec::with_capacity(BLAKE2S_STATE_WIDTH));
@@ -1413,12 +1516,37 @@ impl<E: Engine> Blake2sGadget<E> {
             v.0.push(reg);
         }
 
-        v.0[12] = self.apply_xor_with_const(cs, &mut v.0[12], total_len & ((1 << REG_WIDTH) - 1))?; // Low word of the offset.
-        v.0[13] = self.apply_xor_with_const(cs, &mut v.0[13], total_len >> REG_WIDTH)?; // High word.
-        if last_block {
-            // NB: xor with very special constant: y = x ^ 0xffffffff
-            // it is equal to y = 0xffffffff - x
-            v.0[14] = self.apply_xor_with_const(cs, &mut v.0[14], 0xffffffff)?; // Invert all bits.
+        match total_len {
+            Num::Constant(fr) => {
+                let total_len_as_u64 = ff_to_u64(fr);
+                // Low word of the offset.
+                v.0[12] = self.apply_xor_with_const(cs, &mut v.0[12], total_len_as_u64 & ((1 << REG_WIDTH) - 1))?; 
+                // High word.
+                v.0[13] = self.apply_xor_with_const(cs, &mut v.0[13], total_len_as_u64 >> REG_WIDTH)?; 
+            }
+            Num::Variable(var) => {
+                let (low, high) = self.decompose_total_len_var(cs, &var, max_total_len)?;
+                v.0[12] = self.apply_xor(cs, &mut v.0[12], &low)?; 
+                v.0[13] = self.apply_xor(cs, &mut v.0[13], &high)?; 
+            }
+        }
+        
+        // NB: xoring with very special constant: y = x ^ 0xffffffff (invert all bits of x) 
+        // is equal to y = 0xffffffff - x
+        match is_last_block {
+            Boolean::Constant(true) => {
+                v.0[14] = self.apply_xor_with_const(cs, &mut v.0[14], 0xffffffff)?;
+            },
+            Boolean::Constant(false) => {}, 
+            Boolean::Is(_flag) | Boolean::Not(_flag) => {
+                let inverted = self.apply_xor_with_const(cs, &mut v.0[14], 0xffffffff)?;
+                // NB: it is actually a hack as we only modify the full value and let individual chunks of
+                // the decomposition to remain unchanged. This means, that full and decomposed fields of reg
+                // become incostintent, but as soon as we don't need the decomposition from now on it is not 
+                // a problem for us. However, with modifications of the code, this caveat should be kept in mind.
+                // The same trick is applied also for the case of Bollean::Not(_)
+                v.0[14].full = Num::conditionally_select(cs, &is_last_block, &inverted.full, &v.0[14].full)?;
+            }
         }
 
         // Cryptographic mixing: ten rounds
@@ -1446,10 +1574,10 @@ impl<E: Engine> Blake2sGadget<E> {
         Ok(res)
     }
 
-    pub fn digest<CS: ConstraintSystem<E>>(&self, cs: &mut CS, data: &[Num<E>]) -> Result<Vec<Num<E>>> 
+    pub fn digest<CS: ConstraintSystem<E>>(&self, cs: &mut CS, data: &[Num<E>], message_len: usize) -> Result<Vec<Num<E>>> 
     {
         // h[0..7] := IV[0..7] // Initialization Vector.
-        let mut total_len : u64 = 0;
+        let mut total_len_as_u64 : u64 = 0;
         let mut hash_state = HashState(Vec::with_capacity(BLAKE2S_STATE_WIDTH / 2));
         for i in 0..(BLAKE2S_STATE_WIDTH / 2) {
             let num = if i == 0 { self.iv0_twist } else { self.iv[i] };
@@ -1460,8 +1588,11 @@ impl<E: Engine> Blake2sGadget<E> {
         for (_is_first, is_last, block) in data.chunks(16).identify_first_last() 
         {
             assert_eq!(block.len(), 16);
-            total_len += 64;
-            hash_state = self.f(cs, hash_state, &block[..], total_len, is_last)?;
+            total_len_as_u64 += 64;
+            total_len_as_u64 = std::cmp::min(total_len_as_u64, message_len as u64);
+            let total_len = Num::Constant(u64_to_ff(total_len_as_u64));
+            let is_last = Boolean::Constant(is_last);   
+            hash_state = self.f(cs, hash_state, &block[..], &total_len, is_last, total_len_as_u64)?;
         }
 
         // allocate all remaining consts
@@ -1474,21 +1605,34 @@ impl<E: Engine> Blake2sGadget<E> {
         Ok(res)
     }
 
+    pub fn digest_words32<CS: ConstraintSystem<E>>(&self, cs: &mut CS, words32: &[Num<E>]) -> Result<Vec<Num<E>>> 
+    {
+        let last_block_size = words32.len() % 16;
+        let num_of_zero_words = if last_block_size > 0 { 16 - last_block_size} else {0};
+        
+        let mut padded = vec![];
+        padded.extend(words32.iter().cloned());
+        padded.extend(iter::repeat(Num::Constant(E::Fr::zero())).take(num_of_zero_words));
+
+        assert_eq!(padded.len() % 16, 0);
+        self.digest(cs, &padded[..], words32.len() * 4)  
+    }
+
     pub fn digest_bytes<CS: ConstraintSystem<E>>(&self, cs: &mut CS, bytes: &[Byte<E>]) -> Result<Vec<Num<E>>> 
     {
         // padding with zeroes until length of message is multiple of 64
-        let last_block_size = bytes.len() % 64;
-        let num_of_zero_bytes = if last_block_size > 0 { 64 - last_block_size} else {0};
+        let last_block_size = bytes.len() % 128;
+        let num_of_zero_bytes = if last_block_size > 0 { 128 - last_block_size} else {0};
         
         let mut padded = vec![];
         padded.extend(bytes.iter().cloned());
         padded.extend(iter::repeat(Byte::from_cnst(E::Fr::zero())).take(num_of_zero_bytes));
 
-        assert_eq!(padded.len() % 64, 0);
+        assert_eq!(padded.len() % 128, 0);
 
         // now convert the byte array to array of 32-bit words
         let mut words32 = Vec::with_capacity(padded.len() % 4);
-        let cfs = [u64_to_ff(1 << 24), u64_to_ff(1 << 16), u64_to_ff(1 << 8), E::Fr::one()];
+        let cfs = [E::Fr::one(), u64_to_ff(1 << 8), u64_to_ff(1 << 16), u64_to_ff(1 << 24)];
         for chunk in padded.chunks(4) {
             let tmp = Num::lc(
                 cs, 
@@ -1498,6 +1642,39 @@ impl<E: Engine> Blake2sGadget<E> {
             words32.push(tmp);
         }
 
-        self.digest(cs, &words32[..])           
+        self.digest(cs, &words32[..], bytes.len())           
+    }
+
+    pub fn round_function<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, hash_state: [Num<E>; BLAKE2S_STATE_WIDTH / 2], 
+        round_input: &[Num<E>; BLAKE2S_STATE_WIDTH], total_len: Num<E>, max_total_len: u64,
+        is_first_chunk: Boolean, is_last_chunk: Boolean
+    ) -> Result<([Num<E>; BLAKE2S_STATE_WIDTH / 2], Num<E>)> 
+    {            
+        let mut raw_hash_state = HashState(Vec::with_capacity(BLAKE2S_STATE_WIDTH / 2));
+        for (i, cur_state_elem) in hash_state.iter().enumerate() {
+            let iv_as_u64 = if i == 0 { self.iv0_twist } else { self.iv[i] };
+            let iv_as_num = Num::Constant(u64_to_ff(iv_as_u64));
+            let selected = Num::conditionally_select(cs, &is_first_chunk, &iv_as_num, &cur_state_elem)?;
+            raw_hash_state.0.push(self.num_to_reg(cs, selected)?)
+        }
+
+        let block_size_as_num = Num::Constant(u64_to_ff(64));
+        let total_len_incremented = total_len.add(cs, &block_size_as_num)?;
+        let selected_total_len = Num::conditionally_select(
+            cs, &is_first_chunk, &block_size_as_num, &total_len_incremented
+        )?;
+        raw_hash_state = self.f(
+            cs, raw_hash_state, &round_input[..], &selected_total_len, is_last_chunk, max_total_len
+        )?;
+
+        // allocate all remaining consts
+        self.constraint_all_allocated_cnsts(cs)?;
+
+        let mut res = [Num::zero(); BLAKE2S_STATE_WIDTH / 2];
+        for (in_elem, out) in raw_hash_state.0.drain(0..(BLAKE2S_STATE_WIDTH / 2)).zip(res.iter_mut()) {
+            *out = in_elem.full;
+        }
+        Ok((res, selected_total_len))
     }
 }

@@ -1880,3 +1880,4 @@ impl<E: Engine> Sha256Gadget<E> {
         Ok(gadget_output)
     }
 }
+

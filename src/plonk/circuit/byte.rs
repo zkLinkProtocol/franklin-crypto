@@ -2,12 +2,12 @@ use crate::bellman::pairing::ff::*;
 use crate::bellman::pairing::*;
 use crate::bellman::SynthesisError;
 use crate::plonk::circuit::bigint::{split_into_slices, split_some_into_slices};
-use crate::plonk::circuit::bigint::constraint_num_bits;
 use super::allocated_num::*;
 use super::linear_combination::*;
 use super::boolean::Boolean;
 use super::utils::*;
 use crate::plonk::circuit::Assignment;
+use crate::plonk::circuit::bigint_new::constraint_bit_length;
 
 use crate::bellman::plonk::better_better_cs::cs::{
     Variable, 
@@ -66,7 +66,7 @@ impl<E: Engine> Byte<E> {
             }
         )?;
         let num = Num::Variable(var);
-        constraint_num_bits(cs, &num, 8)?;
+        constraint_bit_length(cs, &var, 8)?;
 
         Ok(
             Self {
@@ -87,8 +87,11 @@ impl<E: Engine> Byte<E> {
     }
 
     pub fn from_num<CS: ConstraintSystem<E>>(cs: &mut CS, value: Num<E>) -> Result<Self, SynthesisError> {
-        constraint_num_bits(cs, &value, 8)?;
-        
+        if value.is_constant() {
+            let var = value.get_variable();
+            constraint_bit_length(cs, &var, 8)?;
+        }
+       
         Ok(
             Self {
                 inner: value

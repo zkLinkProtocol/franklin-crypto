@@ -4,7 +4,7 @@ use crate::bellman::plonk::better_better_cs::utils;
 use crate::bellman::pairing::ff::*;
 use crate::bellman::SynthesisError;
 use crate::bellman::Engine;
-use crate::plonk::circuit::bigint::fe_to_biguint;
+use crate::plonk::circuit::bigint_new::fe_to_biguint;
 
 use itertools::Itertools;
 
@@ -216,7 +216,6 @@ impl<E: Engine> LookupTableInternal<E> for OverflowCognizantConverterTable<E> {
     }
     fn table_size(&self) -> usize {
         let table_size = (self.base_b * (self.base_b+1)/2) as usize;
-        println!("SELF TABLE SIZE: {}", table_size);
         table_size
     }
     fn num_keys(&self) -> usize {

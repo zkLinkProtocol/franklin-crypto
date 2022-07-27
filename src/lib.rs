@@ -15,13 +15,15 @@ extern crate num_integer;
 extern crate itertools;
 extern crate splitmut;
 extern crate blake2;
+extern crate serde;
+extern crate num_derive;
 
 #[macro_use]
 extern crate lazy_static;
 
-#[cfg(test)]
 #[macro_use]
-extern crate hex_literal;
+extern crate arr_macro;
+
 
 #[cfg(test)]
 extern crate hex;
@@ -39,10 +41,6 @@ pub mod as_waksman;
 pub mod rescue;
 pub mod generic_twisted_edwards;
 pub mod plonk;
-
-extern crate serde;
-#[macro_use]
-extern crate serde_derive;
 
 pub fn log2_floor(num: usize) -> u32 {
     assert!(num > 0);

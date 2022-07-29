@@ -1448,7 +1448,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let q_max_value = lhs_max_value.clone() / &params.represented_field_modulus;
         let q_max_bits = q_max_value.bits();
         let coarsely = params.allow_coarse_allocation_for_temp_values;
-        println!("alloc quotient with bitlen: {}", q_max_bits);
+        // println!("alloc quotient with bitlen: {}", q_max_bits);
         let quotient = Self::alloc_for_known_bitwidth(cs, q, q_max_bits as usize, params, coarsely)?;
 
         // next with finding the RNS binary modulus - we perform an exhaustive check here: 

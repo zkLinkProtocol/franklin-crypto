@@ -218,28 +218,28 @@ where
             &switches
         )?;
 
-        let mut value_addr_iter = sorted_values.into_iter().zip(sorted_indexes.into_iter());
-        let (value, addr) = value_addr_iter.next().unwrap();
-        let (is_zero, _) = value.clone().is_zero(cs)?;
-        can_not_be_false_if_flagged(cs, &is_zero, &Boolean::constant(true))?;
-        let mut pre_value = value.clone();
-        let mut pre_addr = addr.clone();
+        // let mut value_addr_iter = sorted_values.into_iter().zip(sorted_indexes.into_iter());
+        // let (value, addr) = value_addr_iter.next().unwrap();
+        // let (is_zero, _) = value.clone().is_zero(cs)?;
+        // can_not_be_false_if_flagged(cs, &is_zero, &Boolean::constant(true))?;
+        // let mut pre_value = value.clone();
+        // let mut pre_addr = addr.clone();
 
-        for (value, addr) in value_addr_iter{
+        // for (value, addr) in value_addr_iter{
             
-            let (unchanged, _) = FieldElement::equals(cs, value.clone(), pre_value)?;
-            let is_zero = value.clone().is_zero(cs)?;
+        //     let (unchanged, _) = FieldElement::equals(cs, value.clone(), pre_value)?;
+        //     let is_zero = value.clone().is_zero(cs)?;
 
-            let borrow = pre_addr.sub(cs, &addr)?;
+        //     let borrow = pre_addr.sub(cs, &addr)?;
 
-            let is_zero_addr = borrow.is_zero(cs)?;
+        //     let is_zero_addr = borrow.is_zero(cs)?;
 
-            can_not_be_false_if_flagged(cs, &unchanged, &is_zero_addr)?;
+        //     can_not_be_false_if_flagged(cs, &unchanged, &is_zero_addr)?;
 
-            pre_value = value;
-            pre_addr = addr;
+        //     pre_value = value;
+        //     pre_addr = addr;
 
-        }
+        // }
 
         Ok(())
 

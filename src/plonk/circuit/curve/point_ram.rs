@@ -23,6 +23,14 @@ use crate::bellman::plonk::better_better_cs::cs::{
 };
 use plonk::circuit::bigint::fe_to_biguint;
 
+pub fn bit_window_decompose(window: usize) -> usize{
+    let mut bit_window = 0;
+    let two = 2 as u32;
+    for i in 0..window{
+        bit_window += two.pow(i as u32);
+    }
+    (bit_window as usize)
+}
 pub fn can_not_be_false_if_flagged<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS,
     condition: &Boolean,
@@ -87,7 +95,11 @@ where
     }
 
 
-    pub fn waksman_permutation<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError>{
+    // pub fn ram_permutation_entry_point<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError>{
+        
+    //     todo!();
+    // }
+    pub fn waksman_permutation<CS: ConstraintSystem<E>>(&self, cs: &mut CS, window: usize) -> Result<(), SynthesisError>{
 
         let size = self.block.len();
         let permutation = Self::calculate_permutation(&self.block);
@@ -201,8 +213,8 @@ where
         }
         let o0: Vec<_> = packed_original_values.iter().map(|el| el[0]).collect();
         let o1: Vec<_> = packed_original_values.into_iter().map(|el| el[1]).collect();
-        let s0: Vec<_> = packed_sorted_values.iter().map(|el| el[0]).collect();
-        let s1: Vec<_> = packed_sorted_values.into_iter().map(|el| el[1]).collect();
+        let s0: Vec<_> = packed_sorted_values.clone().iter().map(|el| el[0]).collect();
+        let s1: Vec<_> = packed_sorted_values.clone().into_iter().map(|el| el[1]).collect();
 
         prove_permutation_using_switches_witness(
             cs, 
@@ -217,6 +229,27 @@ where
             &o1,
             &switches
         )?;
+
+        use plonk::circuit::utils::u64_to_fe;
+        let constanta = bit_window_decompose(window);
+        let mut fr_connst: E::Fr = u64_to_fe(constanta as u64);
+        fr_connst.negate();
+        let mut pre_value_1 = packed_sorted_values.clone().into_iter().next().map(|el| el[0]).unwrap();
+        let mut pre_value_2 = packed_sorted_values.clone().into_iter().next().map(|el| el[1]).unwrap();
+        let mut lc_count = LinearCombination::<E>::zero(); 
+        for i in packed_sorted_values.into_iter(){
+            let is_equal_1 = AllocatedNum::equals(cs, &pre_value_1, &i[0])?;
+            let is_equal_2 = AllocatedNum::equals(cs, &pre_value_2, &i[1])?;
+            can_not_be_false_if_flagged(cs, &is_equal_1, &is_equal_2)?;
+
+            if is_equal_1.get_value().unwrap() == true {
+                lc_count.scale(&E::Fr::one());
+            }
+            pre_value_1 = i[0];
+            pre_value_2 = i[1];
+
+        }
+        lc_count.scale(&fr_connst);
 
         // let mut value_addr_iter = sorted_values.into_iter().zip(sorted_indexes.into_iter());
         // let (value, addr) = value_addr_iter.next().unwrap();
@@ -313,7 +346,7 @@ mod test {
             
         }
 
-        ram.waksman_permutation(&mut cs);
+        ram.waksman_permutation(&mut cs, 2);
 
 
 

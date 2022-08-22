@@ -1486,6 +1486,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             acc = new_acc;
             step += window;
         };
+        memory.waksman_permutation(cs, window);
 
         let (with_skew, (acc, this)) = acc.sub_unequal(cs, self.clone())?;
         let (with_skew, (acc, this)) = acc.sub_unequal(cs, q_endo.clone())?;

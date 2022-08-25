@@ -365,7 +365,7 @@ mod test {
         // >>> import blake2s from hashlib
         // >>> h = blake2s(digest_size=32, person=b'12345678')
         // >>> h.hexdigest()
-        let expected = hex!("c59f682376d137f3f255e671e207d1f2374ebe504e9314208a52d9f88d69e8c8");
+        let expected = hex_literal::hex!("c59f682376d137f3f255e671e207d1f2374ebe504e9314208a52d9f88d69e8c8");
 
         let mut out = out.into_iter();
         for b in expected.iter() {

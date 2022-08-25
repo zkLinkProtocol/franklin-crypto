@@ -32,8 +32,8 @@ lazy_static = "1.4"
 serde = {version = "1", features = ["derive"]}
 num-derive = "0.2"
 
-#bellman = { package = "bellman_ce", path = "../bellman" }
-bellman = { package = "bellman_ce", git = "https://github.com/matter-labs/bellman", branch = "gpu-prover" }
+bellman = { package = "bellman_ce", path = "../bellman" }
+# bellman = { package = "bellman_ce", git = "https://github.com/matter-labs/bellman", branch = "multi-gpu-prover" }
 blake2-rfc_bellman_edition = "0.0.1"
 #poseidon_hash = { path = "../poseidon_hash" }
 #poseidon_hash = {git = "https://github.com/shamatar/poseidon_hash.git"}

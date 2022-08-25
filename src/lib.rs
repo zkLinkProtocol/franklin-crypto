@@ -27,6 +27,9 @@ extern crate arr_macro;
 
 #[cfg(test)]
 extern crate hex;
+#[cfg(test)]
+extern crate hex_literal;
+// use hex_literal::hex;
 
 pub mod jubjub;
 pub mod alt_babyjubjub;

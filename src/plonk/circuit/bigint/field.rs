@@ -43,8 +43,7 @@ use num_integer::Integer;
 use num_traits::Zero;
 
 // Parameters of the representation
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(bound = "")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RnsParameters<E: Engine, F: PrimeField>{
     // this is kind-of normal UintX limbs
     pub binary_limbs_params: LimbedRepresentationParameters<E>,
@@ -78,9 +77,6 @@ pub struct RnsParameters<E: Engine, F: PrimeField>{
     pub prefer_single_limb_allocation: bool,
     pub prefer_single_limb_carry_propagation: bool,
 
-    #[serde(skip_serializing, default)]
-    #[serde(bound(serialize = ""))]
-    #[serde(bound(deserialize = ""))]
     pub (crate) _marker: std::marker::PhantomData<F>
 }
 

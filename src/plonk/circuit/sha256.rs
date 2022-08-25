@@ -374,7 +374,7 @@ mod test {
         assert!(cs.is_satisfied());
         assert_eq!(cs.n(), 0);
 
-        let expected = hex!("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        let expected = hex_literal::hex!("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 
         let mut out = out_bits.into_iter();
         for b in expected.iter() {

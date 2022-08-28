@@ -126,10 +126,6 @@ pub fn vec_of_bit(number: usize, window: usize) -> (Vec<Option<bool>>, i64){
         
     }
 
-
-    
-
-
     (vec_bool, constanta)
     
 }
@@ -1379,11 +1375,15 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             let q_point = self.clone();
             let (mut r_point, _) = q_point.clone().double(cs)?;
 
+            let mut count = 0;
             if unsign_nuber >2{
-                for i in 0..unsign_nuber-1{
+                for i in 0..unsign_nuber-2{
+
                     (r_point, _) = r_point.add_unequal(cs, q_point.clone())?;
+                    count+=1;
                 }
             }
+            println!("i, {}, {:?}, {}, {}", i, count, number, unsign_nuber);
 
             let y = r_point.y.clone();
             let (minus_y, y) = y.negated(cs)?;
@@ -1446,7 +1446,6 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
                 let number: E::Fr = u64_to_ff(count);
                 let address = Num::Variable(AllocatedNum::alloc(cs, || Ok(number))?);
-                println!("address      {:?}", address); 
 
                 memory.clone().block.push((address, c.clone()));
                 memory.insert_witness(address, c);
@@ -1455,8 +1454,6 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         }
 
         let d = bit_limit.unwrap()/window - 2; 
-        println!("{}", d);
-        println!("{}", bit_window);
         use plonk::circuit::bigint_new::compute_shifts;
         let shifts = compute_shifts::<E::Fr>();
         let mut step = 0;
@@ -1477,7 +1474,6 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
             }
             let addres = lc.into_num(cs)?;
-            println!("addres  {:?}, l {:?}", addres, l);
 
             let point = unsafe { memory.read_and_alloc(cs, addres, params)? };
             let (new_acc, (_, t)) = acc.clone().double_and_add(cs, point.into_inner())?;
@@ -2487,7 +2483,7 @@ mod test {
 
             // simulate_multiplication::<Bn256>(a_f, b_f, Some(2));
     
-            let (result, a) = a.mul(&mut cs, &b, Some(2)).unwrap();
+            let (result, a) = a.mul(&mut cs, &b, Some(257)).unwrap();
 
             let result_recalculated = a_f.mul(b_f.into_repr()).into_affine();
 
@@ -3461,7 +3457,7 @@ mod test {
 
             let endo_parameters = super::super::endomorphism::bn254_endomorphism_parameters();
 
-            let (result, a) = a.mul_split_scalar_2(&mut cs, &b, None, endo_parameters.clone(), 3).unwrap();
+            let (result, a) = a.mul_split_scalar_2(&mut cs, &b, None, endo_parameters.clone(), 2).unwrap();
 
             let result_recalculated = a_f.mul(b_f.into_repr()).into_affine();
 
@@ -3507,7 +3503,7 @@ mod test {
             if i == 0 {
                 crate::plonk::circuit::counter::reset_counter();
                 let base = cs.n();
-                let _ = a.mul_split_scalar_2(&mut cs, &b, None, endo_parameters, 3).unwrap();
+                let _ = a.mul_split_scalar_2(&mut cs, &b, None, endo_parameters, 2).unwrap();
                 println!("single multiplication taken {} gates", cs.n() - base);
                 println!(
                     "Affine spent {} gates in equality checks",
@@ -3524,11 +3520,10 @@ mod test {
             let (a, b) = vec_of_bit((i as usize), 2);
             let f: Fr = u64_to_fe((b as u64));
             println!("{:?}", f);
-            // let a_skew =compute_skewed_naf_table( &Some(f), Some(2));
-            // println!("{:?}", a_skew);
-            // assert_eq!(a, a_skew);
-            // println!("{:?}", a);
-            println!("{:?}", b);
+            let a_skew =compute_skewed_naf_table( &Some(f), Some(2));
+            println!("a_skew {:?}", a_skew);
+            println!("a {:?}", a);
+            println!("b {:?}", b);
 
             {
                 let mut two = Fr::one();
@@ -3545,7 +3540,7 @@ mod test {
                     reconstructed.double();
                     reconstructed.double();
         
-                    let high_bit = a[i].unwrap();
+                    let high_bit = a_skew[i].unwrap();
                     let mut high_contribution = if high_bit {
                         minus_one
                     } else {
@@ -3553,7 +3548,7 @@ mod test {
                     };
                     high_contribution.double();
         
-                    let low_bit = a[i+1].unwrap();
+                    let low_bit = a_skew[i+1].unwrap();
                     let low_contribution = if low_bit {
                         minus_one
                     } else {
@@ -3567,7 +3562,7 @@ mod test {
                 if 2 & 1 == 1 {
                     reconstructed.double();
         
-                    let last_bit = a[2-1].unwrap();
+                    let last_bit = a_skew[2-1].unwrap();
                     if last_bit {
                         reconstructed.add_assign(&minus_one);
                     } else {
@@ -3575,12 +3570,12 @@ mod test {
                     };
                 }
         
-                if a.last().unwrap().unwrap() {
+                if a_skew.last().unwrap().unwrap() {
                     reconstructed.add_assign(&minus_one);
                 }
-                // use plonk::circuit::hashes_with_tables::utils::ff_to_u64;
-                // let result = ff_to_u64(&reconstructed);
-                println!("{:?}", reconstructed);
+                use plonk::circuit::hashes_with_tables::utils::ff_to_u64;
+                let result = ff_to_u64(&reconstructed);
+                println!("{:?}", result);
             }
 
 

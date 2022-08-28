@@ -14,6 +14,11 @@ use super::super::allocated_num::{AllocatedNum};
 use super::super::linear_combination::LinearCombination;
 use plonk::circuit::bigint::RnsParameters;
 use std::cell::RefCell;
+use plonk::circuit::curve::structual_eq::CircuitEq;
+use plonk::circuit::curve::structual_eq::CircuitSelectable;
+use plonk::circuit::utils::u64_to_fe;
+use std::convert::TryInto;
+use plonk::circuit::curve::sponge::*;
 
 use crate::bellman::plonk::better_better_cs::cs::{
     ArithmeticTerm, Coefficient, ConstraintSystem, Gate, GateInternal, LinearCombinationOfTerms,
@@ -22,6 +27,321 @@ use crate::bellman::plonk::better_better_cs::cs::{
     Width4MainGateWithDNext,
 };
 use plonk::circuit::bigint::fe_to_biguint;
+
+pub trait CircuitArithmeticRoundFunction<E: Engine, const AWIDTH: usize, const SWIDTH: usize>: Clone + Eq {
+    type StateElement: Clone + CircuitEq<E> + CircuitSelectable<E>;
+
+    fn simulate_round_function(
+        &self,
+        state: [E::Fr; SWIDTH]
+    ) -> [E::Fr; SWIDTH];
+
+    fn simulate_absorb(
+        &self,
+        state: [E::Fr; SWIDTH],
+        input: &[E::Fr]
+    ) -> [E::Fr; SWIDTH] {
+        assert!(input.len() < SWIDTH);
+        let mut state = state;
+        for (s, inp) in state.iter_mut().zip(input.iter()) {
+            s.add_assign(inp);
+        }
+
+        self.simulate_round_function(state)
+    }
+    #[track_caller]
+    fn simulate_apply_length_specialization(
+        &self, state: [E::Fr; SWIDTH], length: usize
+    ) -> [E::Fr; SWIDTH] {
+        assert!(state == self.simulate_empty_state());
+        let mut state = state;
+        let idx = state.len() - 1;
+        state[idx] = u64_to_fe(length as u64);
+
+        state
+    }
+    #[track_caller]
+    fn apply_length_specialization(
+        &self, state: [Self::StateElement; SWIDTH], length: usize
+    ) -> [Self::StateElement; SWIDTH] {
+        assert!(state.eq(&Self::empty_state()));
+        unimplemented!();
+    }
+
+    fn empty_state() -> [Self::StateElement; SWIDTH];
+
+    fn simulate_absorb_into_empty_with_specialization(
+        &self,
+        input: &[E::Fr]
+    ) -> [E::Fr; SWIDTH] {
+        let input_length = input.len();
+        let state = self.simulate_apply_length_specialization(self.simulate_empty_state(), input_length);
+        self.simulate_absorb(state, input)
+    }
+
+    fn simulate_absorb_multiple_rounds(
+        &self,
+        state: [E::Fr; SWIDTH],
+        input: &[E::Fr]
+    ) -> Vec<([E::Fr; SWIDTH],[E::Fr; SWIDTH])>;
+
+    fn num_absorbtion_rounds_for_input_length(
+        &self,
+        length: usize
+    ) -> usize;
+
+    fn simulate_absorb_multiple_rounds_into_empty_with_specialization(
+        &self,
+        input: &[E::Fr]
+    ) -> Vec<([E::Fr; SWIDTH],[E::Fr; SWIDTH])> {
+        let input_length = input.len();
+        let state = self.simulate_apply_length_specialization(self.simulate_empty_state(), input_length);
+        self.simulate_absorb_multiple_rounds(state, input)
+    }
+
+    fn simulate_empty_state(
+        &self,
+    ) -> [E::Fr; SWIDTH]{
+        [E::Fr::zero(); SWIDTH]
+    }
+
+    fn round_function<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, state: [Self::StateElement; SWIDTH]
+    ) -> Result<[Self::StateElement; SWIDTH], SynthesisError>;
+
+    fn round_function_absorb_nums<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, state: [Self::StateElement; SWIDTH], input: &[Num<E>]
+    ) -> Result<[Self::StateElement; SWIDTH], SynthesisError>;
+
+    fn round_function_absorb_nums_multiple_rounds<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, state: [Self::StateElement; SWIDTH], input: &[Num<E>]
+    ) -> Result<[Self::StateElement; SWIDTH], SynthesisError> {
+        assert!(input.len() % AWIDTH == 0);
+        let mut state = state;
+        for chunk in input.chunks_exact(AWIDTH) {
+            state = self.round_function_absorb_nums(cs, state, chunk)?
+        }
+
+        Ok(state)
+    }
+
+    // fn round_function_absorb_lcs<CS: ConstraintSystem<E>, const N: usize>(
+    //     &self, cs: &mut CS, state: [Self::StateElement; N], input: &[LinearCombination<E>]
+    // ) -> Result<[Self::StateElement; N], SynthesisError>;
+
+    fn state_into_commitment(
+        state: [Self::StateElement; SWIDTH]
+    ) -> Result<Num<E>, SynthesisError>;
+
+    fn simulate_state_into_commitment(
+        state: [E::Fr; SWIDTH]
+    ) -> E::Fr;
+
+    fn chunk_and_pad_input(
+        &self,
+        input: &[Num<E>]
+    ) -> Vec<Vec<Num<E>>>;
+}
+pub fn variable_length_absorb_into_state<
+    E: Engine,
+    CS: ConstraintSystem<E>,
+    R: CircuitArithmeticRoundFunction<E, AWIDTH, SWIDTH, StateElement = Num<E>>,
+    const AWIDTH: usize,
+    const SWIDTH: usize,
+>(
+    cs: &mut CS,
+    input: &[Num<E>],
+    into_state: &[R::StateElement; SWIDTH],
+    round_function: &R,
+) -> Result<[R::StateElement; SWIDTH], SynthesisError> {
+    let mut state = *into_state;
+    for chunk in input.chunks(AWIDTH) {
+        let padding_els = AWIDTH - chunk.len();
+        let input_fixed_len: [Num<E>; AWIDTH] = if padding_els == 0 {
+            chunk.try_into().expect("length must match")
+        } else {
+            let tmp = Num::one();
+            let it = chunk.iter().chain(std::iter::repeat(&tmp).take(padding_els));
+
+            it.copied()
+            .collect::<Vec<_>>()
+            .as_slice()
+            .try_into()
+            .expect("length must match")
+        };
+
+        state = round_function.round_function_absorb_nums(cs, state, &input_fixed_len)?;
+    }
+
+    Ok(state)
+}
+pub fn variable_length_absorb_into_empty_state<
+    E: Engine,
+    CS: ConstraintSystem<E>,
+    R: CircuitArithmeticRoundFunction<E, AWIDTH, SWIDTH, StateElement = Num<E>>,
+    const AWIDTH: usize,
+    const SWIDTH: usize
+>(
+    cs: &mut CS,
+    input: &[Num<E>],
+    round_function: &R
+) -> Result<[Num<E>; SWIDTH], SynthesisError> {
+    let state = R::empty_state();
+    let state = round_function.apply_length_specialization(state, input.len());
+    let state = variable_length_absorb_into_state(
+        cs,
+        &input[..],
+        &state,
+        round_function
+    )?;
+
+    Ok(state)
+}
+
+pub fn variable_length_hash<
+    E: Engine,
+    CS: ConstraintSystem<E>,
+    R: CircuitArithmeticRoundFunction<E, AWIDTH, SWIDTH, StateElement = Num<E>>,
+    const AWIDTH: usize,
+    const SWIDTH: usize
+>(
+    cs: &mut CS,
+    input: &[Num<E>],
+    round_function: &R
+) -> Result<Num<E>, SynthesisError> {
+    let state = variable_length_absorb_into_empty_state(cs, input, round_function)?;
+
+    let committment = R::state_into_commitment(state)?;
+
+    Ok(committment)
+}
+pub fn variable_length_hash_using_optimizer<
+    E: Engine,
+    CS: ConstraintSystem<E>,
+    R: CircuitArithmeticRoundFunction<E, AWIDTH, SWIDTH, StateElement = Num<E>>,
+    const AWIDTH: usize,
+    const SWIDTH: usize
+>(
+    cs: &mut CS,
+    input: &[Num<E>],
+    id: u64,
+    execute: Boolean,
+    optimizer: &mut SpongeOptimizer<E, R, AWIDTH, SWIDTH>
+) -> Result<Num<E>, SynthesisError> {
+    let state = variable_length_hash_into_empty_state_using_optimizer(
+        cs,
+        input,
+        id,
+        execute,
+        optimizer
+    )?;
+
+    let committment = R::state_into_commitment(state)?;
+
+    Ok(committment)
+}
+pub fn variable_length_hash_into_empty_state_using_optimizer<
+    E: Engine,
+    CS: ConstraintSystem<E>,
+    R: CircuitArithmeticRoundFunction<E, AWIDTH, SWIDTH, StateElement = Num<E>>,
+    const AWIDTH: usize,
+    const SWIDTH: usize,
+>(
+    cs: &mut CS,
+    input: &[Num<E>],
+    id: u64,
+    execute: Boolean,
+    optimizer: &mut SpongeOptimizer<E, R, AWIDTH, SWIDTH>
+) -> Result<[R::StateElement; SWIDTH], SynthesisError> {
+    let empty_state = R::empty_state();
+    let len = input.len();
+    let specialized_state = optimizer.round_function.apply_length_specialization(empty_state, len);
+
+    variable_length_absorb_into_state_using_optimizer(
+        cs,
+        input,
+        &specialized_state,
+        id,
+        execute,
+        optimizer
+    )
+}
+pub fn variable_length_absorb_into_state_using_optimizer<
+    E: Engine,
+    CS: ConstraintSystem<E>,
+    R: CircuitArithmeticRoundFunction<E, AWIDTH, SWIDTH, StateElement = Num<E>>,
+    const AWIDTH: usize,
+    const SWIDTH: usize,
+>(
+    cs: &mut CS,
+    input: &[Num<E>],
+    into_state: &[R::StateElement; SWIDTH],
+    id: u64,
+    execute: Boolean,
+    optimizer: &mut SpongeOptimizer<E, R, AWIDTH, SWIDTH>
+) -> Result<[R::StateElement; SWIDTH], SynthesisError> {
+    let len = input.len();
+    let input_witness = Num::get_value_for_slice(&input);
+    let state_witness = Num::get_value_multiple(&into_state);
+
+    let intermediate_states = match (input_witness, state_witness) {
+        (Some(input_witness), Some(state_witness)) => {
+            let intemediates = optimizer.round_function.simulate_absorb_multiple_rounds(state_witness, &input_witness[..]);
+
+            Some(intemediates)
+        },
+        _ => None
+    };
+
+    let num_rounds = optimizer.round_function.num_absorbtion_rounds_for_input_length(len);
+    let input_chunks = optimizer.round_function.chunk_and_pad_input(input);
+
+    let last_round_idx = num_rounds - 1;
+    let mut last_state = *into_state;
+    assert_eq!(input_chunks.len(), num_rounds);
+
+    for round_id in 0..num_rounds {
+        let witness = intermediate_states.as_ref().map(|el| el[round_id].1);
+        let intermediate = Num::alloc_multiple(cs, witness)?;
+
+        let feed_forward = if round_id != last_round_idx {
+            Boolean::constant(true)
+        } else {
+            Boolean::constant(false)
+        };
+
+        let initial_state = last_state;
+
+        let chunk = &input_chunks[round_id][..];
+
+        let padding_els = AWIDTH - chunk.len();
+        let input_fixed_len: [Num<E>; AWIDTH] = if padding_els == 0 {
+            chunk.try_into().expect("length must match")
+        } else {
+            let tmp = Num::one();
+            let it = chunk.iter().chain(std::iter::repeat(&tmp).take(padding_els));
+
+            it.copied()
+            .collect::<Vec<_>>()
+            .as_slice()
+            .try_into()
+            .expect("length must match")
+        };
+        
+        let request = SpongeRoundRequest {
+            initial_state,
+            values_to_absorb: input_fixed_len,
+            claimed_final_state: intermediate,
+            feed_forward,
+        };
+
+        optimizer.add_request(request, execute, id);
+        
+        last_state = intermediate;
+    }
+
+    Ok(last_state)
+}
 
 pub fn bit_window_decompose(window: usize) -> usize{
     let mut bit_window = 0;
@@ -95,8 +415,119 @@ where
     }
 
 
-    // pub fn ram_permutation_entry_point<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError>{
+    // pub fn ram_permutation_entry_point<CS: ConstraintSystem<E>,     R: CircuitArithmeticRoundFunction<E, 2, 3, StateElement = Num<E>>>(&self, cs: &mut CS, round_function: &R) -> Result<(), SynthesisError>{
         
+    //     let size = self.block.len();
+    //     let permutation = Self::calculate_permutation(&self.block);
+    //     let permutation = if let Some(permutation) = permutation {
+    //         permutation
+    //     } else {
+    //         IntegerPermutation::new(size)
+    //     };
+
+    //     let switches = order_into_switches_set(cs, &permutation)?;
+
+    //     let mut total_num_switches = 0;
+    //     for layer in switches.iter() {
+    //         total_num_switches += layer.len();
+    //     }
+
+    //     use plonk::circuit::bigint_new::compute_shifts;
+    //     let shifts = compute_shifts::<E::Fr>();
+    //     let mut original_values = vec![];
+    //     let mut original_indexes = vec![];
+    //     // let mut original_addres = vec![];
+
+    //     let mut sorted_values = vec![];
+    //     let mut sorted_indexes = vec![];
+    //     // let mut original_addres = vec![];
+
+    //     let mut packed_original_values = vec![];
+    //     let mut packed_sorted_values = vec![];
+
+    //     for (addr, value ) in self.block.iter() {
+
+    //         let value = value.clone();
+    //         let x = FieldElement::into_limbs(value.clone().x.clone());
+
+    //         let chunk = value.x.representation_params.binary_limbs_bit_widths[0];
+    //         let iter = value.x.representation_params.binary_limbs_bit_widths.clone().into_iter();
+            
+    //         let chunk_x = 253 / chunk;
+    //         let mut i = 0;
+    //         let mut lc_low = LinearCombination::zero(); 
+    //         for l in 0..chunk_x{
+    //             lc_low.add_assign_number_with_coeff(&x[l].num, shifts[i]);
+    //             i+= iter.clone().next().unwrap();
+
+    //         }
+    //         let value_low = lc_low.into_num(cs)?.get_variable();
+    //         i=0;
+
+    //         let mut lc_high = LinearCombination::zero();
+    //         for l in chunk_x..x.len(){
+    //             lc_high.add_assign_number_with_coeff(&x[l].num, shifts[i]);
+    //             i+= iter.clone().next().unwrap();
+    //         }
+    //         let (odd_y, y) = value.clone().point_compression(cs)?;
+    //         lc_high.add_assign_boolean_with_coeff(&odd_y, shifts[i]);  // point compression
+    //         i+= 1;
+
+    //         lc_high.add_assign_number_with_coeff(&addr, shifts[i]);
+
+    //         let value_high = lc_high.into_num(cs)?.get_variable();
+
+    //         packed_original_values.push([value_low, value_high]);
+    //         original_values.push(value);
+    //         original_indexes.push(addr);
+
+    //     }
+
+    //     for index in permutation.elements.iter() {
+
+    //         let value = original_values[*index].clone();
+    //         let addr = original_indexes[*index].clone();
+    //         sorted_values.push(value.x.clone());
+    //         sorted_indexes.push(addr.clone());
+
+    //         let value = value.clone();
+    //         let y = FieldElement::into_limbs(value.clone().y.clone());
+    //         let x = FieldElement::into_limbs(value.clone().x.clone());
+
+    //         let chunk = value.x.representation_params.binary_limbs_bit_widths[0];
+    //         let iter = value.x.representation_params.binary_limbs_bit_widths.clone().into_iter();
+            
+    //         let chunk_x = 253 / chunk;
+    //         let mut i = 0;
+    //         let mut lc_low = LinearCombination::zero(); 
+    //         for l in 0..chunk_x{
+    //             lc_low.add_assign_number_with_coeff(&x[l].num, shifts[i]);
+    //             i+= iter.clone().next().unwrap();
+
+    //         }
+    //         let value_low = lc_low.into_num(cs)?;
+    //         i=0;
+
+    //         let mut lc_high = LinearCombination::zero();
+    //         for l in chunk_x..x.len(){
+    //             lc_high.add_assign_number_with_coeff(&x[l].num, shifts[i]);
+    //             i+= iter.clone().next().unwrap();
+    //         }
+
+    //         let (odd_y, y) = value.clone().point_compression(cs)?;
+    //         lc_high.add_assign_boolean_with_coeff(&odd_y, shifts[i]);  // point compression
+    //         i+= 1;
+
+    //         lc_high.add_assign_number_with_coeff(&addr, shifts[i]);
+
+    //         let value_high = lc_high.into_num(cs)?;
+
+    //         packed_sorted_values.push([value_low, value_high]);
+
+    //     }
+
+    //     let chaleng = variable_length_hash(cs, &packed_sorted_values, round_function)?;
+
     //     todo!();
     // }
     pub fn waksman_permutation<CS: ConstraintSystem<E>>(&self, cs: &mut CS, window: usize) -> Result<(), SynthesisError>{
@@ -231,48 +662,32 @@ where
         )?;
 
         use plonk::circuit::utils::u64_to_fe;
-        let constanta = bit_window_decompose(window);
-        let mut fr_connst: E::Fr = u64_to_fe(constanta as u64);
-        fr_connst.negate();
+        let mut lc_count = LinearCombination::<E>::zero(); 
+        let constanta = bit_window_decompose(window) - 1;
+        println!("constanta{}", constanta);
+        let constant = Num::Constant(u64_to_fe(constanta as u64));
+        lc_count.add_assign_number_with_coeff(&constant, E::Fr::one());
         let mut pre_value_1 = packed_sorted_values.clone().into_iter().next().map(|el| el[0]).unwrap();
         let mut pre_value_2 = packed_sorted_values.clone().into_iter().next().map(|el| el[1]).unwrap();
-        let mut lc_count = LinearCombination::<E>::zero(); 
+        let mut minus_one = E::Fr::one();
+        minus_one.negate();
         for i in packed_sorted_values.into_iter(){
             let is_equal_1 = AllocatedNum::equals(cs, &pre_value_1, &i[0])?;
+            println!("is_equal_1{:?}", is_equal_1);
             let is_equal_2 = AllocatedNum::equals(cs, &pre_value_2, &i[1])?;
-            can_not_be_false_if_flagged(cs, &is_equal_1, &is_equal_2)?;
-
-            if is_equal_1.get_value().unwrap() == true {
-                lc_count.scale(&E::Fr::one());
-            }
+            println!("is_equal_2{:?}", is_equal_2);
+            let condition = Boolean::and(cs, &is_equal_1, &is_equal_2)?;
+            println!("{:?}", condition);
+            let count = Num::mask(cs, &Num::Constant(E::Fr::one()), &condition.not())?;
+            println!("{:?}", count);
+            lc_count.add_assign_number_with_coeff(&count, minus_one);
             pre_value_1 = i[0];
             pre_value_2 = i[1];
 
+
         }
-        lc_count.scale(&fr_connst);
 
-        // let mut value_addr_iter = sorted_values.into_iter().zip(sorted_indexes.into_iter());
-        // let (value, addr) = value_addr_iter.next().unwrap();
-        // let (is_zero, _) = value.clone().is_zero(cs)?;
-        // can_not_be_false_if_flagged(cs, &is_zero, &Boolean::constant(true))?;
-        // let mut pre_value = value.clone();
-        // let mut pre_addr = addr.clone();
-
-        // for (value, addr) in value_addr_iter{
-            
-        //     let (unchanged, _) = FieldElement::equals(cs, value.clone(), pre_value)?;
-        //     let is_zero = value.clone().is_zero(cs)?;
-
-        //     let borrow = pre_addr.sub(cs, &addr)?;
-
-        //     let is_zero_addr = borrow.is_zero(cs)?;
-
-        //     can_not_be_false_if_flagged(cs, &unchanged, &is_zero_addr)?;
-
-        //     pre_value = value;
-        //     pre_addr = addr;
-
-        // }
+        lc_count.enforce_zero(cs)?;
 
         Ok(())
 

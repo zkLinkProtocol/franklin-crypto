@@ -196,10 +196,39 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         Ok(new)
     }
 
+    pub fn make_witness_y_odd<F: PrimeField>( value: Option<F>)->Vec<Option<bool>>{
+        let values = match value {
+            Some(ref value) => {
+                let mut field_char = BitIterator::new(F::char());
+    
+                let mut tmp = Vec::with_capacity(F::NUM_BITS as usize);
+    
+                let mut found_one = false;
+                for b in BitIterator::new(value.into_repr()) {
+                    // Skip leading bits
+                    found_one |= field_char.next().unwrap();
+                    if !found_one {
+                        continue;
+                    }
+    
+                    tmp.push(Some(b));
+                }
+    
+                assert_eq!(tmp.len(), F::NUM_BITS as usize);
+    
+                tmp
+            }
+            None => vec![None; F::NUM_BITS as usize],
+        };
+        values
+    }
+
+    #[track_caller]
     pub fn point_compression<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<(Boolean, RangeCheckDecomposition<E>), SynthesisError>{
         let table =  cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME)?;
         let dummy = CS::get_dummy_variable();
         let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
+        dbg!(3);
         let mut two = E::Fr::one();
         two.double();
         let two_inv = two.inverse().unwrap();
@@ -208,23 +237,25 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         minus_one.negate();
         let mut minus_two = two.clone();
         minus_two.negate(); 
-
+        dbg!(1);
         let y = self.y;
-        let normalize_y = y.clone().enforce_is_normalized(cs)?;
-        let y_limbs = FieldElement::into_limbs(normalize_y.clone());
+        let y_limbs = FieldElement::into_limbs(y.clone());
         let num_bits = y.representation_params.binary_limbs_bit_widths[0];
+        dbg!(2);
         // decomposition by field
         let rcd = constraint_bit_length_ext(cs,  &y_limbs[0].num.get_variable(), num_bits)?;
+        dbg!( 234);
 
-        let y_is_odd = rcd.get_bits()[0];
         let a = rcd.get_vars()[0];
+        let y_odd_witness = Self::make_witness_y_odd(a.value);
+        let y_is_odd = AllocatedBit::alloc(cs, y_odd_witness[0])?;
         let b = AllocatedNum::alloc(cs, || {
             let mut tmp = a.get_value().grab()?;
             tmp.sub_assign(&y_is_odd.get_value_as_field_element::<E>().grab()?);
             tmp.mul_assign(&two_inv);
             Ok(tmp)
-        })?;
-
+        })?; 
+        dbg!(3);
         let a_xor_b = match (a.get_value(), b.get_value()) {
             (Some(a_val), Some(b_val)) => {
                 let res = table.query(&[a_val, b_val])?;
@@ -3603,23 +3634,24 @@ mod test {
         println!("{:?}", a);
         
     }
+    use plonk::circuit::tables::inscribe_combined_bitwise_ops_and_range_table;
+    use plonk::circuit::tables::inscribe_default_range_table_for_bit_width_over_first_three_columns;
+    #[test]
+    fn test_point_compresion(){
+        use rand::{XorShiftRng, SeedableRng, Rng};
+        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+        let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
+        let mut cs =
+                TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
 
-    // #[test]
-    // fn test_point_compresion(){
-    //     let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
-    //     let mut cs =
-    //             TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
-
-    //         let a_f: G1Affine = rng.gen();
-    //         let b_f: Fr = rng.gen();
+        inscribe_combined_bitwise_ops_and_range_table(&mut cs, 8).unwrap();
+        let a_f: G1Affine = rng.gen();
 
 
-    //         let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
+        let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
 
-    //         let b = AllocatedNum::alloc(&mut cs, || Ok(b_f)).unwrap();
-
-    //     let a = AffinePoint::point_compression(self, cs)
-    // }
+        let a = AffinePoint::point_compression(a, &mut cs).unwrap();
+    }
 
    
 }

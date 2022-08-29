@@ -197,6 +197,17 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     }
 
     pub fn point_compression<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<(Boolean, RangeCheckDecomposition<E>), SynthesisError>{
+        let table =  cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME)?;
+        let dummy = CS::get_dummy_variable();
+        let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
+        let mut two = E::Fr::one();
+        two.double();
+        let two_inv = two.inverse().unwrap();
+
+        let mut minus_one = E::Fr::one();
+        minus_one.negate();
+        let mut minus_two = two.clone();
+        minus_two.negate(); 
 
         let y = self.y;
         let normalize_y = y.clone().enforce_is_normalized(cs)?;
@@ -205,40 +216,42 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         // decomposition by field
         let rcd = constraint_bit_length_ext(cs,  &y_limbs[0].num.get_variable(), num_bits)?;
 
-        let vars = rcd.get_vars();
-        let bits = vars[0].into_bits_le(cs, Some(8))?;
+        let y_is_odd = rcd.get_bits()[0];
+        let a = rcd.get_vars()[0];
+        let b = AllocatedNum::alloc(cs, || {
+            let mut tmp = a.get_value().grab()?;
+            tmp.sub_assign(&y_is_odd.get_value_as_field_element::<E>().grab()?);
+            tmp.mul_assign(&two_inv);
+            Ok(tmp)
+        })?;
 
-        // a(a-1) = 0
-        let bit = AllocatedBit::alloc(cs, bits[0].get_value())?;
+        let a_xor_b = match (a.get_value(), b.get_value()) {
+            (Some(a_val), Some(b_val)) => {
+                let res = table.query(&[a_val, b_val])?;
+                AllocatedNum::alloc(cs, || Ok(res[0]))?
+            },  
+            (_, _) => AllocatedNum::alloc(cs, || Err(SynthesisError::AssignmentMissing))?
+        };
 
-        // a = a_0 + x ;
-        let mut lc = LinearCombination::<E>::zero();
-        let mut coeff = E::Fr::one();
-        lc.add_assign_bit_with_coeff(&bit, coeff);
-        coeff.double();
-
-        for i in 1..bits.len(){
-            lc.add_assign_boolean_with_coeff(&bits[i], coeff);
-            coeff.double();
+        let y_is_odd_var = y_is_odd.get_variable();
+        let vars = [
+            a.get_variable(), b.get_variable(), a_xor_b.get_variable(), y_is_odd_var
+        ];
+        let coeffs = [E::Fr::one(), minus_two.clone(), E::Fr::zero(), E::Fr::one()];
+        cs.begin_gates_batch_for_step()?;
+        cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
+        
+        let gate_term = MainGateTerm::new();
+        let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;
+        for (idx, coef) in range_of_linear_terms.clone().zip(coeffs.iter()) {
+            gate_coefs[idx] = *coef;
         }
-        use plonk::circuit::bigint_new::compute_shifts;
-        let shifts = compute_shifts::<E::Fr>();
-        let mut minus_one = E::Fr::one();
-        minus_one.negate();
-        lc.add_assign_variable_with_coeff(&vars[0], minus_one);
-        lc.enforce_zero(cs)?;
 
-        let mut lc_x = LinearCombination::<E>::zero();
-        let mut coeff = E::Fr::one();
-        coeff.double();
-        for i in 1..bits.len(){
-            lc_x.add_assign_boolean_with_coeff(&bits[i], coeff);
-            coeff.double();
-        }
-        let x = lc_x.into_allocated_num(cs)?;
+        let mg = CS::MainGate::default();
+        cs.new_gate_in_batch(&mg, &gate_coefs, &vars, &[])?;
+        cs.end_gates_batch_for_step()?;
 
-        let odd_bit = Boolean::from(bit);
-
+        let odd_bit = Boolean::from(y_is_odd);
         Ok((odd_bit, rcd))
 
 
@@ -3590,6 +3603,23 @@ mod test {
         println!("{:?}", a);
         
     }
+
+    // #[test]
+    // fn test_point_compresion(){
+    //     let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
+    //     let mut cs =
+    //             TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+
+    //         let a_f: G1Affine = rng.gen();
+    //         let b_f: Fr = rng.gen();
+
+
+    //         let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
+
+    //         let b = AllocatedNum::alloc(&mut cs, || Ok(b_f)).unwrap();
+
+    //     let a = AffinePoint::point_compression(self, cs)
+    // }
 
    
 }

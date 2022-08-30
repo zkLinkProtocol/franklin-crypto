@@ -1108,64 +1108,12 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         self,
         cs: &mut CS,
         scalar: &Num<E>,
-        bit_limit: Option<usize>,
         endomorphism_params: EndomorphismParameters<E>,
         window: usize
     ) -> Result<(Self, Self), SynthesisError> {
 
-        if let Some(value) = scalar.get_value() {
-            assert!(
-                !value.is_zero(),
-                "can not multiply by zero in the current approach"
-            );
-        }
-        if scalar.is_constant() {
-            return self.mul_by_fixed_scalar(cs, &scalar.get_value().unwrap());
-        }
         let params = self.x.representation_params;
-        let beta = FieldElement::new_constant(endomorphism_params.beta_g1, params);
-
-        let value = self.value;
-        let endo_value = value.map(|el| endomorphism_params.apply_to_g1_point(el));
-
-        let x = self.x.clone();
-        let y = self.y.clone();
-
-        let (x_beta, (_, _)) = x.mul(cs, beta.clone())?;
-        let (y_negated, _) = y.negated(cs)?;
-
-        let q_endo = AffinePoint {
-            x: x_beta,
-            y: y_negated,
-            value: endo_value,
-        };
-
-        let this_value = self.get_value();
-        let this_copy = self.clone();
-
-        let other_copy = q_endo.clone();
-        let other_value = q_endo.get_value();
-
-
-        let bit_limit = if let Some(limit) = bit_limit {
-            Some(limit/2)
-        } else {
-            Some(127 as usize)
-        };
-
-
-        let mut minus_one = E::Fr::one();
-        minus_one.negate();
-        let (k1, k2) = endomorphism_params.calculate_decomposition_num(cs, *scalar);
-
-        // k = k1 - lambda * k2
-        // lambda * k2 + k - k1 = 0
-        let mut decomposition_lc = LinearCombination::zero();
-        decomposition_lc.add_assign_number_with_coeff(&k2, endomorphism_params.lambda);
-        decomposition_lc.add_assign_number_with_coeff(&scalar, E::Fr::one());
-        decomposition_lc.add_assign_number_with_coeff(&k1, minus_one);
-
-        decomposition_lc.enforce_zero(cs)?;
+        let (k1, k2, q_endo, bit_limit) = self.clone().endo_decomposition_scalar(cs, scalar, endomorphism_params)?;
 
         let v_1 = k1.get_variable();
         let v_2 = k2.get_variable();
@@ -1180,13 +1128,13 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
         let generator = Self::constant(offset_generator, params);
 
-        let (mut acc_1, (_, _)) = self.add_unequal(cs, generator.clone())?;
+        let (acc_1, (_, _)) = self.clone().add_unequal(cs, generator.clone())?;
 
-        let mut x_1 = this_copy.clone().x;
-        let y_1 = this_copy.clone().y;
+        let x_1 = self.clone().x;
+        let y_1 = self.clone().y;
 
-        let mut x_2 = other_copy.x;
-        let y_2 = other_copy.y;
+        let x_2 = q_endo.clone().x;
+        let y_2 = q_endo.clone().y;
 
         let entries_1_without_first_and_last = &entries_1[1..(entries_1.len() - 1)];
         let entries_1_without_first_and_last_vec: Vec<_> = entries_1_without_first_and_last.iter().collect(); 
@@ -1209,7 +1157,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
                 let (selected_y_1, _) = FieldElement::select(cs, &flag_1, minus_y_1.clone(), y_1.clone())?;
                 let (selected_y_2, _) = FieldElement::select(cs, &flag_2, minus_y_2.clone(), y_2.clone())?;
 
-                let t_value_1 = match (this_value, flag_1.get_value()) {
+                let t_value_1 = match (self.get_value(), flag_1.get_value()) {
                     (Some(val), Some(bit)) => {
                         let mut val = val;
                         if bit {
@@ -1220,7 +1168,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
                     }
                     _ => None,
                 };
-                let t_value_2 = match (other_value, flag_2.get_value()) {
+                let t_value_2 = match (q_endo.get_value(), flag_2.get_value()) {
                     (Some(val), Some(bit)) => {
                         let mut val = val;
                         if bit {
@@ -1247,7 +1195,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             }
         }
 
-        let d = bit_limit.unwrap()/window; 
+        let d = bit_limit.unwrap()/window-2; 
         let mut count =0;
         let mut flag = vec![];
 
@@ -1281,7 +1229,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             acc = new_acc;
             step += window*2;
         }
-        let (with_skew, (acc, this)) = acc.sub_unequal(cs, this_copy.clone())?;
+        let (with_skew, (acc, this)) = acc.sub_unequal(cs, self.clone())?;
         let (with_skew, (acc, this)) = acc.sub_unequal(cs, q_endo.clone())?;
         let last_entry_1 = entries_1.last().unwrap();
         let last_entry_2 = entries_2.last().unwrap();
@@ -1326,13 +1274,12 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
     }
 
-    pub fn mul_split_scalar_2<CS: ConstraintSystem<E>>(
+    pub fn endo_decomposition_scalar<CS: ConstraintSystem<E>>(
         self,
         cs: &mut CS,
         scalar: &Num<E>,
-        endomorphism_params: EndomorphismParameters<E>,
-        window: usize
-    ) -> Result<(Self, Self), SynthesisError> {
+        endomorphism_params: EndomorphismParameters<E> 
+    )->Result<(Num<E>, Num<E>, Self, Option<usize>), SynthesisError>{
         let params = self.x.representation_params;
         let beta = FieldElement::new_constant(endomorphism_params.beta_g1, params);
 
@@ -1350,9 +1297,6 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             value: endo_value,
         };
 
-        let this_value = self.get_value().unwrap();
-        let other_value = q_endo.get_value().unwrap();
-
         let bit_limit = Some(127 as usize);
 
 
@@ -1367,6 +1311,20 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         decomposition_lc.add_assign_number_with_coeff(&scalar, E::Fr::one());
         decomposition_lc.add_assign_number_with_coeff(&k1, minus_one);
         decomposition_lc.enforce_zero(cs)?;
+        
+        Ok((k1, k2, q_endo, bit_limit))
+    }
+
+    #[track_caller]
+    pub fn mul_split_scalar_2<CS: ConstraintSystem<E>>(
+        self,
+        cs: &mut CS,
+        scalar: &Num<E>,
+        endomorphism_params: EndomorphismParameters<E>,
+        window: usize
+    ) -> Result<(Self, Self), SynthesisError> {
+        let params = self.x.representation_params;
+        let (k1, k2, q_endo, bit_limit) = self.clone().endo_decomposition_scalar(cs, scalar, endomorphism_params)?;
 
         let v_1 = k1.get_variable();
         let v_2 = k2.get_variable();
@@ -1381,13 +1339,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
         let generator = Self::constant(offset_generator, params);
 
-        let (mut acc_1, (_, _)) = self.clone().add_unequal(cs, generator.clone())?;
-
-        let mut x_1 = self.clone().x;
-        let y_1 = self.clone().y;
-
-        let mut x_2 = q_endo.clone().x;
-        let y_2 = q_endo.clone().y;
+        let (acc_1, (_, _)) = self.clone().add_unequal(cs, generator.clone())?;
 
         let entries_1_without_first_and_last = &entries_1[1..(entries_1.len() - 1)];
         let entries_1_without_first_and_last_vec: Vec<_> = entries_1_without_first_and_last.iter().collect(); 
@@ -1395,9 +1347,6 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         let entries_2_without_first_and_last_vec: Vec<_> = entries_2_without_first_and_last.into_iter().collect(); 
 
         let mut num_doubles = 0;
-
-        let (minus_y_1, y_1) = y_1.negated(cs)?;
-        let (minus_y_2, y_2) = y_2.negated(cs)?;
 
         let (mut acc, (_, _)) = acc_1.add_unequal(cs, q_endo.clone())?;
         let bit_window = (2 as u64).pow(window as u32);
@@ -3473,9 +3422,8 @@ mod test {
     fn test_base_curve_multiplication_by_split_scalar_with_range_table_and_endomorphism() {
         use rand::{Rng, SeedableRng, XorShiftRng};
         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
-        // let rng = &mut XorShiftRng::from_seed([64, 64, 63, 63]);
 
-        let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 3);
+        let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
 
         for i in 0..1 {
             let mut cs =
@@ -3493,7 +3441,7 @@ mod test {
 
             let endo_parameters = super::super::endomorphism::bn254_endomorphism_parameters();
 
-            let (result, a) = a.mul_split_scalar_2(&mut cs, &b, endo_parameters.clone(), 3).unwrap();
+            let (result, a) = a.mul_split_scalar_2(&mut cs, &b, endo_parameters.clone(), 2).unwrap();
 
             let result_recalculated = a_f.mul(b_f.into_repr()).into_affine();
 
@@ -3539,7 +3487,7 @@ mod test {
             if i == 0 {
                 crate::plonk::circuit::counter::reset_counter();
                 let base = cs.n();
-                let _ = a.mul_split_scalar_2(&mut cs, &b, endo_parameters, 4).unwrap();
+                let _ = a.mul_split_scalar_2(&mut cs, &b, endo_parameters, 2).unwrap();
                 println!("single multiplication taken {} gates", cs.n() - base);
                 println!(
                     "Affine spent {} gates in equality checks",
@@ -3640,8 +3588,11 @@ mod test {
 
 
         let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
-
+        let naive_mul_end = cs.get_current_step_number();
+        println!("{:?}", naive_mul_end);
         let (y_odd, _) = AffinePoint::point_compression(a.clone(), &mut cs).unwrap();
+        let naive_mul_end = cs.get_current_step_number();
+        println!("{:?}", naive_mul_end);
         let y_cord = a.y.clone();
         let limbs = y_cord.clone().into_limbs();
         let num_bits = y_cord.representation_params.binary_limbs_bit_widths[0];

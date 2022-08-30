@@ -369,16 +369,11 @@ mod test {
         let crs = Crs::<Bn256, CrsForMonomialForm>::dummy_crs(setup_size);
         let setup = assembly.create_setup::<TestSha256Circuit::<Bn256>>(&worker).unwrap();
         let vk = VerificationKey::from_setup(&setup, &worker, &crs).unwrap();
-
+        
         let proof = assembly
             .create_proof::<_, RollingKeccakTranscript<Fr>>(&worker, &setup, &crs, None)
             .unwrap();
-        // let valid = verify::<_, _, RollingKeccakTranscript<Fr>>(&vk, &proof, None).unwrap();
-        // assert!(valid);
-
-        
-        // let mut proof_as_bytes : Vec<u8> = vec![];
-        // vk.write(&mut proof_as_bytes).expect("should_write");
-        // println!("proof size: {}", proof_as_bytes.len());
+        let valid = verify::<_, _, RollingKeccakTranscript<Fr>>(&vk, &proof, None).unwrap();
+        assert!(valid);
     }
 }

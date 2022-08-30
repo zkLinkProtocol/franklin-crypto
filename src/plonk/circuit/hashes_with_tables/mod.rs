@@ -20,7 +20,8 @@ use crate::plonk::circuit::Assignment;
 
 use std::iter;
 
-fn get_or_create_table<E: Engine, CS: ConstraintSystem<E>, FN: FnOnce() -> LookupTableApplication<E>>(
+// TODO: this function should not be here
+pub fn get_or_create_table<E: Engine, CS: ConstraintSystem<E>, FN: FnOnce() -> LookupTableApplication<E>>(
     cs: &mut CS,
     table_name: &str,
     init_fn: FN

@@ -26,6 +26,8 @@ pub mod smart_op;
 pub mod assignment;
 pub mod hashes_with_tables;
 
+use num_bigint::BigUint;
+
 use crate::bellman::pairing::Engine;
 use crate::bellman::plonk::better_better_cs::cs::PlonkConstraintSystemParams;
 
@@ -36,7 +38,7 @@ use crate::bellman::SynthesisError;
 pub use self::assignment::*;
 use crate::bellman::pairing::ff::{Field, PrimeField};
 
-pub trait SomeField<F: Field> {
+pub trait SomeArithmetizable {
     fn add(&self, other: &Self) -> Self;
     fn sub(&self, other: &Self) -> Self;
     fn mul(&self, other: &Self) -> Self;
@@ -44,7 +46,7 @@ pub trait SomeField<F: Field> {
     fn negate(&self) -> Self;
 }
 
-impl<F: Field> SomeField<F> for Option<F> {
+impl<F: Field> SomeArithmetizable for Option<F> {
     fn add(&self, other: &Self) -> Self {
         match (self, other) {
             (Some(s), Some(o)) => {
@@ -102,3 +104,4 @@ impl<F: Field> SomeField<F> for Option<F> {
         }
     }
 }
+

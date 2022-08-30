@@ -4,8 +4,7 @@ use crate::bellman::plonk::better_better_cs::cs::{
 };
 use super::super::simple_term::Term;
 use crate::bellman::plonk::better_better_cs::cs::PlonkConstraintSystemParams;
-use std::collections::hash_map::{HashMap, Entry};
-use std::collections::HashSet;
+use crate::indexmap::{IndexMap, IndexSet};
 use crate::plonk::circuit::utils::is_selector_specialized_gate;
 
 const REQUIRED_STATE_WIDTH : usize = 4;
@@ -41,18 +40,14 @@ impl<E: Engine> GateConstructorHelper<E> {
     }
 
     pub fn new_for_pair_of_muls<CS: ConstraintSystem<E>>(
-        cs: &mut CS, x_pair: OrderedVariablePair, x_coef: E::Fr, y_pair: OrderedVariablePair, y_coef: E::Fr
+        cs: &mut CS, a: Variable, b: Variable, c: Variable, a_mul_b_coef: E::Fr, a_mul_c_coef: E::Fr
     ) -> Self {
-        let (a, b, c) = match (x_pair.first, x_pair.second, y_pair.first, y_pair.second) {
-            (k0, l, k1, m) | (l, k0, k1, m) | (k0, l, m, k1) | (l, k0, m, k1) if k0 == k1 => (k0, l, m),
-            _ => unreachable!(),
-        };
-
         let dummy = AllocatedNum::zero(cs).get_variable();
+        let zero = E::Fr::zero();
         GateConstructorHelper::<E> {
-            a, b, c, d: dummy, a_mul_b_coef: x_coef, a_mul_c_coef: y_coef, a_linear_coef: E::Fr::zero(), 
-            b_linear_coef: E::Fr::zero(), c_linear_coef: E::Fr::zero(), d_linear_coef: E::Fr::zero(), 
-            cnst: E::Fr::zero(), free_vars_start_idx: 3, free_vars_end_idx: REQUIRED_STATE_WIDTH, is_final: false 
+            a, b, c, d: dummy, a_mul_b_coef, a_mul_c_coef, 
+            a_linear_coef: zero, b_linear_coef: zero, c_linear_coef: zero, d_linear_coef: zero, 
+            cnst: zero, free_vars_start_idx: 3, free_vars_end_idx: REQUIRED_STATE_WIDTH, is_final: false 
         }
     }
 
@@ -70,7 +65,7 @@ impl<E: Engine> GateConstructorHelper<E> {
         self.free_vars_end_idx -= 1;
     }
 
-    pub fn add_linear_coefficients_for_bound_variables(&mut self, var_map: &mut HashMap<Variable, E::Fr>) {
+    pub fn add_linear_coefficients_for_bound_variables(&mut self, var_map: &mut IndexMap<Variable, E::Fr>) {
         let iter = std::array::IntoIter::new([
             (self.a, &mut self.a_linear_coef), (self.b, &mut self.b_linear_coef), 
             (self.c, &mut self.c_linear_coef), (self.d, &mut self.d_linear_coef)
@@ -82,17 +77,19 @@ impl<E: Engine> GateConstructorHelper<E> {
     }
 
     pub fn add_linear_coefficients_for_free_variables(
-        &mut self, var_map: &mut HashMap<Variable, E::Fr>, free_vars_set: &mut HashSet<Variable>
+        &mut self, var_map: &mut IndexMap<Variable, E::Fr>, free_vars_set: &mut IndexSet<Variable>
     ) {
-        let iter = &mut[
-            (self.a, self.a_linear_coef), (self.b, self.b_linear_coef), 
-            (self.c, self.c_linear_coef), (self.d, self.d_linear_coef)
-        ][self.free_vars_start_idx..self.free_vars_end_idx];
-    
-        for (var_ptr, coef_ptr) in iter {
+        // Rust is not an expressive language at all, that's why we unroll the loop manually
+        // How much better it would look in C++.. Mmm...
+        let mut vars = [self.a, self.b, self.c, self.d];
+        let mut coefs = [self.a_linear_coef, self.b_linear_coef, self.c_linear_coef, self.d_linear_coef];
+        
+        let num_elems = self.free_vars_end_idx - self.free_vars_start_idx;
+        for (var_ptr, coef_ptr) in vars.iter_mut().zip(coefs.iter_mut()).skip(self.free_vars_start_idx).take(num_elems) {
             if free_vars_set.is_empty() {
-                return;
+                break;
             }
+
             let elt = free_vars_set.iter().next().cloned().unwrap();
             let fr = var_map.remove(&elt).unwrap_or(E::Fr::zero());
             *var_ptr = elt;
@@ -100,6 +97,17 @@ impl<E: Engine> GateConstructorHelper<E> {
             free_vars_set.take(&elt).unwrap();
             self.free_vars_start_idx += 1;
         }
+
+        // boilerplate code, because it is rusty rust
+        self.a = vars[0];
+        self.b = vars[1];
+        self.c = vars[2];
+        self.d = vars[3];
+
+        self.a_linear_coef = coefs[0];
+        self.b_linear_coef = coefs[1];
+        self.c_linear_coef = coefs[2];
+        self.d_linear_coef = coefs[3];
     }
 
     pub fn materialize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
@@ -123,7 +131,7 @@ impl<E: Engine> GateConstructorHelper<E> {
         }
 
         coefs[index_for_constant_term] = self.cnst;
-        if self.is_final {
+        if !self.is_final {
             let mut minus_one = E::Fr::one();
             minus_one.negate();
             coefs[range_of_next_step_linear_terms.last().unwrap()] = minus_one;
@@ -173,14 +181,24 @@ impl OrderedVariablePair {
         let (first, second) = if lt_flag { (a, b) } else { (b, a) };
         OrderedVariablePair { first, second }
     }
+
+    pub fn get_associate(&self, elem: Variable) -> Variable {
+        if elem == self.first {
+            self.second
+        } else if elem == self.second {
+            self.first
+        } else {
+            unreachable!("element should be equal to at least one of components of Variable pair")
+        }
+    }
 }
 
 
 // module containing amplified version of linear combination that supports both linear and multiplicative terms
 pub struct AmplifiedLinearCombination<E: Engine> {
     value: Option<E::Fr>,
-    linear_terms: HashMap<Variable, E::Fr>,
-    quadratic_terms: HashMap<OrderedVariablePair, E::Fr>,
+    linear_terms: IndexMap<Variable, E::Fr>,
+    quadratic_terms: IndexMap<OrderedVariablePair, E::Fr>,
     constant: E::Fr,
 }
 
@@ -200,8 +218,8 @@ impl<E: Engine> From<AllocatedNum<E>> for AmplifiedLinearCombination<E> {
     fn from(num: AllocatedNum<E>) -> AmplifiedLinearCombination<E> {
         Self {
             value: num.value,
-            linear_terms: HashMap::from([(num.variable, E::Fr::one())]),
-            quadratic_terms: HashMap::new(),
+            linear_terms: IndexMap::from([(num.variable, E::Fr::one())]),
+            quadratic_terms: IndexMap::new(),
             constant: E::Fr::zero()
         }
     }
@@ -216,8 +234,8 @@ impl<E: Engine> From<Num<E>> for AmplifiedLinearCombination<E> {
             Num::Constant(constant) => {
                 Self {
                     value: Some(constant),
-                    linear_terms: HashMap::new(),
-                    quadratic_terms: HashMap::new(),
+                    linear_terms: IndexMap::new(),
+                    quadratic_terms: IndexMap::new(),
                     constant: constant
                 }
             }
@@ -240,8 +258,8 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
     pub fn zero() -> Self {
         Self {
             value: Some(E::Fr::zero()),
-            linear_terms: HashMap::new(),
-            quadratic_terms: HashMap::new(),
+            linear_terms: IndexMap::new(),
+            quadratic_terms: IndexMap::new(),
             constant: E::Fr::zero(),
         }
     }
@@ -379,13 +397,22 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
         self.add_assign_product_of_terms_with_coeff(a, b, E::Fr::one())
     }
 
+    pub fn sub_assign_product_of_terms(&mut self, a: &Term<E>, b: &Term<E>) {
+        let mut minus_one = E::Fr::one();
+        minus_one.negate();
+        self.add_assign_product_of_terms_with_coeff(a, b, minus_one)
+    }
+
     pub fn add_assign_product_of_terms_with_coeff(&mut self, a: &Term<E>, b: &Term<E>, coeff: E::Fr) {
-        if let Some(fr) = a.try_into_constant_value() {
+        let mut a_scaled = a.clone();
+        a_scaled.scale(&coeff);
+
+        if let Some(fr) = a_scaled.try_into_constant_value() {
             self.add_assign_term_with_coeff(b, fr);    
         } else if let Some(fr) = b.try_into_constant_value() {
-            self.add_assign_term_with_coeff(a, fr);
+            self.add_assign_term_with_coeff(&a_scaled, fr);
         } else {
-            self.value = match (self.value, a.get_value(), b.get_value()) {
+            self.value = match (self.value, a_scaled.get_value(), b.get_value()) {
                 (Some(lc_val), Some(a_val), Some(b_val)) => {
                     let mut tmp = a_val;
                     tmp.mul_assign(&b_val);
@@ -398,7 +425,7 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
             // let a = p_1 * x + c_1, b = p_2 * y + c_2, then:
             // a * b = (p_1 * x + c_1) * (p_2 * y + c_2) = 
             // = p_1 * p_2 * x * y + p_1 * c_2 * x + p_2 * c_1 * y + c_1 * c_2
-            let (x, p_1, c_1) = a.unpack(); 
+            let (x, p_1, c_1) = a_scaled.unpack(); 
             let (y, p_2, c_2) = b.unpack();
         
             // add p_1 * p_2 * x * y
@@ -422,28 +449,26 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
             coeff.mul_assign(&c_2);
             self.constant.add_assign(&coeff); 
         }
-
-        self.scale(&coeff);
     }
 
-    fn normalize(&mut self) {
+    pub fn normalize(&mut self) {
         self.linear_terms.retain(|&_, v| !v.is_zero());
         self.quadratic_terms.retain(|&_, v| !v.is_zero());
     }
 
-    fn get_linear_terms_only_variables(&self) -> HashSet<Variable> {
-        let mut quad = HashSet::new();
+    fn get_linear_terms_only_variables(&self) -> IndexSet<Variable> {
+        let mut quad = IndexSet::new();
         for var_pair in self.quadratic_terms.keys() {
             quad.insert(var_pair.first);
             quad.insert(var_pair.second);
         }
         
-        let mut lin = HashSet::new();
+        let mut lin = IndexSet::new();
         for var in self.linear_terms.keys() {
             lin.insert(var.clone());
         }
 
-        lin.difference(&quad).cloned().collect::<HashSet<_>>()
+        lin.difference(&quad).cloned().collect::<IndexSet<_>>()
     }
 
     #[track_caller]
@@ -460,26 +485,37 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
         let mut linear_terms_only_vars = self.get_linear_terms_only_variables();
         let flattened_quad_releations : Vec<(OrderedVariablePair, E::Fr)> = self.quadratic_terms.into_iter().collect();
         let flattened_arr_len = flattened_quad_releations.len();
-        let mut arr_indexer : HashMap<Variable, usize> = HashMap::new();
+        let mut arr_indexer : IndexMap<Variable, usize> = IndexMap::new();
         let mut gate_templates : Vec<GateConstructorHelper<E>> = vec![];
         let mut num_gates_allocated : usize = 0;
 
         for i in 0..flattened_arr_len {
             let (var_pair_i, fr_i) = flattened_quad_releations[i].clone();
+            let mut insertion_flag = true;
             for var in [var_pair_i.first, var_pair_i.second].iter() {
                 if let Some(j) = arr_indexer.get(var) {
                     let (var_pair_j, fr_j) = flattened_quad_releations[*j].clone();
-                    let gate = GateConstructorHelper::new_for_pair_of_muls(cs, var_pair_i, fr_i, var_pair_j, fr_j);
+                    
+                    // construct gate from two multiplications:
+                    let a = *var;
+                    let b = var_pair_i.get_associate(a);
+                    let c = var_pair_j.get_associate(a);
+                    let gate = GateConstructorHelper::new_for_pair_of_muls(cs, a, b, c, fr_i, fr_j);
                     gate_templates.push(gate);
                     arr_indexer.remove(&var_pair_j.first);
                     arr_indexer.remove(&var_pair_j.second);
-                    continue;
+                    insertion_flag = false;
+                    break;
                 }
-                arr_indexer.insert(var_pair_i.first, i);
-                arr_indexer.insert(var_pair_i.second, i);
+            }
+            for var in [var_pair_i.first, var_pair_i.second].iter() {
+                if insertion_flag {
+                    arr_indexer.insert(*var, i);
+                }
             }
         }
-        let unconsumed_idxes = HashSet::<usize>::from_iter(arr_indexer.into_values());
+        
+        let unconsumed_idxes = IndexSet::<usize>::from_iter(arr_indexer.into_values());
         for i in unconsumed_idxes {
             let (var_pair, fr) = flattened_quad_releations[i];
             let gate_template = GateConstructorHelper::new_for_mul(cs, var_pair, fr);
@@ -520,7 +556,6 @@ impl<E: Engine> AmplifiedLinearCombination<E> {
                 break
             }
         } 
-
         Ok(num_gates_allocated)
     }
 

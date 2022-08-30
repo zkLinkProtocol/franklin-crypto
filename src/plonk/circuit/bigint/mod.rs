@@ -72,6 +72,7 @@ pub fn constraint_num_bits<E: Engine, CS: ConstraintSystem<E>>(cs: &mut CS, el: 
                     self::single_table_range_constraint::enforce_using_single_column_table(cs, &el, num_bits)?;
                 },
                 RangeConstraintStrategy::CustomTwoBitGate => {
+                    unreachable!();
                     let _ = create_range_constraint_chain(cs, &el, num_bits)?;
                 }
                 _ => {unimplemented!("range constraint strategies other than multitable, single table or custom gate are not yet handled")}
@@ -247,7 +248,7 @@ pub fn create_range_constraint_chain<E: Engine, CS: ConstraintSystem<E>>(
 
         let four = Some(four);
 
-        use crate::plonk::circuit::SomeField;
+        use crate::plonk::circuit::SomeArithmetizable;
 
         let mut previous_value = to_constraint.get_value();
 
@@ -306,7 +307,7 @@ pub fn create_range_constraint_chain<E: Engine, CS: ConstraintSystem<E>>(
     Ok(result)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum RangeConstraintStrategy {
     MultiTable,
     SingleTableInvocation,
@@ -325,7 +326,7 @@ impl RangeConstraintStrategy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RangeConstraintInfo {
     pub minimal_multiple: usize,
     pub optimal_multiple: usize,

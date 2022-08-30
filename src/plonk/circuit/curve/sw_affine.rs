@@ -109,22 +109,22 @@ pub fn vec_of_bit(number: usize, window: usize) -> (Vec<Option<bool>>, i64){
         constanta += high_contribution ;
     }
 
-    if vec_bool.len() & 1 == 1{
-        constanta *= 2;
+    // if vec_bool.len() & 1 == 1{
+    //     constanta *= 2;
 
-        let last_bit = vec_bool[vec_bool.len() - 1].unwrap();
-        if last_bit{
-            constanta -= 1;
-        } else{
-            constanta += 1
-        };
-    } else{
+    //     let last_bit = vec_bool[vec_bool.len() - 1].unwrap();
+    //     if last_bit{
+    //         constanta -= 1;
+    //     } else{
+    //         constanta += 1
+    //     };
+    // } else{
 
-        if vec_bool.last().unwrap().unwrap(){
-            constanta -= 1;
-        } 
+    //     if vec_bool.last().unwrap().unwrap(){
+    //         constanta -= 1;
+    //     } 
         
-    }
+    // }
 
     (vec_bool, constanta)
     
@@ -222,13 +222,58 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         };
         values
     }
+    // pub fn point_compression<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<(Boolean, RangeCheckDecomposition<E>), SynthesisError>{
 
+    //     let y = self.y;
+    //     let normalize_y = y.clone().enforce_is_normalized(cs)?;
+    //     let y_limbs = FieldElement::into_limbs(normalize_y.clone());
+    //     let num_bits = y.representation_params.binary_limbs_bit_widths[0];
+    //     // decomposition by field
+    //     let rcd = constraint_bit_length_ext(cs,  &y_limbs[0].num.get_variable(), num_bits)?;
+
+    //     let vars = rcd.get_vars();
+    //     let bits = vars[0].into_bits_le(cs, Some(8))?;
+
+    //     // a(a-1) = 0
+    //     let bit = AllocatedBit::alloc(cs, bits[0].get_value())?;
+
+    //     // a = a_0 + x ;
+    //     let mut lc = LinearCombination::<E>::zero();
+    //     let mut coeff = E::Fr::one();
+    //     lc.add_assign_bit_with_coeff(&bit, coeff);
+    //     coeff.double();
+
+    //     for i in 1..bits.len(){
+    //         lc.add_assign_boolean_with_coeff(&bits[i], coeff);
+    //         coeff.double();
+    //     }
+    //     use plonk::circuit::bigint_new::compute_shifts;
+    //     let shifts = compute_shifts::<E::Fr>();
+    //     let mut minus_one = E::Fr::one();
+    //     minus_one.negate();
+    //     lc.add_assign_variable_with_coeff(&vars[0], minus_one);
+    //     lc.enforce_zero(cs)?;
+
+    //     let mut lc_x = LinearCombination::<E>::zero();
+    //     let mut coeff = E::Fr::one();
+    //     coeff.double();
+    //     for i in 1..bits.len(){
+    //         lc_x.add_assign_boolean_with_coeff(&bits[i], coeff);
+    //         coeff.double();
+    //     }
+    //     let x = lc_x.into_allocated_num(cs)?;
+
+    //     let odd_bit = Boolean::from(bit);
+
+    //     Ok((odd_bit, rcd))
+
+
+    // }
     #[track_caller]
     pub fn point_compression<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<(Boolean, RangeCheckDecomposition<E>), SynthesisError>{
         let table =  cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME)?;
         let dummy = CS::get_dummy_variable();
         let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
-        dbg!(3);
         let mut two = E::Fr::one();
         two.double();
         let two_inv = two.inverse().unwrap();
@@ -237,11 +282,10 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         minus_one.negate();
         let mut minus_two = two.clone();
         minus_two.negate(); 
-        dbg!(1);
         let y = self.y;
         let y_limbs = FieldElement::into_limbs(y.clone());
         let num_bits = y.representation_params.binary_limbs_bit_widths[0];
-        dbg!(2);
+        
         // decomposition by field
         let rcd = constraint_bit_length_ext(cs,  &y_limbs[0].num.get_variable(), num_bits)?;
         dbg!( 234);
@@ -288,51 +332,51 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
 
     }
 
-    // pub fn point_decompression<CS: ConstraintSystem<E>>(odd_bit: Boolean, cs: &mut CS, y_decomposition: RangeCheckDecomposition<E>)->Result<RangeCheckDecomposition<E>, SynthesisError>{
-    //     let mut two = E::Fr::one();
-    //     two.double();
-    //     let two_inv = two.inverse().unwrap();
-    //     let mut minus_two = two.clone();
-    //     minus_two.negate(); 
-    //     let table =  cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME)?;
-    //     let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
-    //     let dummy = CS::get_dummy_variable();
-    //     let a = y_decomposition.get_vars()[0];
-    //     let b = AllocatedNum::alloc(cs, || {
-    //         let mut tmp = a.get_value().grab()?;
-    //         tmp.sub_assign(&odd_bit.get_value_in_field::<E>().grab()?);
-    //         tmp.mul_assign(&two_inv);
-    //         Ok(tmp)
-    //     })?;
+    pub fn point_decompression<CS: ConstraintSystem<E>>(odd_bit: Boolean, cs: &mut CS, y_decomposition: RangeCheckDecomposition<E>)->Result<RangeCheckDecomposition<E>, SynthesisError>{
+        let mut two = E::Fr::one();
+        two.double();
+        let two_inv = two.inverse().unwrap();
+        let mut minus_two = two.clone();
+        minus_two.negate(); 
+        let table =  cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME)?;
+        let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
+        let dummy = CS::get_dummy_variable();
+        let a = y_decomposition.get_vars()[0];
+        let b = AllocatedNum::alloc(cs, || {
+            let mut tmp = a.get_value().grab()?;
+            tmp.sub_assign(&odd_bit.get_value_in_field::<E>().grab()?);
+            tmp.mul_assign(&two_inv);
+            Ok(tmp)
+        })?;
 
-    //     let a_xor_b = match (a.get_value(), b.get_value()) {
-    //         (Some(a_val), Some(b_val)) => {
-    //             let res = table.query(&[a_val, b_val])?;
-    //             AllocatedNum::alloc(cs, || Ok(res[0]))?
-    //         },  
-    //         (_, _) => AllocatedNum::alloc(cs, || Err(SynthesisError::AssignmentMissing))?
-    //     };
+        let a_xor_b = match (a.get_value(), b.get_value()) {
+            (Some(a_val), Some(b_val)) => {
+                let res = table.query(&[a_val, b_val])?;
+                AllocatedNum::alloc(cs, || Ok(res[0]))?
+            },  
+            (_, _) => AllocatedNum::alloc(cs, || Err(SynthesisError::AssignmentMissing))?
+        };
 
-    //     let y_is_odd_var = odd_bit.get_variable().unwrap().get_variable();
-    //     let vars = [
-    //         a.get_variable(), b.get_variable(), a_xor_b.get_variable(), y_is_odd_var
-    //     ];
-    //     let coeffs = [E::Fr::one(), minus_two.clone(), E::Fr::zero(), E::Fr::one()];
+        let y_is_odd_var = odd_bit.get_variable().unwrap().get_variable();
+        let vars = [
+            a.get_variable(), b.get_variable(), a_xor_b.get_variable(), y_is_odd_var
+        ];
+        let coeffs = [E::Fr::one(), minus_two.clone(), E::Fr::zero(), E::Fr::one()];
     
-    //     cs.begin_gates_batch_for_step()?;
-    //     cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
+        cs.begin_gates_batch_for_step()?;
+        cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
         
-    //     let gate_term = MainGateTerm::new();
-    //     let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;
-    //     for (idx, coef) in range_of_linear_terms.clone().zip(coeffs.iter()) {
-    //         gate_coefs[idx] = *coef;
-    //     }
-    //     let mg = CS::MainGate::default();
-    //     cs.new_gate_in_batch(&mg, &gate_coefs, &vars, &[])?;
-    //     cs.end_gates_batch_for_step()?;
+        let gate_term = MainGateTerm::new();
+        let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;
+        for (idx, coef) in range_of_linear_terms.clone().zip(coeffs.iter()) {
+            gate_coefs[idx] = *coef;
+        }
+        let mg = CS::MainGate::default();
+        cs.new_gate_in_batch(&mg, &gate_coefs, &vars, &[])?;
+        cs.end_gates_batch_for_step()?;
     
-    //     Ok(y_decomposition)
-    // }
+        Ok(y_decomposition)
+    }
 
     pub fn from_xy_unchecked(
         x: FieldElement<'a, E, G::Base>,
@@ -1334,7 +1378,6 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         self,
         cs: &mut CS,
         scalar: &Num<E>,
-        bit_limit: Option<usize>,
         endomorphism_params: EndomorphismParameters<E>,
         window: usize
     ) -> Result<(Self, Self), SynthesisError> {
@@ -1405,29 +1448,27 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         let (minus_y_2, y_2) = y_2.negated(cs)?;
 
         let (mut acc, (_, _)) = acc_1.add_unequal(cs, q_endo.clone())?;
-        let bit_window = (2 as u64).pow(window as u32) - 1;
+        let bit_window = (2 as u64).pow(window as u32);
 
         //precompute 
         use plonk::circuit::curve::point_ram::Memory;
         use plonk::circuit::hashes_with_tables::utils::u64_to_ff;
         let mut memory =  Memory::new();
         let mut count = 0 as u64;
-        for i in 0..bit_window+1{
+        for i in 0..bit_window{
             let (d_k, number) = vec_of_bit(i as usize, window);
             let is_ne_flag = sign_i64(number);
             let unsign_nuber = i64::abs(number);
             let q_point = self.clone();
             let (mut r_point, _) = q_point.clone().double(cs)?;
 
-            let mut count = 0;
             if unsign_nuber >2{
                 for i in 0..unsign_nuber-2{
 
                     (r_point, _) = r_point.add_unequal(cs, q_point.clone())?;
-                    count+=1;
                 }
             }
-            println!("i, {}, {:?}, {}, {}", i, count, number, unsign_nuber);
+            println!("i, {}, {}, {}", i, number, unsign_nuber);
 
             let y = r_point.y.clone();
             let (minus_y, y) = y.negated(cs)?;
@@ -1451,7 +1492,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
                 value: r_value
             };
 
-            for j in 0..bit_window+1{
+            for j in 0..bit_window{
                 let (d_m, number) = vec_of_bit(j as usize, window);
                 let is_ne_flag = sign_i64(number);
                 let unsign_nuber = i64::abs(number);
@@ -1490,7 +1531,6 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
                 let number: E::Fr = u64_to_ff(count);
                 let address = Num::Variable(AllocatedNum::alloc(cs, || Ok(number))?);
-
                 memory.clone().block.push((address, c.clone()));
                 memory.insert_witness(address, c);
                 count+=1;
@@ -3483,7 +3523,7 @@ mod test {
         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
         // let rng = &mut XorShiftRng::from_seed([64, 64, 63, 63]);
 
-        let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
+        let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 3);
 
         for i in 0..1 {
             let mut cs =
@@ -3501,7 +3541,7 @@ mod test {
 
             let endo_parameters = super::super::endomorphism::bn254_endomorphism_parameters();
 
-            let (result, a) = a.mul_split_scalar_2(&mut cs, &b, None, endo_parameters.clone(), 2).unwrap();
+            let (result, a) = a.mul_split_scalar_2(&mut cs, &b, endo_parameters.clone(), 3).unwrap();
 
             let result_recalculated = a_f.mul(b_f.into_repr()).into_affine();
 
@@ -3547,7 +3587,7 @@ mod test {
             if i == 0 {
                 crate::plonk::circuit::counter::reset_counter();
                 let base = cs.n();
-                let _ = a.mul_split_scalar_2(&mut cs, &b, None, endo_parameters, 2).unwrap();
+                let _ = a.mul_split_scalar_2(&mut cs, &b, endo_parameters, 4).unwrap();
                 println!("single multiplication taken {} gates", cs.n() - base);
                 println!(
                     "Affine spent {} gates in equality checks",

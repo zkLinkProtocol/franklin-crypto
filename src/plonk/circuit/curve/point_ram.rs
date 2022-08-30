@@ -663,7 +663,7 @@ where
 
         use plonk::circuit::utils::u64_to_fe;
         let mut lc_count = LinearCombination::<E>::zero(); 
-        let constanta = bit_window_decompose(window) - 1;
+        let constanta = bit_window_decompose(window);
         println!("constanta{}", constanta);
         let constant = Num::Constant(u64_to_fe(constanta as u64));
         lc_count.add_assign_number_with_coeff(&constant, E::Fr::one());
@@ -678,7 +678,7 @@ where
             println!("is_equal_2{:?}", is_equal_2);
             let condition = Boolean::and(cs, &is_equal_1, &is_equal_2)?;
             println!("{:?}", condition);
-            let count = Num::mask(cs, &Num::Constant(E::Fr::one()), &condition.not())?;
+            let count = Num::mask(cs, &Num::Constant(E::Fr::one()), &condition)?;
             println!("{:?}", count);
             lc_count.add_assign_number_with_coeff(&count, minus_one);
             pre_value_1 = i[0];

@@ -801,7 +801,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         for bit in scalar_decomposition.into_iter() {
             let added = acc.add_mixed(cs, &mut tmp)?;
             acc = ProjectivePoint::conditionally_select(cs, &bit, &added, &acc)?;
-            tmp = tmp.double()?;
+            tmp = tmp.double(cs)?;
         }
         
         Ok(acc)

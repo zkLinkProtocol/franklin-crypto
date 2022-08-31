@@ -49,6 +49,7 @@ use num_integer::Integer;
 
 use super::super::bigint::field::*;
 use super::super::bigint::bigint::*;
+use plonk::circuit::curve::point_ram::*;
 
 use plonk::circuit::bigint_new::BITWISE_LOGICAL_OPS_TABLE_NAME;
 
@@ -1315,46 +1316,9 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         Ok((k1, k2, q_endo, bit_limit))
     }
 
-    #[track_caller]
-    pub fn mul_split_scalar_2<CS: ConstraintSystem<E>>(
-        self,
-        cs: &mut CS,
-        scalar: &Num<E>,
-        endomorphism_params: EndomorphismParameters<E>,
-        window: usize
-    ) -> Result<(Self, Self), SynthesisError> {
-        let params = self.x.representation_params;
-        let (k1, k2, q_endo, bit_limit) = self.clone().endo_decomposition_scalar(cs, scalar, endomorphism_params)?;
-
-        let v_1 = k1.get_variable();
-        let v_2 = k2.get_variable();
-
-        let entries_1 = decompose_allocated_num_into_skewed_table(cs, &v_1, bit_limit)?;
-        let entries_2 = decompose_allocated_num_into_skewed_table(cs, &v_2, bit_limit)?;
-
-        let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log_proj::<E>(
-            &crate::constants::MULTIEXP_DST[..], 
-            1
-        )[0];
-
-        let generator = Self::constant(offset_generator, params);
-
-        let (acc_1, (_, _)) = self.clone().add_unequal(cs, generator.clone())?;
-
-        let entries_1_without_first_and_last = &entries_1[1..(entries_1.len() - 1)];
-        let entries_1_without_first_and_last_vec: Vec<_> = entries_1_without_first_and_last.iter().collect(); 
-        let entries_2_without_first_and_last = &entries_2[1..(entries_2.len() - 1)];
-        let entries_2_without_first_and_last_vec: Vec<_> = entries_2_without_first_and_last.into_iter().collect(); 
-
-        let mut num_doubles = 0;
-
-        let (mut acc, (_, _)) = acc_1.add_unequal(cs, q_endo.clone())?;
-        let bit_window = (2 as u64).pow(window as u32);
-
-        //precompute 
-        use plonk::circuit::curve::point_ram::Memory;
+    pub fn precomputation_for_ram<CS: ConstraintSystem<E>>(self,  cs: &mut CS, other: &Self, window: usize, memory: &mut Memory<'a, E, <E as Engine>::G1Affine>)-> Result<(), SynthesisError>{
         use plonk::circuit::hashes_with_tables::utils::u64_to_ff;
-        let mut memory =  Memory::new();
+        let bit_window = (2 as u64).pow(window as u32);
         let mut count = 0 as u64;
         for i in 0..bit_window{
             let (d_k, number) = vec_of_bit(i as usize, window);
@@ -1369,7 +1333,6 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
                     (r_point, _) = r_point.add_unequal(cs, q_point.clone())?;
                 }
             }
-            println!("i, {}, {}, {}", i, number, unsign_nuber);
 
             let y = r_point.y.clone();
             let (minus_y, y) = y.negated(cs)?;
@@ -1397,7 +1360,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
                 let (d_m, number) = vec_of_bit(j as usize, window);
                 let is_ne_flag = sign_i64(number);
                 let unsign_nuber = i64::abs(number);
-                let q_point = q_endo.clone();
+                let q_point = other.clone();
                 let (mut endo_point, _) = q_point.clone().double(cs)?;
     
                 if unsign_nuber >2{
@@ -1437,6 +1400,47 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
                 count+=1;
             }
         }
+        Ok(())
+    }
+    #[track_caller]
+    pub fn mul_split_scalar_2<CS: ConstraintSystem<E>>(
+        self,
+        cs: &mut CS,
+        scalar: &Num<E>,
+        endomorphism_params: EndomorphismParameters<E>,
+        window: usize
+    ) -> Result<(Self, Self), SynthesisError> {
+        let params = self.x.representation_params;
+        let (k1, k2, q_endo, bit_limit) = self.clone().endo_decomposition_scalar(cs, scalar, endomorphism_params)?;
+
+        let v_1 = k1.get_variable();
+        let v_2 = k2.get_variable();
+
+        let entries_1 = decompose_allocated_num_into_skewed_table(cs, &v_1, bit_limit)?;
+        let entries_2 = decompose_allocated_num_into_skewed_table(cs, &v_2, bit_limit)?;
+
+        let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log_proj::<E>(
+            &crate::constants::MULTIEXP_DST[..], 
+            1
+        )[0];
+
+        let generator = Self::constant(offset_generator, params);
+
+        let (acc_1, (_, _)) = self.clone().add_unequal(cs, generator.clone())?;
+
+        let entries_1_without_first_and_last = &entries_1[1..(entries_1.len() - 1)];
+        let entries_1_without_first_and_last_vec: Vec<_> = entries_1_without_first_and_last.iter().collect(); 
+        let entries_2_without_first_and_last = &entries_2[1..(entries_2.len() - 1)];
+        let entries_2_without_first_and_last_vec: Vec<_> = entries_2_without_first_and_last.into_iter().collect(); 
+
+        let mut num_doubles = 0;
+
+        let (mut acc, (_, _)) = acc_1.add_unequal(cs, q_endo.clone())?;
+
+        //precompute 
+        let mut memory =  Memory::new();
+ 
+        self.clone().precomputation_for_ram(cs, &q_endo, window, &mut memory)?;
 
         let d = bit_limit.unwrap()/window - 2; 
         use plonk::circuit::bigint_new::compute_shifts;

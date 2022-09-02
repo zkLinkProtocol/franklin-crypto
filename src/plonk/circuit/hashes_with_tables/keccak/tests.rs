@@ -6,7 +6,7 @@ mod test {
     use crate::bellman::Engine;
     use crate::plonk::circuit::boolean::AllocatedBit;
     use crate::tiny_keccak::Keccak;
-     use crate::plonk::circuit::allocated_num::{
+    use crate::plonk::circuit::allocated_num::{
         AllocatedNum,
         Num,
     };

@@ -1471,6 +1471,7 @@ mod test {
 
     use crate::plonk::circuit::*;
     use crate::bellman::pairing::bn256::{Fq, Bn256, Fr, G1Affine};
+    use crate::plonk::circuit::tables::inscribe_range_table_for_bit_width_over_first_three_columns;
 
     #[test]
     fn test_add_on_random_witnesses(){
@@ -1479,8 +1480,11 @@ mod test {
 
         let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
 
-        for i in 0..100 {
+        for i in 0..1 {
             let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+            use plonk::circuit::tables::*;
+            inscribe_default_range_table_for_bit_width_over_first_three_columns(&mut cs, 16).unwrap();
+            //inscribe_range_table_for_bit_width_over_first_three_columns(&mut cs, 16).unwrap();
 
             let a_f: G1Affine = rng.gen();
             let b_f: G1Affine = rng.gen();
@@ -1496,7 +1500,12 @@ mod test {
                 &params
             ).unwrap();
     
-            let (result, (a, b)) = a.add_unequal(&mut cs, b).unwrap();
+            let start = cs.get_current_step_number();
+            println!("test start");
+            let (result, (a, b)) = a.add_unequal_unchecked(&mut cs, b).unwrap();
+            println!("test end");
+            let end = cs.get_current_step_number();
+            println!("right test: {}", end - start);
 
             assert!(cs.is_satisfied());
 
@@ -1547,8 +1556,11 @@ mod test {
                 b_f,
                 &params
             );
-    
+            
+            let start = cs.get_current_step_number();
             let (result, (a, b)) = a.add_unequal(&mut cs, b).unwrap();
+            let end = cs.get_current_step_number();
+            println!("num gates for curve op: {}", end - start);
 
             assert!(cs.is_satisfied());
 
@@ -1585,6 +1597,7 @@ mod test {
 
         for i in 0..100 {
             let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+            //inscribe_range_table_for_bit_width_over_first_three_columns(&mut cs, 8).unwrap();
 
             let a_f: G1Affine = rng.gen();
             let b_f: G1Affine = rng.gen();

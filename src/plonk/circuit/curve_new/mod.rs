@@ -6,3 +6,6 @@ pub use self::sw_projective::*;
 
 pub mod secp256k1;
 pub use self::secp256k1::*;
+
+// pub mod endomorphism;
+// pub use endomorphism::*;

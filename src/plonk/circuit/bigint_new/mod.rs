@@ -31,6 +31,9 @@ pub mod field;
 pub use self::amplified_linear_combination::*;
 pub use self::field::*;
 
+pub mod quadratic_extension;
+pub use self::quadratic_extension::*;
+
 
 pub const BITWISE_LOGICAL_OPS_TABLE_NAME: &'static str = "Table for bitwise logical ops";
 pub const DEFAULT_RANGE_TABLE_GRANULARITY: usize = 8;

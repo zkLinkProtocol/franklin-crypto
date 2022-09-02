@@ -102,7 +102,7 @@ impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
             optimal_multiple: 8,
             multiples_per_gate: 4,
             linear_terms_used: 4,
-            strategy: RangeConstraintStrategy::CustomTwoBitGate
+            strategy: RangeConstraintStrategy::SingleTableInvocation
         };
 
         Self::new_for_field_with_strategy(limb_size, intermediate_limb_capacity, num_binary_limbs, default_strategy, false)
@@ -477,6 +477,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                             self::single_table_range_constraint::enforce_using_single_column_table(cs, var, expected_width)?;
                         },
                         RangeConstraintStrategy::CustomTwoBitGate => {
+                            println!("range check expected width: {}", expected_width);
                             let _ = create_range_constraint_chain(cs, var, expected_width)?;
                         }
                         _ => {unimplemented!("range constraint strategies other than multitable, single table or custom gate are not yet handled")}
@@ -730,6 +731,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                             self::single_table_range_constraint::enforce_using_single_column_table(cs, var, expected_width)?;
                         },
                         RangeConstraintStrategy::CustomTwoBitGate => {
+                            println!("range check expected width: {}", expected_width);
                             let _ = create_range_constraint_chain(cs, var, expected_width)?;
                         }
                         _ => {unimplemented!("range constraint strategies other than multitable, single table or custom gate are not yet handled")}
@@ -837,6 +839,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                     self::single_table_range_constraint::enforce_using_single_column_table(cs, &a, size)?;
                 },
                 RangeConstraintStrategy::CustomTwoBitGate => {
+                    println!("range check expected width: {}", size);
                     let _ = create_range_constraint_chain(cs, &a, size)?;
                 }
                 _ => {unimplemented!("range constraint strategies other than multitable, single table or custom gate are not yet handled")}
@@ -2868,6 +2871,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 super::single_table_range_constraint::adaptively_constraint_multiple_with_single_table(cs, &double_limb_carries, &double_limb_max_bits)?;
             },
             RangeConstraintStrategy::CustomTwoBitGate => {
+                println!("deprecated bit width: {:?}", double_limb_max_bits);
                 super::range_constraint_functions::adaptively_coarsely_constraint_multiple_with_two_bit_decomposition(cs, &double_limb_carries, &double_limb_max_bits)?;
             },
             _ => unimplemented!("other forms of range constraining are not implemented")
@@ -2972,6 +2976,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 super::single_table_range_constraint::adaptively_constraint_multiple_with_single_table(cs, &carries, &limb_max_bits)?;
             },
             RangeConstraintStrategy::CustomTwoBitGate => {
+                println!("deprecated width: {:?}", limb_max_bits);
                 super::range_constraint_functions::adaptively_coarsely_constraint_multiple_with_two_bit_decomposition(cs, &carries, &limb_max_bits)?;
             },
             _ => unimplemented!("other forms of range constraining are not implemented")
@@ -3132,6 +3137,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                     self::single_table_range_constraint::enforce_using_single_column_table(cs, &el, expected_width)?;
                 },
                 RangeConstraintStrategy::CustomTwoBitGate => {
+                    println!("expected width: {}", expected_width);
                     let _ = create_range_constraint_chain(cs, &el, expected_width)?;
                 }
                 _ => {unimplemented!("range constraint strategies other than multitable, single table or custom gate are not yet handled")}
@@ -3196,7 +3202,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         let first = first.force_reduce_close_to_modulus(cs)?;
         let second = second.force_reduce_close_to_modulus(cs)?;
-
         assert!(first.is_within_2_in_modulus_len());
         assert!(second.is_within_2_in_modulus_len());
 

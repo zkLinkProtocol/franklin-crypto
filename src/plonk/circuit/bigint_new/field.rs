@@ -297,7 +297,7 @@ pub struct FieldElement<'a, E: Engine, F: PrimeField>{
     base_field_limb: Term<E>,
     pub(crate) representation_params: &'a RnsParameters<E, F>,
     value: Option<F>,
-    reduction_status: ReductionStatus
+    reduction_status: ReductionStatus,
 }
 
 impl<'a, E: Engine, F: PrimeField> std::fmt::Display for FieldElement<'a, E, F> {
@@ -742,7 +742,8 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     pub fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
     {
         let params = self.representation_params;
-        self.reduce_if_necessary(cs, ReductionStatus::Loose)?;
+        let is_normalized = self.reduction_status == ReductionStatus::Normalized;
+        self.reduce(cs)?;
        
         // after reduction the value of x is in interval [0; 2*F) and all limbs occupy exactly limb_width bits
         // (i.e. capacity bits are not involved)
@@ -753,9 +754,13 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // (again, as long as k * Fr::modulus != 0 (mod 2^{limb_width}) for small positive k)
         // the exact range of k to test is determined by the maximal multiple of Fr::modulus which fits into
         // params.represented_field_modulus_bitlength bits
+        // if the value was in normalized form from the beginning than checking that
+        // field_limb == 0 and least_significant_binary_limb == 0 is enough 
         
         let least_significant_binary_limb = self.binary_limbs[0].term.collapse_into_num(cs)?;
         let base_field_limb = self.base_field_limb.collapse_into_num(cs)?;
+        self.binary_limbs[0].term = Term::from_num(least_significant_binary_limb.clone());
+        self.base_field_limb = Term::from_num(base_field_limb.clone());
 
         // check if x == 0
         let binary_limb_check = least_significant_binary_limb.is_zero(cs)?;
@@ -763,21 +768,18 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let x_is_raw_zero = Boolean::and(cs, &binary_limb_check, &base_field_limb_check)?;
 
         // check if x == F::char
-        let f_char_mod_fr_char = Num::Constant(params.f_char_mod_fr_char.clone());
-        let f_char_mod_binary_shift = Num::Constant(params.f_char_mod_binary_shift.clone());
-        let binary_limb_check = Num::equals(cs, &least_significant_binary_limb, &f_char_mod_binary_shift)?;
-        let base_field_limb_check = Num::equals(cs, &base_field_limb, &f_char_mod_fr_char)?;
-        let x_is_raw_modulus = Boolean::and(cs, &binary_limb_check, &base_field_limb_check)?;
-
-        self.binary_limbs[0].term = Term::from_num(least_significant_binary_limb);
-        self.base_field_limb = Term::from_num(base_field_limb);
-        
-        let is_zero = if self.reduction_status == ReductionStatus::Loose {
-            Boolean::or(cs, &x_is_raw_zero, &x_is_raw_modulus)?
+        let x_is_raw_modulus = if is_normalized {
+            let f_char_mod_fr_char = Num::Constant(params.f_char_mod_fr_char.clone());
+            let f_char_mod_binary_shift = Num::Constant(params.f_char_mod_binary_shift.clone());
+            let binary_limb_check = Num::equals(cs, &least_significant_binary_limb, &f_char_mod_binary_shift)?;
+            let base_field_limb_check = Num::equals(cs, &base_field_limb, &f_char_mod_fr_char)?;
+            let x_is_raw_modulus = Boolean::and(cs, &binary_limb_check, &base_field_limb_check)?;
+            x_is_raw_modulus
         } else {
-            x_is_raw_zero
+            Boolean::constant(false)
         };
-            
+
+        let is_zero = Boolean::or(cs, &x_is_raw_zero, &x_is_raw_modulus)?;  
         Ok(is_zero)
     }
 
@@ -853,76 +855,30 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Self::conditionally_select(cs, flag, &negated, self)
     }
 
-    // we call value to be reduced if all binary limbs do not overflow: i.e there are no capacity bits occupied 
-    fn needs_reduction(&self, mode: ReductionStatus) -> bool {
-        // if the element is already reduced do nothing:
-        if self.reduction_status as u8 <= mode as u8 {
-            return false;
-        }
-        
-        let params = &self.representation_params;
-        let upper_bound = match mode {
-            ReductionStatus::Loose => (BigUint::one() << params.represented_field_modulus.bits()),
-            ReductionStatus::Normalized => params.represented_field_modulus.clone(),
-            ReductionStatus::Unreduced => params.infty.clone(),
-        };
-        let mut needs_reduction = self.get_maximal_possible_stored_value() >= upper_bound;
-
-        if mode == ReductionStatus::Unreduced {
-            return false;
-        }
-        
-        for (_is_first, is_last, binary_limb) in self.binary_limbs.iter().identify_first_last() {
-            let max_width = if is_last { params.msl_width } else { params.binary_limb_width };
-            needs_reduction = needs_reduction || (binary_limb.max_value().bits() as usize > max_width);
-        }
-
-        needs_reduction
-    }
-
-    #[track_caller]
-    fn reduce_if_necessary<CS>(&mut self, cs: &mut CS, mode: ReductionStatus) -> Result<(), SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {
-        if self.is_constant() {
-            self.reduction_status = ReductionStatus::Normalized;
-            return Ok(());
-        }
-        
-        let old_reduction_status = self.reduction_status;
-        if self.needs_reduction(mode) {
-            return self.reduction_impl(cs);
-        }
-        // if new reduction status is better - replace
-        self.reduction_status = FromPrimitive::from_u8(std::cmp::min(old_reduction_status as u8, mode as u8)).unwrap();
-        
-        Ok(())
-    }
-
     pub fn normalize<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
         // if already normalized no nothing - we do not want to normalize twice in a row
         if self.reduction_status == ReductionStatus::Normalized {
             return Ok(());
         }    
-        self.reduce_if_necessary(cs, ReductionStatus::Normalized)?; 
+        self.reduce(cs)?; 
         self.enforce_if_normalized(cs)
     }
 
-    pub fn reduce_loose<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
-        self.reduce_if_necessary(cs, ReductionStatus::Loose) 
-    }
-
     #[track_caller]
-    fn reduction_impl<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
-        let one = Self::one(self.representation_params);
-        let reduced = self.mul(cs, &one)?;
-        
-        *self = reduced;
+    pub fn reduce<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
+        if self.reduction_status == ReductionStatus::Unreduced {
+            let one = Self::one(self.representation_params);
+            let reduced = self.mul(cs, &one)?;
+            *self = reduced;
+            self.reduction_status == ReductionStatus::Loose;
+        }
         Ok(())
     }
 
     #[track_caller]
-    pub fn enforce_if_normalized<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+    pub fn enforce_if_normalized<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
+        assert_ne!(self.reduction_status, ReductionStatus::Unreduced);
+        self.reduction_status = ReductionStatus::Normalized;
         if self.is_constant() { return Ok(()) }
         let params = self.representation_params;
         let mut minus_one = E::Fr::one();
@@ -1032,7 +988,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     #[track_caller]
     pub fn add_with_reduction<CS: ConstraintSystem<E>>(
-        &self, cs: &mut CS, other: &Self, mode: ReductionStatus
+        &self, cs: &mut CS, other: &Self, needs_reduction: bool
     ) -> Result<Self, SynthesisError> {
         let params = self.representation_params;
         assert!(Self::check_params_equivalence(self, other));
@@ -1066,21 +1022,18 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         if cfg!(debug_assertions) {
             new.debug_check_value_coherency();
         }
-        new.reduce_if_necessary(cs, mode)?;
+        if needs_reduction {
+            new.reduce(cs)?;
+        }
 
         Ok(new)
     }
 
     pub fn add<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
-        let mode = if self.representation_params.allow_individual_limb_overflow {
-            ReductionStatus::Unreduced
-        } else {
-            ReductionStatus::Loose
-        };
-        self.add_with_reduction(cs, other, mode)
+        self.add_with_reduction(cs, other, !self.representation_params.allow_individual_limb_overflow)
     }
 
-    pub fn double_with_reduction<CS>(&self, cs: &mut CS, mode: ReductionStatus) -> Result<Self, SynthesisError> 
+    pub fn double_with_reduction<CS>(&self, cs: &mut CS, needs_reduction: bool) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E> 
     {
         let params = self.representation_params;
@@ -1115,21 +1068,18 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             reduction_status: ReductionStatus::Unreduced
         };
         
-        new.reduce_if_necessary(cs, mode)?;
+        if needs_reduction {
+            new.reduce(cs)?;
+        }
         Ok(new)
     }
 
     pub fn double<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        let mode = if self.representation_params.allow_individual_limb_overflow {
-            ReductionStatus::Unreduced
-        } else {
-            ReductionStatus::Loose
-        };
-        self.double_with_reduction(cs, mode)
+        self.double_with_reduction(cs, !self.representation_params.allow_individual_limb_overflow)
     }
 
     pub fn sub_with_reduction<CS: ConstraintSystem<E>>(
-        &self, cs: &mut CS, other: &Self, mode: ReductionStatus
+        &self, cs: &mut CS, other: &Self, needs_reduction: bool
     ) -> Result<Self, SynthesisError> 
     {
         let params = self.representation_params;
@@ -1144,7 +1094,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         if other.is_constant() {
             let tmp = other.get_field_value().negate();
             let other_negated = Self::constant(tmp.unwrap(), params);
-            let result = self.add_with_reduction(cs, &other_negated, mode)?;
+            let result = self.add_with_reduction(cs, &other_negated, needs_reduction)?;
             return Ok(result);
         }
 
@@ -1188,18 +1138,15 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         if cfg!(debug_assertions) {
             new.debug_check_value_coherency();
         }
-        new.reduce_if_necessary(cs, mode)?;
+        if needs_reduction {
+            new.reduce(cs)?;
+        }
 
         Ok(new)
     }
 
     pub fn sub<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
-        let mode = if self.representation_params.allow_individual_limb_overflow {
-            ReductionStatus::Unreduced
-        } else {
-            ReductionStatus::Loose
-        };
-        self.sub_with_reduction(cs, other, mode)
+        self.sub_with_reduction(cs, other, !self.representation_params.allow_individual_limb_overflow)
     }
 
     pub fn mul<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
@@ -1232,8 +1179,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     pub fn div_with_chain<CS>(cs: &mut CS, chain: FieldElementsChain<'a, E, F>, den: &Self) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
-        let sample_elem = chain.elems_to_add.get(0).unwrap_or_else(|| chain.elems_to_sub.get(0).expect("Chain is empty"));
-        let params = &sample_elem.representation_params;
+        let params = &den.representation_params;
         // we do chain/den = result mod p, where we assume that den != 0
         assert!(!den.get_field_value().unwrap_or(F::one()).is_zero());
 
@@ -1288,8 +1234,8 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             return Ok(())
         }
       
-        this.reduce_if_necessary(cs, ReductionStatus::Loose)?;
-        other.reduce_if_necessary(cs, ReductionStatus::Loose)?;
+        this.reduce(cs)?;
+        other.reduce(cs)?;
 
         // now we know that both this and other are < 2 * F::char, hence to enforce that they are equal
         // However, in all user scenarious we may assume that reduction is complete, i.e:
@@ -1448,7 +1394,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let q_max_value = lhs_max_value.clone() / &params.represented_field_modulus;
         let q_max_bits = q_max_value.bits();
         let coarsely = params.allow_coarse_allocation_for_temp_values;
-        println!("alloc quotient with bitlen: {}", q_max_bits);
         let quotient = Self::alloc_for_known_bitwidth(cs, q, q_max_bits as usize, params, coarsely)?;
 
         // next with finding the RNS binary modulus - we perform an exhaustive check here: 
@@ -1663,7 +1608,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     pub fn decompose_into_binary_representation<CS>(&mut self, cs: &mut CS)-> Result<Vec<Boolean>, SynthesisError> 
     where CS: ConstraintSystem<E> {
         let params = self.representation_params;
-        self.reduce_loose(cs)?;
+        self.reduce(cs)?;
 
         let mut binary_decomposition = Vec::<Boolean>::with_capacity(params.represented_field_modulus_bitlength);
         for (_is_first, is_last, limb) in self.binary_limbs.iter().identify_first_last() {
@@ -1683,7 +1628,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     ) -> Result<Vec<Boolean>, SynthesisError> 
     {
         let params = self.representation_params;
-        self.reduce_loose(cs)?;
+        self.reduce(cs)?;
 
         let num_of_chunks = params.num_binary_limbs;
         let reg_chunk_bitlen = params.binary_limb_width;

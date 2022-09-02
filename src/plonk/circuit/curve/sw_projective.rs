@@ -823,82 +823,82 @@ mod test {
     use crate::plonk::circuit::*;
     use crate::bellman::pairing::bn256::{Fq, Bn256, Fr, G1Affine};
 
-    #[test]
-    fn test_add_on_random_witnesses(){
-        use crate::plonk::circuit::tables::inscribe_default_range_table_for_bit_width_over_first_three_columns;
-        use crate::plonk::circuit::bigint::*;
-        use crate::plonk::circuit::bigint::single_table_range_constraint::{reset_stats, print_stats};
-        use rand::{XorShiftRng, SeedableRng, Rng};
-        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+    // #[test]
+    // fn test_add_on_random_witnesses(){
+    //     use crate::plonk::circuit::tables::inscribe_default_range_table_for_bit_width_over_first_three_columns;
+    //     use crate::plonk::circuit::bigint::*;
+    //     use crate::plonk::circuit::bigint::single_table_range_constraint::{reset_stats, print_stats};
+    //     use rand::{XorShiftRng, SeedableRng, Rng};
+    //     let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
-        let info = RangeConstraintInfo {
-            minimal_multiple: 17,
-            optimal_multiple: 17,
-            multiples_per_gate: 1,
-            linear_terms_used: 3,
-            strategy: RangeConstraintStrategy::SingleTableInvocation,
-        };
-        let params = RnsParameters::<Bn256, Fq>::new_for_field_with_strategy(
-            68,
-            110, 
-            4, 
-            info,
-            true
-        );
+    //     let info = RangeConstraintInfo {
+    //         minimal_multiple: 17,
+    //         optimal_multiple: 17,
+    //         multiples_per_gate: 1,
+    //         linear_terms_used: 3,
+    //         strategy: RangeConstraintStrategy::SingleTableInvocation,
+    //     };
+    //     let params = RnsParameters::<Bn256, Fq>::new_for_field_with_strategy(
+    //         68,
+    //         110, 
+    //         4, 
+    //         info,
+    //         true
+    //     );
     
-        for i in 0..100 {
-            let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
-            inscribe_default_range_table_for_bit_width_over_first_three_columns(&mut cs, 17).unwrap();
-            reset_stats();
-            let a_f: G1Affine = rng.gen();
-            let b_f: G1Affine = rng.gen();
-            let a = PointProjective::alloc_from_affine_non_zero(
-                &mut cs, 
-                Some(a_f), 
-                &params
-            ).unwrap();
+    //     for i in 0..100 {
+    //         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+    //         inscribe_default_range_table_for_bit_width_over_first_three_columns(&mut cs, 17).unwrap();
+    //         reset_stats();
+    //         let a_f: G1Affine = rng.gen();
+    //         let b_f: G1Affine = rng.gen();
+    //         let a = PointProjective::alloc_from_affine_non_zero(
+    //             &mut cs, 
+    //             Some(a_f), 
+    //             &params
+    //         ).unwrap();
 
-            let b = PointProjective::alloc_from_affine_non_zero(
-                &mut cs, 
-                Some(b_f), 
-                &params
-            ).unwrap();
+    //         let b = PointProjective::alloc_from_affine_non_zero(
+    //             &mut cs, 
+    //             Some(b_f), 
+    //             &params
+    //         ).unwrap();
 
-            let mut addition_result = a_f.into_projective();
-            addition_result.add_assign_mixed(&b_f);
+    //         let mut addition_result = a_f.into_projective();
+    //         addition_result.add_assign_mixed(&b_f);
 
-            let addition_result = addition_result.into_affine();
+    //         let addition_result = addition_result.into_affine();
     
-            let (result, (a, b)) = a.add(&mut cs, b).unwrap();
+    //         let (result, (a, b)) = a.add(&mut cs, b).unwrap();
 
-            assert!(cs.is_satisfied());
+    //         assert!(cs.is_satisfied());
 
-            let x_fe = result.x.get_field_value().unwrap();
-            let y_fe = result.y.get_field_value().unwrap();
-            let z_fe = result.y.get_field_value().unwrap();
+    //         let x_fe = result.x.get_field_value().unwrap();
+    //         let y_fe = result.y.get_field_value().unwrap();
+    //         let z_fe = result.y.get_field_value().unwrap();
 
-            let (x, y) = result.get_value().unwrap().into_xy_unchecked();
+    //         let (x, y) = result.get_value().unwrap().into_xy_unchecked();
 
-            // assert_eq!(x_fe, x, "x coords mismatch");
-            // assert_eq!(y_fe, y, "y coords mismatch");
+    //         // assert_eq!(x_fe, x, "x coords mismatch");
+    //         // assert_eq!(y_fe, y, "y coords mismatch");
 
-            let (x, y) = a_f.into_xy_unchecked();
-            assert_eq!(a.x.get_field_value().unwrap(), x, "x coords mismatch");
-            assert_eq!(a.y.get_field_value().unwrap(), y, "y coords mismatch");
+    //         let (x, y) = a_f.into_xy_unchecked();
+    //         assert_eq!(a.x.get_field_value().unwrap(), x, "x coords mismatch");
+    //         assert_eq!(a.y.get_field_value().unwrap(), y, "y coords mismatch");
 
-            let (x, y) = b_f.into_xy_unchecked();
-            assert_eq!(b.x.get_field_value().unwrap(), x, "x coords mismatch");
-            assert_eq!(b.y.get_field_value().unwrap(), y, "y coords mismatch");
+    //         let (x, y) = b_f.into_xy_unchecked();
+    //         assert_eq!(b.x.get_field_value().unwrap(), x, "x coords mismatch");
+    //         assert_eq!(b.y.get_field_value().unwrap(), y, "y coords mismatch");
 
-            print_stats();
+    //         print_stats();
 
-            if i == 0 {
-                let base = cs.n();
-                let _ = a.add(&mut cs, b).unwrap();
-                println!("Single addition taken {} gates", cs.n() - base);
-            }
-        }
-    }
+    //         if i == 0 {
+    //             let base = cs.n();
+    //             let _ = a.add(&mut cs, b).unwrap();
+    //             println!("Single addition taken {} gates", cs.n() - base);
+    //         }
+    //     }
+    // }
 
 
     // #[test]

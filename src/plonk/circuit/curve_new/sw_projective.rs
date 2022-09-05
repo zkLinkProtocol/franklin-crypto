@@ -46,31 +46,39 @@ use super::super::boolean::{Boolean, AllocatedBit};
 
 
 #[derive(Clone, Debug)]
-pub struct ProjectivePoint<'a, E: Engine, G: GenericCurveAffine> where <G as GenericCurveAffine>::Base: PrimeField {
+pub struct ProjectivePoint<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+where <G as GenericCurveAffine>::Base: PrimeField 
+{
     pub x: FieldElement<'a, E, G::Base>,
     pub y: FieldElement<'a, E, G::Base>,
     pub z: FieldElement<'a, E, G::Base>,
     pub value: Option<G::Projective>,
+    pub is_in_subgroup: bool,
+    pub circuit_params: &'a CurveCircuitParameters<E, G, T>
 }
 
 
-impl<'a, E: Engine, G: GenericCurveAffine> From<AffinePoint<'a, E, G>> for ProjectivePoint<'a, E, G>
-where <G as GenericCurveAffine>::Base: PrimeField 
+impl<'a, E, G, T> From<AffinePoint<'a, E, G, T>> for ProjectivePoint<'a, E, G, T>
+where E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>, <G as GenericCurveAffine>::Base: PrimeField 
 {
-    fn from(affine_pt: AffinePoint<'a, E, G>) -> Self {
+    fn from(affine_pt: AffinePoint<'a, E, G, T>) -> Self {
         let params = affine_pt.x.representation_params;
-        let AffinePoint { x, y, value} = affine_pt;
+        let AffinePoint { x, y, value, is_in_subgroup, circuit_params} = affine_pt;
 
-        ProjectivePoint::<E, G> {
+        ProjectivePoint::<E, G, T> {
             x, y,
             z: FieldElement::one(&params),
             value: value.map(|x| x.into_projective()),
+            is_in_subgroup,
+            circuit_params
         }
     }    
 }
 
 
-impl<'a, E: Engine, G: GenericCurveAffine> ProjectivePoint<'a, E, G> where <G as GenericCurveAffine>::Base: PrimeField {
+impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> ProjectivePoint<'a, E, G, T> 
+where <G as GenericCurveAffine>::Base: PrimeField 
+{
     pub fn get_x(&self) -> FieldElement<'a, E, G::Base> {
         self.x.clone()
     }
@@ -83,16 +91,15 @@ impl<'a, E: Engine, G: GenericCurveAffine> ProjectivePoint<'a, E, G> where <G as
         self.z.clone()
     }
 
-    pub fn zero(
-        params: &'a RnsParameters<E, G::Base>
-    ) -> Self
+    pub fn zero(params: &'a CurveCircuitParameters<E, G, T>) -> Self
     {
-        let x = FieldElement::zero(params);
-        let y = FieldElement::one(params);
-        let z = FieldElement::zero(params);
+        let rns_params = &params.base_field_rns_params;
+        let x = FieldElement::zero(rns_params);
+        let y = FieldElement::one(rns_params);
+        let z = FieldElement::zero(rns_params);
         let value = Some(G::Projective::zero());
 
-        Self { x, y, z, value }
+        Self { x, y, z, value, is_in_subgroup: true, circuit_params: params }
     }
 
     pub fn is_constant(&self) -> bool {
@@ -115,7 +122,9 @@ impl<'a, E: Engine, G: GenericCurveAffine> ProjectivePoint<'a, E, G> where <G as
             x: self.x.clone(),
             y: y_negated,
             z: self.z.clone(),
-            value: new_value
+            value: new_value,
+            is_in_subgroup: self.is_in_subgroup,
+            circuit_params: self.circuit_params
         };
 
         Ok(new)
@@ -126,33 +135,36 @@ impl<'a, E: Engine, G: GenericCurveAffine> ProjectivePoint<'a, E, G> where <G as
         self.add(cs, &other_negated)
     }
 
-    pub unsafe fn convert_to_affine<CS>(&self, cs: &mut CS) -> Result<AffinePoint<'a, E, G>, SynthesisError> 
+    pub unsafe fn convert_to_affine<CS>(&self, cs: &mut CS) -> Result<AffinePoint<'a, E, G, T>, SynthesisError> 
     where CS: ConstraintSystem<E> {
         println!("z value: {}", self.z.get_field_value().unwrap());
         let x = self.x.div(cs, &self.z)?;
         let y = self.y.div(cs, &self.z)?;
         let value = self.get_value();
 
-        Ok(AffinePoint { x, y, value })
+        Ok(AffinePoint { x, y, value, is_in_subgroup: self.is_in_subgroup, circuit_params: self.circuit_params })
     }
 
     pub fn convert_to_affine_or_default<CS: ConstraintSystem<E>>(
-        &mut self, cs: &mut CS, default: &AffinePoint<'a, E, G>
-    ) -> Result<(AffinePoint<'a, E, G>, Boolean), SynthesisError> {
+        &mut self, cs: &mut CS, default: &AffinePoint<'a, E, G, T>
+    ) -> Result<(AffinePoint<'a, E, G, T>, Boolean), SynthesisError> {
         let params = self.x.representation_params;
-        let is_point_at_infty = self.z.is_zero(cs)?;
-        let safe_z = FieldElement::conditionally_select(cs, &is_point_at_infty, &FieldElement::one(params), &self.z)?;
+        let is_point_at_infty = FieldElement::is_zero(&mut self.z, cs)?;
+        let safe_z = FieldElement::conditionally_select(
+            cs, &is_point_at_infty, &FieldElement::one(params), &self.z
+        )?;
         let x_for_safe_z = self.x.div(cs, &safe_z)?;
         let y_for_safe_z = self.y.div(cs, &safe_z)?;
         let x = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.x, &x_for_safe_z)?;
         let y = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.y, &y_for_safe_z)?;
 
-        let value = match (is_point_at_infty.get_value(), self.get_value(), default.get_value()) {
+        let value = match (is_point_at_infty.get_value(), self.get_value(), AffinePoint::get_value(&default)) {
             (Some(true), _, Some(val)) | (Some(false), Some(val), _) => Some(val),
             _ => None,
         };
 
-        let new = AffinePoint { x, y, value };
+        let is_in_subgroup = self.is_in_subgroup;
+        let new = AffinePoint { x, y, value, is_in_subgroup, circuit_params: self.circuit_params };
         Ok((new, is_point_at_infty))
     }
 
@@ -259,7 +271,9 @@ impl<'a, E: Engine, G: GenericCurveAffine> ProjectivePoint<'a, E, G> where <G as
             x: x3,
             y: y3,
             z: z3,
-            value: new_value
+            value: new_value,
+            is_in_subgroup: self.is_in_subgroup && other.is_in_subgroup,
+            circuit_params: self.circuit_params
         };
         Ok(new)
     }
@@ -328,13 +342,15 @@ impl<'a, E: Engine, G: GenericCurveAffine> ProjectivePoint<'a, E, G> where <G as
             x: x3,
             y: y3,
             z: z3,
-            value: new_value
+            value: new_value,
+            is_in_subgroup: self.is_in_subgroup,
+            circuit_params: self.circuit_params
         };
         Ok(new)
     }
    
     #[track_caller]
-    pub fn add_mixed<CS>(&self, cs: &mut CS, other: &AffinePoint<'a, E, G>) -> Result<Self, SynthesisError> 
+    pub fn add_mixed<CS>(&self, cs: &mut CS, other: &AffinePoint<'a, E, G, T>) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         // this formula is only valid for curve with zero j-ivariant
@@ -419,7 +435,9 @@ impl<'a, E: Engine, G: GenericCurveAffine> ProjectivePoint<'a, E, G> where <G as
             x: x3,
             y: y3,
             z: z3,
-            value: new_value
+            value: new_value,
+            is_in_subgroup: self.is_in_subgroup && other.is_in_subgroup,
+            circuit_params: self.circuit_params
         };
         Ok(new)
     }
@@ -440,7 +458,9 @@ impl<'a, E: Engine, G: GenericCurveAffine> ProjectivePoint<'a, E, G> where <G as
             (_, _, _) => None
         };
 
-        let selected = Self { x, y, z, value };
+        let is_in_subgroup = first.is_in_subgroup && second.is_in_subgroup;
+        let circuit_params = first.circuit_params;
+        let selected = Self { x, y, z, value, is_in_subgroup, circuit_params };
         Ok(selected)
     }
 }
@@ -459,8 +479,7 @@ mod test {
     fn test_arithmetic_for_projective_bn256_curve() {
         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let params = RnsParameters::<Bn256, Fq>::new_optimal(&mut cs, 80usize);
-        let scalar_params = RnsParameters::<Bn256, Fr>::new_optimal(&mut cs, 80usize);
+        let params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, 80usize, 80usize);
         let mut rng = rand::thread_rng();
 
         let a: G1Affine = rng.gen();

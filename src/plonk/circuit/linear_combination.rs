@@ -333,6 +333,12 @@ impl<E: Engine> LinearCombination<E> {
         self.add_assign_constant(c);
     }
 
+    pub fn sub_assign_term(&mut self, term: &Term<E>) {
+        let mut tmp = term.clone(); 
+        tmp.negate();
+        self.add_assign_term(&tmp)
+    }
+
     pub fn into_num<CS: ConstraintSystem<E>>(
         self,
         cs: &mut CS

@@ -57,11 +57,35 @@ pub enum PointByScalarMulStrategy {
 
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CurveCircuitParameters<E: Engine, G: GenericCurveAffine> where <G as GenericCurveAffine>::Base: PrimeField {
-    base_field_rns_params: RnsParameters<E: Engine, G::Base>,
-    scalar_field_rns_params: RnsParameters<E: Engine, G::Scalar>,
-    is_prime_order_curve: bool,
-    point_by_scalar_mul_strategy: PointByScalarMulStrategy,
+pub struct CurveCircuitParameters<E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+where <G as GenericCurveAffine>::Base: PrimeField 
+{
+    pub base_field_rns_params: RnsParameters<E, G::Base>,
+    pub scalar_field_rns_params: RnsParameters<E, G::Scalar>,
+    pub is_prime_order_curve: bool,
+    pub point_by_scalar_mul_strategy: PointByScalarMulStrategy,
+
+    // this generator is used for scalar multiplication
+    // Sage script to find generator for quadratic extension (taking BN256 curve as an example):
+    // q = 21888242871839275222246405745257275088696311157297823662689037894645226208583
+    // Fq = GF(q)
+    // R.<x> = Fq[] 
+    // Fq2 = Fq.extension(x^2+1,'u')
+    // Fr = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+    // B = 3
+    // print Fq2.cardinality() == q^2
+    // curve = EllipticCurve(Fq2, [0,3])
+    // point = curve.random_point()
+    // for j in xrange(0, 256):
+    //     print point
+    //     point = 2 * point
+
+    fp2_generator_x_c0: G::Base,
+    fp2_generator_x_c1: G::Base,
+    fp2_generator_y_c0: G::Base,
+    fp2_generator_y_c1: G::Base,
+    
+    _marker: std::marker::PhantomData<T>
 
     // parameters related to endomorphism:
     // decomposition of scalar k as k = k1 + \lambda * k2 
@@ -77,8 +101,46 @@ pub struct CurveCircuitParameters<E: Engine, G: GenericCurveAffine> where <G as 
     // pub b2: BigUint,
 }
 
+use crate::bellman::pairing::bn256::Bn256;
+type Bn256CircuitParameters<E> = CurveCircuitParameters<E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>; 
+pub fn generate_optimal_circuit_params_for_bn256<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, base_field_limb_size: usize, scalar_field_limb_size: usize
+) -> Bn256CircuitParameters<E>
+{
+    type Fq = <<Bn256 as Engine>::G1Affine as GenericCurveAffine>::Base;
+    type Fr = <<Bn256 as Engine>::G1Affine as GenericCurveAffine>::Scalar;
+
+    let fp2_generator_x_c0 = Fq::from_str(
+        "17121668968360376440073452595519517444769132227617365077403755834749278043815"
+    ).expect("should parse");
+    let fp2_generator_x_c1 = Fq::from_str(
+        "419498279616971835019397848440367748195944242286251665483842484997631036276"
+    ).expect("should parse");
+    let fp2_generator_y_c0 = Fq::from_str(
+        "15700638644566209537916323943619823104238275494394006479723875651809222746581"
+    ).expect("should parse");
+    let fp2_generator_y_c1 = Fq::from_str(
+        "11945101449646283729085354065658026304542755875752930267052478828467356003660"
+    ).expect("should parse");
+
+    CurveCircuitParameters {
+        base_field_rns_params: RnsParameters::<E, Fq>::new_optimal(cs, base_field_limb_size),
+        scalar_field_rns_params: RnsParameters::<E, Fr>::new_optimal(cs, scalar_field_limb_size),
+        is_prime_order_curve: true,
+        point_by_scalar_mul_strategy: PointByScalarMulStrategy::Basic,
+        fp2_generator_x_c0,
+        fp2_generator_x_c1,
+        fp2_generator_y_c0,
+        fp2_generator_y_c1,
+        _marker: std::marker::PhantomData::<Bn256Extension2Params>
+    }
+}
+
+
 #[derive(Clone, Debug)]
-pub struct AffinePoint<'a, E: Engine, G: GenericCurveAffine> where <G as GenericCurveAffine>::Base: PrimeField {
+pub struct AffinePoint<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+where <G as GenericCurveAffine>::Base: PrimeField 
+{
     pub x: FieldElement<'a, E, G::Base>,
     pub y: FieldElement<'a, E, G::Base>,
     // the used paradigm is zero abstraction: we won't pay for this flag if it is never used and 
@@ -89,10 +151,12 @@ pub struct AffinePoint<'a, E: Engine, G: GenericCurveAffine> where <G as Generic
     pub value: Option<G>,
     // true if we have already checked that point is in subgroup
     pub is_in_subgroup: bool,
-    pub circuit_params: CurveCircuitParameters<'a, E, G>
+    pub circuit_params: &'a CurveCircuitParameters<E, G, T>,
 }
 
-impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as GenericCurveAffine>::Base: PrimeField {
+impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> AffinePoint<'a, E, G, T> 
+where <G as GenericCurveAffine>::Base: PrimeField 
+{
     pub fn get_x(&self) -> FieldElement<'a, E, G::Base> {
         self.x.clone()
     }
@@ -103,7 +167,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
 
     #[track_caller]
     pub fn alloc<CS: ConstraintSystem<E>>(
-        cs: &mut CS, value: Option<G>, params: &'a CurveCircuitParameters<E, G>
+        cs: &mut CS, value: Option<G>, params: &'a CurveCircuitParameters<E, G, T>
     ) -> Result<Self, SynthesisError> {
         let (new, _x_decomposition, _y_decomposition) = Self::alloc_ext(cs, value, params, true)?;
         Ok(new)
@@ -112,7 +176,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     // allocation without checking that point is indeed on curve and in the right subgroup
     #[track_caller]
     pub fn alloc_unchecked<CS: ConstraintSystem<E>>(
-        cs: &mut CS, value: Option<G>, params: &'a CurveCircuitParameters<E, G>
+        cs: &mut CS, value: Option<G>, params: &'a CurveCircuitParameters<E, G, T>
     ) -> Result<Self, SynthesisError> {
         let (new, _x_decomposition, _y_decomposition) = Self::alloc_ext(cs, value, params, false)?;
         Ok(new)
@@ -120,7 +184,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
 
     #[track_caller]
     pub fn alloc_ext<CS: ConstraintSystem<E>>(
-        cs: &mut CS, value: Option<G>, params: &'a CurveCircuitParameters<E, G>, require_checks: bool
+        cs: &mut CS, value: Option<G>, params: &'a CurveCircuitParameters<E, G, T>, require_checks: bool
     ) -> Result<(Self, RangeCheckDecomposition<E>, RangeCheckDecomposition<E>), SynthesisError>  {
         let (x, y) = match value {
             Some(v) => {
@@ -135,14 +199,15 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
 
         let (x, x_decomposition) = FieldElement::alloc_ext(cs, x, &params.base_field_rns_params)?;
         let (y, y_decomposition) = FieldElement::alloc_ext(cs, y, &params.base_field_rns_params)?;
-        let is_in_subgroup = require_checks || params.is_prime_order_curve;
+        let is_in_subgroup = params.is_prime_order_curve;
         let circuit_params = params;
-        let new = Self { x, y, value, is_in_subgroup, circuit_params};
+        let mut new = Self { x, y, value, is_in_subgroup, circuit_params};
 
         if require_checks {
             new.enforce_if_on_curve(cs)?;
             new.enforce_if_in_subgroup(cs)?;
         }
+        new.is_in_subgroup |= require_checks;
         
         Ok((new, x_decomposition, y_decomposition))
     }
@@ -150,7 +215,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     pub unsafe fn from_xy_unchecked(
         x: FieldElement<'a, E, G::Base>,
         y: FieldElement<'a, E, G::Base>,
-        params: &'a CurveCircuitParameters<E, G>,
+        params: &'a CurveCircuitParameters<E, G, T>,
     ) -> Self {
         let value = match (x.get_field_value(), y.get_field_value()) {
             (Some(x), Some(y)) => {
@@ -165,17 +230,17 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         new
     }
 
-    pub fn constant(value: G, params: &'a CurveCircuitParameters<E, G>) -> Self {
+    pub fn constant(value: G, params: &'a CurveCircuitParameters<E, G, T>) -> Self {
         assert!(!value.is_zero());
-        let is_in_subgroup = value.as_ref().map(|point| {
-            let scalar = G::Scalar::char().get_repr();
-            let base = value.into_projective();
-            let res = point.mul(&scalar);
-            res.is_zero() 
-        });
+        let is_in_subgroup = {
+            let scalar = G::Scalar::char();
+            let mut point = value.into_projective();
+            point.mul_assign(scalar);
+            point.is_zero() 
+        };
         let (x, y) = value.into_xy_unchecked();
-        let x = FieldElement::constant(x, params);
-        let y = FieldElement::constant(y, params);
+        let x = FieldElement::constant(x, &params.base_field_rns_params);
+        let y = FieldElement::constant(y, &params.base_field_rns_params);
         let new = Self { x, y, value: Some(value), is_in_subgroup, circuit_params: params };
 
         new
@@ -202,7 +267,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         self.y.normalize(cs)
     }
 
-    pub fn enforce_if_normalized<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+    pub fn enforce_if_normalized<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
         self.x.enforce_if_normalized(cs)?;
         self.y.enforce_if_normalized(cs)
     }
@@ -234,7 +299,9 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let new = Self {
             x: self.x.clone(),
             y: y_negated,
-            value: new_value
+            value: new_value,
+            is_in_subgroup: self.is_in_subgroup,
+            circuit_params: self.circuit_params
         };
 
         Ok(new)
@@ -252,7 +319,9 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let new = Self {
             x: self.x.clone(),
             y: y_negated,
-            value: new_value
+            value: new_value,
+            is_in_subgroup: self.is_in_subgroup,
+            circuit_params: self.circuit_params
         };
 
         Ok(new)
@@ -271,7 +340,8 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
             (Some(false), _, Some(p)) => Some(p),
             (_, _, _) => None
         };
-        let selected = AffinePoint { x, y, value };
+        let is_in_subgroup = first.is_in_subgroup && second.is_in_subgroup;
+        let selected = AffinePoint { x, y, value, is_in_subgroup, circuit_params: first.circuit_params };
 
         Ok(selected)
     }
@@ -297,7 +367,14 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     }
 
     #[track_caller]
-    pub fn enforce_if_in_subgroup(
+    pub fn enforce_if_in_subgroup<CS: ConstraintSystem<E>>(&self, _cs: &mut CS) -> Result<(), SynthesisError> {
+        if !self.circuit_params.is_prime_order_curve {
+            // mul_by_scalar_for_composite_order_curve<CS: ConstraintSystem<E>>(
+            //     &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>
+            return Ok(())
+        }
+        Ok(())
+    }
 
     #[track_caller]
     pub fn add_unequal<CS>(&mut self, cs: &mut CS, other: &mut Self) -> Result<Self, SynthesisError> 
@@ -351,7 +428,9 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let new = Self {
             x: new_x,
             y: new_y,
-            value: new_value
+            value: new_value,
+            is_in_subgroup: self.is_in_subgroup || other.is_in_subgroup,
+            circuit_params: self.circuit_params
         };
         Ok(new)
     }
@@ -408,7 +487,9 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let new = Self {
             x: new_x,
             y: new_y,
-            value: new_value
+            value: new_value,
+            is_in_subgroup: self.is_in_subgroup || other.is_in_subgroup,
+            circuit_params: self.circuit_params
         };
         Ok(new)
     }
@@ -442,7 +523,9 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let new = Self {
             x: new_x,
             y: new_y,
-            value: new_value
+            value: new_value,
+            is_in_subgroup: self.is_in_subgroup,
+            circuit_params: self.circuit_params
         };
         Ok(new)
     }
@@ -502,7 +585,9 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let new = Self {
             x: new_x,
             y: new_y,
-            value: new_value
+            value: new_value,
+            is_in_subgroup: self.is_in_subgroup || other.is_in_subgroup,
+            circuit_params: self.circuit_params
         };
         Ok(new)
     }
@@ -510,17 +595,158 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
 
 
 // this is ugly and should be rewritten, but OK for initial draft
-pub AffinePointExt {
-    //
+// it defines elliptic point over Extension Field
+#[derive(Clone, Debug)]
+pub struct AffinePointExt<'a, E: Engine,  G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+where <G as GenericCurveAffine>::Base: PrimeField {
+    x: Fp2<'a, E, G::Base, T>,
+    y: Fp2<'a, E, G::Base, T>,
+}
+
+use std::convert::From;
+
+impl<'a, E: Engine, G: GenericCurveAffine, T> From<AffinePoint<'a, E, G, T>> for AffinePointExt<'a, E, G, T> 
+where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as GenericCurveAffine>::Base>
+{
+    fn from(item: AffinePoint<'a, E, G, T>) -> Self {
+        AffinePointExt::<E, G, T> {
+            x: Fp2::from_base_field(item.get_x()),
+            y: Fp2::from_base_field(item.get_y())
+        } 
+    }
+}
+
+
+impl<'a, E: Engine, G: GenericCurveAffine, T> AffinePointExt<'a, E, G, T> 
+where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as GenericCurveAffine>::Base> {
+    pub fn get_x(&self) -> Fp2<'a, E, G::Base, T> {
+        self.x.clone()
+    }
+
+    pub fn get_y(&self) -> Fp2<'a, E, G::Base, T> {
+        self.y.clone()
+    }
+
+    #[track_caller]
+    pub fn constant(
+        x0: G::Base, x1: G::Base, y0: G::Base, y1: G::Base, params: &'a CurveCircuitParameters<E, G, T>
+    ) -> Self {
+        let rns_params = &params.base_field_rns_params;
+        let x = Fp2::constant(x0, x1, rns_params);
+        let y = Fp2::constant(y0, y1, rns_params);
+        AffinePointExt::<E, G, T> { x, y }
+    }
+
+    #[track_caller]
+    pub fn add_unequal_unchecked<CS>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        let other_x_minus_this_x = other.x.sub(cs, &self.x)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_pos_term(&other.y).add_neg_term(&self.y);
+        let lambda = Fp2::div_with_chain(cs, chain, &other_x_minus_this_x)?;
+        
+        // lambda^2 + (-x' - x)
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&other.x).add_neg_term(&self.x);
+        let new_x = lambda.square_with_chain(cs, chain)?;
+
+        // lambda * (x - new_x) + (- y)
+        let this_x_minus_new_x = self.x.sub(cs, &new_x)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&self.y);
+        let new_y = Fp2::mul_with_chain(cs, &lambda, &this_x_minus_new_x, chain)?;
+
+        let new = Self { x: new_x, y: new_y };
+        Ok(new)
+    }
+
+    #[track_caller]
+    pub fn double_and_add_unchecked<CS>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        let other_x_minus_this_x = other.x.sub(cs, &self.x)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_pos_term(&other.y).add_neg_term(&self.y); 
+        let lambda = Fp2::div_with_chain(cs, chain, &other_x_minus_this_x)?;
+
+        // lambda^2 + (-x' - x)
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&other.x).add_neg_term(&self.x);
+        let new_x = lambda.square_with_chain(cs, chain)?;
+        
+        let new_x_minus_this_x = new_x.sub(cs, &self.x)?;
+        let two_y = self.y.double(cs)?;
+        let t0 = two_y.div(cs, &new_x_minus_this_x)?;
+        let t1 = lambda.add(cs, &t0)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&self.x).add_neg_term(&new_x);
+        let new_x = t1.square_with_chain(cs, chain)?;
+
+        let new_x_minus_x= new_x.sub(cs, &self.x)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&self.y);
+        let new_y = Fp2::mul_with_chain(cs, &t1, &new_x_minus_x, chain)?;
+
+        let new = Self { x: new_x, y: new_y };
+        Ok(new)
+    }
+
+    #[track_caller]
+    pub fn sub_unequal_unchecked<CS>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        let other_x_minus_this_x = other.x.sub(cs, &self.x)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_pos_term(&other.y).add_pos_term(&self.y);
+        let lambda = Fp2::div_with_chain(cs, chain, &other_x_minus_this_x)?;
+
+        // lambda^2 + (-x' - x)
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&self.x).add_neg_term(&other.x);
+        let new_x = lambda.square_with_chain(cs, chain)?;
+
+        // lambda * -(x - new_x) + (- y)
+        let new_x_minus_this_x = new_x.sub(cs, &self.x)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&self.y);
+        let new_y = Fp2::mul_with_chain(cs, &lambda, &new_x_minus_this_x, chain)?;
+
+        let new = Self { x: new_x, y: new_y};
+        Ok(new)
+    }
+
+    #[track_caller]
+    pub fn double<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        let x_squared = self.x.square(cs)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_pos_term(&x_squared).add_pos_term(&x_squared).add_pos_term(&x_squared);
+        let two_y = self.y.double(cs)?;
+        let lambda = Fp2::div_with_chain(cs, chain, &two_y)?;
+
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&self.x).add_neg_term(&self.x);
+        let new_x = lambda.square_with_chain(cs, chain)?;
+
+        let x_minus_new_x = self.x.sub(cs, &new_x)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&self.y);
+        let new_y = Fp2::mul_with_chain(cs, &lambda, &x_minus_new_x, chain)?;
+
+        let new = Self { x: new_x, y: new_y };
+        Ok(new)
+    }
 }
 
 
 // we are particularly interested in three curves: secp256k1, bn256 and bls12-281
 // unfortunately, only bls12-381 has a cofactor
-impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand> AffinePoint<'a, E, G> where <G as GenericCurveAffine>::Base: PrimeField {
+impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand, T: Extension2Params<G::Base>> AffinePoint<'a, E, G, T> 
+where <G as GenericCurveAffine>::Base: PrimeField 
+{
     #[track_caller]
     pub fn mul_by_scalar_for_composite_order_curve<CS: ConstraintSystem<E>>(
-        &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>
+        &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
     ) -> Result<Self, SynthesisError> {
         if let Some(value) = scalar.get_field_value() {
             assert!(!value.is_zero(), "can not multiply by zero in the current approach");
@@ -528,22 +754,23 @@ impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand> AffinePoint<'a, E, G> wh
         if scalar.is_constant() {
             unimplemented!();
         }
-       
-        let params = self.x.representation_params;
+        
+        let circuit_params = self.circuit_params;
         let entries = scalar.decompose_into_skewed_representation(cs)?;
        
         // we add a random point to the accumulator to avoid having zero anywhere (with high probability)
         // and unknown discrete log allows us to be "safe"
-        let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log::<G>(
-            &crate::constants::MULTIEXP_DST[..], 1
-        )[0];
-        let mut generator = Self::constant(offset_generator, params);
-        let mut acc = self.add_unequal(cs, &mut generator)?;
+        let offset_generator = AffinePointExt::constant(
+            circuit_params.fp2_generator_x_c0, circuit_params.fp2_generator_x_c1,
+            circuit_params.fp2_generator_y_c0, circuit_params.fp2_generator_y_c1,
+            circuit_params
+        );
+        let mut acc = offset_generator.add_unequal_unchecked(cs, &AffinePointExt::from(self.clone()))?;
 
         let entries_without_first_and_last = &entries[1..(entries.len() - 1)];
         let mut num_doubles = 0;
 
-        let mut x = self.x.clone();
+        let x = self.x.clone();
         let mut minus_y = self.y.negate(cs)?;
         minus_y.reduce(cs)?;
 
@@ -559,75 +786,61 @@ impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand> AffinePoint<'a, E, G> wh
                 },
                 _ => None
             };
-            let mut t = Self {
-                x: x,
+            let t = Self {
+                x: x.clone(),
                 y: selected_y,
-                value: t_value
+                value: t_value,
+                is_in_subgroup: self.is_in_subgroup,
+                circuit_params
             };
 
-            acc = acc.double_and_add(cs, &mut t)?;
+            acc = acc.double_and_add_unchecked(cs, &t.into())?;
             num_doubles += 1;
-            x = t.x;
         }
 
-        let with_skew = acc.sub_unequal(cs, &mut self.clone())?;
-        let last_entry = entries.last().unwrap();
-
-        let with_skew_value = with_skew.get_value();
-        let with_skew_x = with_skew.x;
-        let with_skew_y = with_skew.y;
-
-        let acc_value = acc.get_value();
-        let acc_x = acc.x;
-        let acc_y = acc.y;
-
-        let final_value = match (with_skew_value, acc_value, last_entry.get_value()) {
-            (Some(s_value), Some(a_value), Some(b)) => {
-                if b {
-                    Some(s_value)
-                } else {
-                    Some(a_value)
-                }
-            },
-            _ => None
-        };
-
-        let final_acc_x = FieldElement::conditionally_select(cs, last_entry, &with_skew_x, &acc_x)?;
-        let final_acc_y = FieldElement::conditionally_select(cs, last_entry, &with_skew_y, &acc_y)?;
-
-        let mut scaled_offset = offset_generator.into_projective();
+        let mut scaled_offset = offset_generator.clone();
         for _ in 0..num_doubles {
-            scaled_offset.double();
+            scaled_offset = scaled_offset.double(cs)?;
         }
-        let mut offset = Self::constant(scaled_offset.into_affine(), params);
+        acc = acc.sub_unequal_unchecked(cs, &mut scaled_offset)?;
 
-        let mut result = Self {
-            x: final_acc_x,
-            y: final_acc_y,
-            value: final_value
+        let with_skew = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(self.clone()))?;
+        let flag = entries.first().unwrap();
+        let final_x = FieldElement::conditionally_select(cs, flag, &with_skew.x.c0, &acc.x.c0)?;
+        let final_y = FieldElement::conditionally_select(cs, flag, &with_skew.y.c0, &acc.y.c0)?;
+
+        let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
+            G::from_xy_checked(x, y).expect("should be on the curve")
+        }); 
+
+       let result = AffinePoint { 
+            x: final_x, 
+            y: final_y, 
+            value: final_value, 
+            is_in_subgroup: self.is_in_subgroup, 
+            circuit_params: self.circuit_params 
         };
-        let result = result.sub_unequal(cs, &mut offset)?;
-
         Ok(result)
     }
 }
 
 
-impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as GenericCurveAffine>::Base: PrimeField {
+impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> AffinePoint<'a, E, G, T> 
+where <G as GenericCurveAffine>::Base: PrimeField {
     pub fn mul_by_scalar_for_prime_order_curve<CS: ConstraintSystem<E>>(
         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>
-    ) -> Result<ProjectivePoint<'a, E, G>, SynthesisError> {
-        let params = self.x.representation_params;
+    ) -> Result<ProjectivePoint<'a, E, G, T>, SynthesisError> {
+        let params = self.circuit_params;
         let scalar_decomposition = scalar.decompose_into_binary_representation(cs)?;
 
         // TODO: use standard double-add algorithm for now, optimize later
-        let mut acc = ProjectivePoint::<E, G>::zero(params);
-        let mut tmp = self.clone();
+        let mut acc = ProjectivePoint::<E, G, T>::zero(params);
+        let mut tmp : AffinePoint<E, G, T> = self.clone();
 
         for bit in scalar_decomposition.into_iter() {
             let added = acc.add_mixed(cs, &mut tmp)?;
             acc = ProjectivePoint::conditionally_select(cs, &bit, &added, &acc)?;
-            tmp = tmp.double(cs)?;
+            tmp = AffinePoint::double(&tmp, cs)?;
         }
         
         Ok(acc)
@@ -644,12 +857,17 @@ mod test {
     use rand::{XorShiftRng, SeedableRng, Rng};
     use bellman::plonk::better_better_cs::cs::*;
 
+    use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
+    use crate::bellman::worker::Worker;
+    use crate::bellman::plonk::commitments::transcript::keccak_transcript::RollingKeccakTranscript;
+    use crate::bellman::plonk::better_better_cs::setup::VerificationKey;
+    use crate::bellman::plonk::better_better_cs::verifier::verify;
+
     #[test]
     fn test_arithmetic_for_bn256_curve() {
         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let params = RnsParameters::<Bn256, Fq>::new_optimal(&mut cs, 80usize);
-        let scalar_params = RnsParameters::<Bn256, Fr>::new_optimal(&mut cs, 80usize);
+        let params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, 80usize, 80usize);
         let mut rng = rand::thread_rng();
 
         let a: G1Affine = rng.gen();
@@ -658,7 +876,7 @@ mod test {
         tmp.add_assign_mixed(&b);
         let result = tmp.into_affine();
         
-        let mut a = AffinePoint::alloc(&mut cs, Some(a), &params).unwrap();
+        let a = AffinePoint::alloc(&mut cs, Some(a), &params).unwrap();
         let mut b = AffinePoint::alloc(&mut cs, Some(b), &params).unwrap();
         let mut actual_result = AffinePoint::alloc(&mut cs, Some(result), &params).unwrap();
         let naive_mul_start = cs.get_current_step_number();
@@ -674,76 +892,131 @@ mod test {
         println!("SCALAR MULTIPLICATION final");
     }
 
-    #[test]
-    fn test_arithmetic_for_secp256k1_curve() {
-        use super::super::secp256k1::fq::Fq as SecpFq;
-        use super::super::secp256k1::fr::Fr as SecpFr;
-        use super::super::secp256k1::PointAffine as SecpG1;
-
-        struct TestCircuit<E:Engine>{
-            _marker: std::marker::PhantomData<E>
-        }
-    
-        impl<E: Engine> Circuit<E> for TestCircuit<E> {
-            type MainGate = SelectorOptimizedWidth4MainGateWithDNext;
-            fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
-                Ok(
-                    vec![ SelectorOptimizedWidth4MainGateWithDNext::default().into_internal() ]
-                )
-            }
-    
-            fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
-                inscribe_default_bitop_range_table(cs).unwrap();
-                let params = RnsParameters::<E, SecpFq>::new_optimal(cs, 64usize);
-                let scalar_params = RnsParameters::<E, SecpFr>::new_optimal(cs, 64usize);
-                let mut rng = rand::thread_rng();
-
-                let a: SecpG1 = rng.gen();
-                let scalar : SecpFr = rng.gen();
-                let mut tmp = a.into_projective();
-                tmp.mul_assign(scalar);
-                let result = tmp.into_affine();
-                
-                let mut a = AffinePoint::alloc(cs, Some(a), &params)?;
-                let mut scalar = FieldElement::alloc(cs, Some(scalar), &scalar_params)?;
-                let mut actual_result = AffinePoint::alloc(cs, Some(result), &params)?;
-                let naive_mul_start = cs.get_current_step_number();
-                let mut result = a.mul_by_scalar_for_prime_order_curve(cs, &mut scalar)?;
-                let mut result = unsafe { result.convert_to_affine(cs)? };
-                let naive_mul_end = cs.get_current_step_number();
-                println!("num of gates: {}", naive_mul_end - naive_mul_start);
-                AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)
-            }
-        }
-
-        use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
-        use crate::bellman::worker::Worker;
-        use crate::bellman::plonk::commitments::transcript::keccak_transcript::RollingKeccakTranscript;
-        use crate::bellman::plonk::better_better_cs::setup::VerificationKey;
-        use crate::bellman::plonk::better_better_cs::verifier::verify;
-      
-        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
-        inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let circuit = TestCircuit::<Bn256> {_marker: std::marker::PhantomData};
-        circuit.synthesize(&mut cs).expect("must work");
-        cs.finalize();
-        assert!(cs.is_satisfied()); 
-        let worker = Worker::new();
-        let setup_size = cs.n().next_power_of_two();
-        let crs = Crs::<Bn256, CrsForMonomialForm>::crs_42(setup_size, &worker);
-        let setup = cs.create_setup::<TestCircuit::<Bn256>>(&worker).unwrap();
-        let vk = VerificationKey::from_setup(&setup, &worker, &crs).unwrap();
-        
-        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
-        inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let circuit = TestCircuit::<Bn256> {_marker: std::marker::PhantomData};
-        circuit.synthesize(&mut cs).expect("must work");
-        cs.finalize();
-        assert!(cs.is_satisfied()); 
-        let proof = cs.create_proof::<_, RollingKeccakTranscript<Fr>>(&worker, &setup, &crs, None).unwrap();
-        let valid = verify::<_, _, RollingKeccakTranscript<Fr>>(&vk, &proof, None).unwrap();
-        assert!(valid);
+    struct TestCircuit<E:Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+    where <G as GenericCurveAffine>::Base: PrimeField
+    {
+        circuit_params: CurveCircuitParameters<E, G, T>,
+        use_projective: bool
     }
+    
+    impl<E: Engine, G: GenericCurveAffine + rand::Rand, T> Circuit<E> for TestCircuit<E, G, T> 
+    where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
+    {
+        type MainGate = SelectorOptimizedWidth4MainGateWithDNext;
+        fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
+            Ok(
+                vec![ SelectorOptimizedWidth4MainGateWithDNext::default().into_internal() ]
+            )
+        }
+    
+        fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+            inscribe_default_bitop_range_table(cs).unwrap();
+            let mut rng = rand::thread_rng();
+
+            let a: G = rng.gen();
+            let scalar : G::Scalar = rng.gen();
+            let mut tmp = a.into_projective();
+            tmp.mul_assign(scalar);
+            let result = tmp.into_affine();
+            
+            let mut a = AffinePoint::alloc(cs, Some(a), &self.circuit_params)?;
+            let mut scalar = FieldElement::alloc(cs, Some(scalar), &self.circuit_params.scalar_field_rns_params)?;
+            let mut actual_result = AffinePoint::alloc(cs, Some(result), &self.circuit_params)?;
+            let naive_mul_start = cs.get_current_step_number();
+            let result = a.mul_by_scalar_for_prime_order_curve(cs, &mut scalar)?;
+            let mut result = unsafe { result.convert_to_affine(cs)? };
+            let naive_mul_end = cs.get_current_step_number();
+            println!("num of gates: {}", naive_mul_end - naive_mul_start);
+            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)
+        }
+    }
+
+    #[test]
+    fn test_scalar_multiplication_for_bn256() {
+        const USE_PROJECTIVE: bool = true;
+        const LIMB_SIZE: usize = 80;
+
+        let mut cs = TrivialAssembly::<
+            Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
+        >::new();
+        let circuit_params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
+
+        let circuit = TestCircuit { circuit_params, use_projective: USE_PROJECTIVE };
+        circuit.synthesize(&mut cs).expect("must work");
+        cs.finalize();
+        assert!(cs.is_satisfied()); 
+    }
+
+    // #[test]
+    // fn test_arithmetic_for_secp256k1_curve() {
+    //     use super::super::secp256k1::fq::Fq as SecpFq;
+    //     use super::super::secp256k1::fr::Fr as SecpFr;
+    //     use super::super::secp256k1::PointAffine as SecpG1;
+
+    //     struct TestCircuit<E:Engine>{
+    //         _marker: std::marker::PhantomData<E>
+    //     }
+    
+    //     impl<E: Engine> Circuit<E> for TestCircuit<E> {
+    //         type MainGate = SelectorOptimizedWidth4MainGateWithDNext;
+    //         fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
+    //             Ok(
+    //                 vec![ SelectorOptimizedWidth4MainGateWithDNext::default().into_internal() ]
+    //             )
+    //         }
+    
+    //         fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+    //             inscribe_default_bitop_range_table(cs).unwrap();
+    //             let params = RnsParameters::<E, SecpFq>::new_optimal(cs, 64usize);
+    //             let scalar_params = RnsParameters::<E, SecpFr>::new_optimal(cs, 64usize);
+    //             let mut rng = rand::thread_rng();
+
+    //             let a: SecpG1 = rng.gen();
+    //             let scalar : SecpFr = rng.gen();
+    //             let mut tmp = a.into_projective();
+    //             tmp.mul_assign(scalar);
+    //             let result = tmp.into_affine();
+                
+    //             let mut a = AffinePoint::alloc(cs, Some(a), &params)?;
+    //             let mut scalar = FieldElement::alloc(cs, Some(scalar), &scalar_params)?;
+    //             let mut actual_result = AffinePoint::alloc(cs, Some(result), &params)?;
+    //             let naive_mul_start = cs.get_current_step_number();
+    //             let mut result = a.mul_by_scalar_for_prime_order_curve(cs, &mut scalar)?;
+    //             let mut result = unsafe { result.convert_to_affine(cs)? };
+    //             let naive_mul_end = cs.get_current_step_number();
+    //             println!("num of gates: {}", naive_mul_end - naive_mul_start);
+    //             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)
+    //         }
+    //     }
+
+    //     use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
+    //     use crate::bellman::worker::Worker;
+    //     use crate::bellman::plonk::commitments::transcript::keccak_transcript::RollingKeccakTranscript;
+    //     use crate::bellman::plonk::better_better_cs::setup::VerificationKey;
+    //     use crate::bellman::plonk::better_better_cs::verifier::verify;
+      
+    //     let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+    //     inscribe_default_bitop_range_table(&mut cs).unwrap();
+    //     let circuit = TestCircuit::<Bn256> {_marker: std::marker::PhantomData};
+    //     circuit.synthesize(&mut cs).expect("must work");
+    //     cs.finalize();
+    //     assert!(cs.is_satisfied()); 
+    //     let worker = Worker::new();
+    //     let setup_size = cs.n().next_power_of_two();
+    //     let crs = Crs::<Bn256, CrsForMonomialForm>::crs_42(setup_size, &worker);
+    //     let setup = cs.create_setup::<TestCircuit::<Bn256>>(&worker).unwrap();
+    //     let vk = VerificationKey::from_setup(&setup, &worker, &crs).unwrap();
+        
+    //     let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+    //     inscribe_default_bitop_range_table(&mut cs).unwrap();
+    //     let circuit = TestCircuit::<Bn256> {_marker: std::marker::PhantomData};
+    //     circuit.synthesize(&mut cs).expect("must work");
+    //     cs.finalize();
+    //     assert!(cs.is_satisfied()); 
+    //     let proof = cs.create_proof::<_, RollingKeccakTranscript<Fr>>(&worker, &setup, &crs, None).unwrap();
+    //     let valid = verify::<_, _, RollingKeccakTranscript<Fr>>(&vk, &proof, None).unwrap();
+    //     assert!(valid);
+    // }
 }
 
 

@@ -1,14 +1,63 @@
 use super::*;
 use std::ops::Index;
+use plonk::circuit::SomeArithmetizable;
+
+use crate::bellman::pairing::bn256::Fq as Bn256Fq;
+use crate::bellman::pairing::bls12_381::Fq as Bls12Fq;
+use super::super::curve_new::secp256k1::fq::Fq as SecpFq;
 
 
-pub trait Extension2Params<F: PrimeField> {
+pub trait Extension2Params<F: PrimeField>: Clone {
     fn non_residue() -> F;
     // if non_residue is equal to -1 than multiplication formulas can are simplified
     fn do_mul_by_negation() -> bool {
         let mut tmp = Self::non_residue();
         tmp.add_assign(&F::one());
         tmp.is_zero() 
+    }
+}
+
+#[derive(Clone)]
+pub struct Bn256Extension2Params {}
+impl Extension2Params<Bn256Fq> for Bn256Extension2Params {
+    fn non_residue() -> Bn256Fq {
+        let mut res = Bn256Fq::one();
+        res.negate();
+        res
+    }
+}
+
+
+#[derive(Clone)]
+pub struct Fp2<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> {
+    pub c0: FieldElement<'a, E, F>,
+    pub c1: FieldElement<'a, E, F>,
+    _marker: std::marker::PhantomData<T>
+}
+ 
+impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>> std::fmt::Display for Fp2<'a, E, F, T> {
+    #[inline(always)]
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "Fp2({} + {} * u)", self.c0, self.c1)
+    }
+}
+
+impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>> std::fmt::Debug for Fp2<'a, E, F, T> {
+    #[inline(always)]
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "Fp2({} + {} * u)", self.c0, self.c1)
+    }
+}
+
+impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>> Index<usize> for Fp2<'a, E, F, T> {
+    type Output = FieldElement<'a, E, F>;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        match idx {
+            0 => &self.c0,
+            1 => &self.c1,
+            _ => panic!("Index should be 0 or 1"),
+        }
     }
 }
 
@@ -61,46 +110,12 @@ impl<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> Fp2Chain<'a, E, F, T>
     }
 
     pub fn negate(self) -> Self {
-        let FieldElementsChain { elems_to_add, elems_to_sub } = self;
-        FieldElementsChain {
+        let Fp2Chain { elems_to_add, elems_to_sub } = self;
+        Fp2Chain {
             elems_to_add: elems_to_sub,
             elems_to_sub: elems_to_add
         }
     }  
-}
-
-
-
-pub struct Fp2<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> {
-    c0: FieldElement<'a, E, F>,
-    c1: FieldElement<'a, E, F>,
-    _marker: std::marker::PhantomData<T>
-}
- 
-impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>> std::fmt::Display for Fp2<'a, E, F, T> {
-    #[inline(always)]
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        write!(f, "Fp2({} + {} * u)", self.c0, self.c1)
-    }
-}
-
-impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>> std::fmt::Debug for Fp2<'a, E, F, T> {
-    #[inline(always)]
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        write!(f, "Fp2({} + {} * u)", self.c0, self.c1)
-    }
-}
-
-impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>> Index<usize> for Fp2<'a, E, F, T> {
-    type Output = FieldElement<'a, E, F>;
-
-    fn index(&self, idx: usize) -> &Self::Output {
-        match idx {
-            0 => &self.c0,
-            1 => &self.c1,
-            _ => panic!("Index should be 0 or 1"),
-        }
-    }
 }
 
 
@@ -115,6 +130,11 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
 
     pub fn from_coordinates(c0: FieldElement<'a, E, F>, c1: FieldElement<'a, E, F>) -> Self {
         Fp2 { c0, c1, _marker: std::marker::PhantomData::<T> }
+    }
+
+    pub fn from_base_field(x: FieldElement<'a, E, F>) -> Self {
+        let params = x.representation_params;
+        Fp2::from_coordinates(x, FieldElement::zero(params))
     }
 
     pub fn get_value(&self) -> Option<(F, F)> {
@@ -133,7 +153,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
     where CS: ConstraintSystem<E>
     {
         // if x = c0 + u * c1 is not equal y = d0 + u * d1 then at least one of c0 != d0 or c1 != d1 should hold
-        let selector_wit = this.get_value().zip(other.get_value()).map(|((c0, c1), (d0, d1))| c1 != d1);
+        let selector_wit = this.get_value().zip(other.get_value()).map(|((_c0, c1), (_d0, d1))| c1 != d1);
         let selector = Boolean::Is(AllocatedBit::alloc(cs, selector_wit)?);
         let mut a = FieldElement::conditionally_select(cs, &selector, &this.c1, &this.c0)?;
         let mut b = FieldElement::conditionally_select(cs, &selector, &other.c1, &other.c0)?;
@@ -198,7 +218,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
     }
 
     pub fn square<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        Self::square_with_chain(cs, &self, Fp2Chain::new())
+        self.square_with_chain(cs, Fp2Chain::new())
     }
 
     pub fn div<CS: ConstraintSystem<E>>(&self, cs: &mut CS, den: &Self) -> Result<Self, SynthesisError> {
@@ -209,36 +229,41 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
 
     #[track_caller]
     fn constraint_fma<CS: ConstraintSystem<E>>(
-        cs: &mut CS, first: &Self, second: &Self, chain: FieldElementsChain<'a, E, F>
+        cs: &mut CS, first: &Self, second: &Self, chain: Fp2Chain<'a, E, F, T>
     ) -> Result<(), SynthesisError> {
         // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.16
         // for a = a0 + u * a1 and b = b0 + u * b1 compute a * b = c0 + u * c1 [\beta = u^2]
         // 1) v0 = a0 * b0
         // 2) v1 = a1 * b1
-        // 3) c0 = v0 + \beta * v1 = a0 * b0 + \beta * v1 = v0 - v1
-        // 4) c1 = (a0 + a1) * (b0 + b1) - v0 - v1 = a * b - c0 - 2* v1
+        // 3) c0 = v0 + \beta * v1 = v0 - v1
+        // 4) c1 = (a0 + a1) * (b0 + b1) - v0 - v1
+        let params = first.c0.representation_params;
+        let v0 = first.c0.mul(cs, &second.c0)?;
         let v1 = first.c1.mul(cs, &second.c1)?;
+       
         // TODO: this only works for \beta = -1 (we test only BN curve for now)
-        let mut chain = chain.get_coordinate_subchain(0);
-        chain.add_neg_term(&v1);
-        FieldElement::constraint_fma(cs, &first.c0, &second.c0, chain)?;
+        let mut subchain = chain.get_coordinate_subchain(0);
+        subchain.add_pos_term(&v0);
+        subchain.add_neg_term(&v1);
+        let mut c0 = FieldElement::linear_combination(cs, subchain)?;
+        FieldElement::enforce_equal(cs, &mut c0, &mut FieldElement::zero(params));
 
         let a = first.c0.add(cs, &first.c1)?;
         let b = second.c0.add(cs, &second.c1)?;
-        let mut chain = chain.get_coordinate_subchain(1);
-        chain.add_neg_term(&c0);
-        let tmp = v1.double(cs)?;
-        chain.add_neg_term(&tmp);
-        FieldElement::constraint_fma(cs, &a, &b, chain)?
+        let mut subchain = chain.get_coordinate_subchain(1);
+        subchain.add_neg_term(&v0);
+        subchain.add_neg_term(&v1);
+        FieldElement::constraint_fma(cs, &a, &b, subchain)
     }
  
     pub fn mul_with_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, a: &Self, b: &Self, chain: Fp2Chain<'a, E, F, T>
+        cs: &mut CS, a: &Self, b: &Self, mut chain: Fp2Chain<'a, E, F, T>
     ) -> Result<Self, SynthesisError>  
     {
+        let params = a.c0.representation_params;
         // (a0 + u * a1) * (b0 + u * b1) = (a0 * b0 + \beta a1 * b1) + u * (a1 * b0 + a0 * b1)]
         let (mul_c0_wit, mul_c1_wit) = match (a.get_value(), b.get_value()) {
-            (Some(a0, a1), Some(b0, b1)) => {
+            (Some((a0, a1)), Some((b0, b1))) => {
                 let beta = T::non_residue();
                 let mut c0 = a0;
                 c0.mul_assign(&b0);
@@ -257,68 +282,61 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
             },
             _ => (None, None),
         };
-        let (chain_c0_wit, chain_c1_wit) = chain.get_field_value() 
-
-        let params = &a.c0.representation_params;
-        let mut final_value = a.get_field_value();
-        final_value = final_value.mul(&b.get_field_value());
-        final_value = final_value.add(&chain.get_field_value());
+        let (chain_c0_wit, chain_c1_wit) = chain.get_field_value();
+        let c0_wit = mul_c0_wit.add(&chain_c0_wit);
+        let c1_wit = mul_c1_wit.add(&chain_c1_wit);
         let all_constants = a.is_constant() && b.is_constant() && chain.is_constant();
-        
+
         if all_constants {
-            let r = Self::constant(final_value.unwrap(), params);
+            let r = Self::constant(c0_wit.unwrap(), c1_wit.unwrap(), params);
             Ok(r)
         }
         else {
-            let r = Self::alloc(cs, final_value, params)?;
+            let r = Self::alloc(cs, c0_wit, c1_wit, params)?;
             chain.add_neg_term(&r);
             Self::constraint_fma(cs, &a, &b, chain)?;
             Ok(r)
         }
-        
-        
-        
-        Ok(Self::from_coordinates(c0, c1))
     }
 
-    pub fn square_with_chains<CS: ConstraintSystem<E>>(
-        cs: &mut CS, elem: &Self, chain: Fp2Chain<'a, E, F, T>
+    pub fn square_with_chain<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, chain: Fp2Chain<'a, E, F, T>
     ) -> Result<Self, SynthesisError> {
         // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.17
         // input: a = a0 + u * a1; output: a^2
         // 1) c1 = 2 * a0 * a1
         // 2) c0 = (a0 - a1)(a0 + a1)
-        let tmp = elem.c0.double(cs)?;
-        let mut chain = chain.get_coordinate_subchain(1);
-        let c1 = FieldElement::mul_with_chain(cs, &tmp, &elem.c1, chain)?;
+        let tmp = self.c0.double(cs)?;
+        let subchain = chain.get_coordinate_subchain(1);
+        let c1 = FieldElement::mul_with_chain(cs, &tmp, &self.c1, subchain)?;
 
-        let x = elem.c0.sub(cs, &elem.c1)?;
-        let y = elem.c0.add(cs, &elem.c1)?;
-        let mut chain = chain.get_coordinate_subchain(0);
-        let c0 = FieldElement::mul_with_chain(cs, &x, &y, chain)?;
+        let x = self.c0.sub(cs, &self.c1)?;
+        let y = self.c0.add(cs, &self.c1)?;
+        let subchain = chain.get_coordinate_subchain(0);
+        let c0 = FieldElement::mul_with_chain(cs, &x, &y, subchain)?;
 
         Ok(Self::from_coordinates(c0, c1))
     }
 
     pub fn inverse<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
         let mut num_chain = Fp2Chain::new();
-        num_chain.add_pos_term(&Self::one(&self.representation_params));
+        num_chain.add_pos_term(&Self::one(&self.c0.representation_params));
         Self::div_with_chain(cs, num_chain, self)
     }
     
-    pub fn div_with_chain<CS>(cs: &mut CS, chain: Fp2Chain<'a, E, F>, den: &Self) -> Result<Self, SynthesisError> 
+    pub fn div_with_chain<CS>(cs: &mut CS, chain: Fp2Chain<'a, E, F, T>, den: &Self) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         let params = &den.c0.representation_params;
         // we do chain/den = result mod p, where we assume that den != 0
-        assert!(!den.get_value().unwrap_or((F::one(), F::zero()).map(|(a, b)| a.is_zero() && b.is_zero()));
+        let (c0, c1) = den.get_value().unwrap_or((F::one(), F::zero()));
+        assert!(!(c0.is_zero() && c1.is_zero()));
 
         // (a0 + u * a1) / (b0 + u * b1) = (a0 + u * a1) * (b0 - u * b1) / (b0^2 - \beta * b1^2) = 
         // = [1/(b0^2 - \beta * b1^2)] * [(a0 * b0 - \beta a1 * b1) + u * (a1 * b0 - a0 * b1)]
-        let numerator_c0_wit = chain.get_field_value(0);
-        let numerator_c1_wit = chain.get_field_value(1);
-        let (den_c0_wit, den_c1_wit) = den.get_value();
-        let (res_c0_wit, res_c1_wit) = map (numerator_c0_wit, numerator_c1_wit, den_c0_wit, den_c1_wit) {
+        let (numerator_c0_wit, numerator_c1_wit)  = chain.get_field_value();
+        let (den_c0_wit, den_c1_wit) = (den.c0.get_field_value(), den.c1.get_field_value());
+        let (res_c0_wit, res_c1_wit) = match (numerator_c0_wit, numerator_c1_wit, den_c0_wit, den_c1_wit) {
             (Some(a0), Some(a1), Some(b0), Some(b1)) => {
                 let beta = T::non_residue();
                 let mut b0_squared = b0;
@@ -329,12 +347,26 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
                 norm.mul_assign(&beta);
                 norm.negate();
                 norm.add_assign(&b0_squared);
+                let norm_inv = norm.inverse().unwrap();
 
-                let mut tmp0 = a0;
-                tmp0.mul_assign(&b0);
-                let mut tmp1 = beta;
+                let mut c0 = a0;
+                c0.mul_assign(&b0);
+                let mut tmp = a1;
+                tmp.mul_assign(&b1);
+                tmp.mul_assign(&beta);
+                c0.sub_assign(&tmp); 
+                c0.mul_assign(&norm_inv);
+
+                let mut c1 = a1;
+                c1.mul_assign(&b0);
+                let mut tmp = a0;
+                tmp.mul_assign(&b1);
+                c1.sub_assign(&tmp);
+                c1.mul_assign(&norm_inv);
+                
+                (Some(c0), Some(c1))
             },
-            _ => (None, None)
+            _ => (None, None),
         };
 
         let all_constants = den.is_constant() && chain.is_constant();
@@ -348,6 +380,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
             Self::constraint_fma(cs, &res, &den, chain)?;
             Ok(res)
         }
+    }
 }
 
 

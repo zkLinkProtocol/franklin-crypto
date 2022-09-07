@@ -48,7 +48,7 @@ impl<E: Engine> std::fmt::Display for Term<E> {
 
 impl<E: Engine> Term<E> {
     pub fn enforce_equal<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<(), SynthesisError> {
-        if self.is_constant() || other.is_constant() {
+        if self.is_constant() && other.is_constant() {
             assert_eq!(self.get_constant_value(), other.get_constant_value());
             return Ok(())
         }

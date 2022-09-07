@@ -866,11 +866,11 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     #[track_caller]
     pub fn reduce<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
-        if self.reduction_status == ReductionStatus::Unreduced {
+        if self.reduction_status == ReductionStatus::Unreduced && !self.is_constant() {
             let one = Self::one(self.representation_params);
             let reduced = self.mul(cs, &one)?;
             *self = reduced;
-            self.reduction_status == ReductionStatus::Loose;
+            self.reduction_status = ReductionStatus::Loose;
         }
         Ok(())
     }
@@ -1237,6 +1237,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         this.reduce(cs)?;
         other.reduce(cs)?;
 
+        println!("ttt");
         // now we know that both this and other are < 2 * F::char, hence to enforce that they are equal
         // However, in all user scenarious we may assume that reduction is complete, i.e:
         // both values are in range [0; F::char)
@@ -1244,6 +1245,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // which is justified by 2 * p < native_field_modulus * 2^{limb_width}
         this.binary_limbs[0].term.enforce_equal(cs, &other.binary_limbs[0].term)?;
         this.base_field_limb.enforce_equal(cs, &other.base_field_limb)?;
+        println!("ttt2");
 
         // if field_elements are equal than they are normalized or not simultaneously!
         // hence if we somehow know that one of values is normalized than we may lay the other to be normalized
@@ -1723,32 +1725,20 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let two = shifts[1].clone();
         let mut minus_one = E::Fr::one();
         minus_one.negate();
-        let mut limb_shift_negated = shifts[reg_chunk_bitlen]; 
-        limb_shift_negated.negate();
+        let mut offset = if num_of_chunks == 0 { 0 } else { 1 };
 
-        for (chunk_idx, chunk) in self.binary_limbs.iter().enumerate() {   
+        for (chunk_idx, chunk) in self.binary_limbs.iter().enumerate() { 
             let is_first = chunk_idx == 0;
             let is_last = chunk_idx == num_of_chunks - 1;
-            let chunk_bitlen = if is_last { msl_chunk_bitlen } else { reg_chunk_bitlen };
-
-            let mut start_offset = chunk_idx * reg_chunk_bitlen;
-            let mut end_offset = (chunk_idx + 1) * chunk_bitlen;  
+            let chunk_bitlen = if is_first { msl_chunk_bitlen } else { reg_chunk_bitlen };
 
             let mut reconstructed = Term::<E>::zero();
-            if is_first {
-                // add y_{-1}
-                let skew_bit = bits[0];
-                // we only subtract if true
-                let mut contribution = Term::from_boolean(&skew_bit);
-                contribution.negate();
-                reconstructed = reconstructed.add(cs, &contribution)?;
-                start_offset += 1;
-            }
-            if is_last {
-                end_offset += 1;
-            }
+            // let end_offset = start_offset + chunk_bitlen;
+            // if is_last {
+            //     end_offset -= 1;
+            // }  
 
-            let bits_slice = &bits[start_offset..end_offset];
+            let bits_slice = &bits;
             let mut chunks = bits_slice.chunks_exact(2);
 
             // we should add +1 if bit is false or add -1 if bit is true,
@@ -1771,21 +1761,30 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 let contribution = construct_skewed_bit_term::<E>(&last, &two);
                 reconstructed = reconstructed.add(cs, &contribution)?;
             }
+
+            if is_last {
+                // add y_{-1}
+                let skew_bit = bits[0];
+                // we only subtract if true
+                let mut contribution = Term::from_boolean(&skew_bit);
+                contribution.negate();
+                reconstructed = reconstructed.add(cs, &contribution)?;
+            }
             
-            // y_ch_0 = x_ch_0 - 2^l
-            // for every intermidiate chunk: y_ch_i = x_ch_i - 2^l + 1
-            // y_ch_l = x_ch_k + 1
-            // this is equal to the following: 
-            // if not first_limb: y_ch += 1, if not last limb: y_ch -= 2^l
-            if !is_first {
-                let contribution = Term::from_constant(E::Fr::one());
-                reconstructed.add(cs, &contribution)?;
-            }
-            if !is_last {
-                let contribution = Term::from_constant(limb_shift_negated);
-                reconstructed.add(cs, &contribution)?;
-            }
+            // y_ch_0 = x_ch_0 - 2^(l-1)
+            // for every intermidiate chunk: y_ch_i = 2 * x_ch_i - 2^l + 1
+            // if is_first {
+            //     let contribution = Term::from_constant(E::Fr::one());
+            //     reconstructed.add(cs, &contribution)?;
+            // } 
+            // // if !is_first {
+            //     let contribution = Term::from_constant(limb_shift_negated);
+            //     reconstructed.add(cs, &contribution)?;
+            // //}
+            println!("question?");
             chunk.term.enforce_equal(cs, &reconstructed)?;
+            println!("answer");
+            //start_offset = end_offset;
         }
 
         Ok(bits)
@@ -1803,15 +1802,14 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 // = x - 1 - \sum_{i=0}^{n-1} 2^i + 2^n = x - 1 - (2^n - 1) + 2^n = x
 
 // if x is simultaneously split into chunks: x = [x_ch_0, x_ch_1, ..., x_ch_k] of length l
-// then we split y = [y_-1, y_0, y_1, ..., y_n] into chunks of l bits length 
+// then we split y = [y_-1, y_0, y_1, ..., y_n] into chunks of l bits length (ignoring the last y_n = 0) 
 // and we would have the following relations between corresponding chunks of x and y:
-// y_ch_0 = x_ch_0 - 2^l
-// for every intermidiate chunk (every chunk between least significant and most sigificant chunks):
-// y_ch_i = x_ch_i - 2^l + 1
-// y_ch_l = x_ch_k + 1
+// y_ch_0 = x_ch_0 - 2^(l-1)
+// for every other chunk:
+// y_ch_i = 2 * x_ch_i - 2^l + 1
+// if there was actually no splitting at all we simply check that: y = x (in this case we do not ignore the y_n bit)
 
-// in terms of cost in constraints computing skewed_wnaf is the same as computing traditional 
-// binary representation
+// in cost in constraints computing skewed_wnaf is the same as computing traditional binary representation
 #[track_caller]
 fn compute_skewed_naf_representation(value: &Option<BigUint>, bit_limit: usize) -> Vec<Option<bool>> {
     assert!(bit_limit > 0);
@@ -1821,11 +1819,11 @@ fn compute_skewed_naf_representation(value: &Option<BigUint>, bit_limit: usize) 
 
     let value = value.as_ref().unwrap();
     let mut bits = Vec::with_capacity(bit_limit+1);
-    for i in 0..bit_limit as u64 {
-        let b = value.bit(i);
+    bits.push(Some(false));
+    for i in (0..bit_limit).rev() {
+        let b = value.bit(i as u64);
         bits.push(Some(!b));
     }
-    bits.push(Some(false));
     bits
 }
 

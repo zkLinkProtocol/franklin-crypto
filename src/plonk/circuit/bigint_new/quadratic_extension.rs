@@ -246,13 +246,18 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         subchain.add_pos_term(&v0);
         subchain.add_neg_term(&v1);
         let mut c0 = FieldElement::linear_combination(cs, subchain)?;
-        FieldElement::enforce_equal(cs, &mut c0, &mut FieldElement::zero(params));
+        println!("question");
+        FieldElement::enforce_equal(cs, &mut c0, &mut FieldElement::zero(params))?;
 
+        println!("question4");
         let a = first.c0.add(cs, &first.c1)?;
+        println!("question5");
         let b = second.c0.add(cs, &second.c1)?;
+        println!("question2");
         let mut subchain = chain.get_coordinate_subchain(1);
         subchain.add_neg_term(&v0);
         subchain.add_neg_term(&v1);
+        println!("question3");
         FieldElement::constraint_fma(cs, &a, &b, subchain)
     }
  
@@ -377,6 +382,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         else {
             let res = Self::alloc(cs, res_c0_wit, res_c1_wit, params)?;
             let chain = chain.negate();
+            println!("before fma");
             Self::constraint_fma(cs, &res, &den, chain)?;
             Ok(res)
         }

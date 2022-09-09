@@ -1237,7 +1237,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         this.reduce(cs)?;
         other.reduce(cs)?;
 
-        println!("ttt");
         // now we know that both this and other are < 2 * F::char, hence to enforce that they are equal
         // However, in all user scenarious we may assume that reduction is complete, i.e:
         // both values are in range [0; F::char)
@@ -1245,7 +1244,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // which is justified by 2 * p < native_field_modulus * 2^{limb_width}
         this.binary_limbs[0].term.enforce_equal(cs, &other.binary_limbs[0].term)?;
         this.base_field_limb.enforce_equal(cs, &other.base_field_limb)?;
-        println!("ttt2");
 
         // if field_elements are equal than they are normalized or not simultaneously!
         // hence if we somehow know that one of values is normalized than we may lay the other to be normalized
@@ -1672,17 +1670,29 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     }
 
     #[track_caller]
-    pub fn decompose_into_binary_representation<CS>(&mut self, cs: &mut CS)-> Result<Vec<Boolean>, SynthesisError> 
-    where CS: ConstraintSystem<E> {
+    pub fn decompose_into_binary_representation<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, limit: Option<usize>
+    )-> Result<Vec<Boolean>, SynthesisError> {
         let params = self.representation_params;
+        let limit = limit.unwrap_or(params.represented_field_modulus_bitlength);
         self.reduce(cs)?;
 
-        let mut binary_decomposition = Vec::<Boolean>::with_capacity(params.represented_field_modulus_bitlength);
+        let mut binary_decomposition = Vec::<Boolean>::with_capacity(limit);
+        let mut num_bits_accumulated = 0;
+        let mut exceeds_limit = false;
         for (_is_first, is_last, limb) in self.binary_limbs.iter().identify_first_last() {
-            let chunk_bitlen = if is_last { params.msl_width } else { params.binary_limb_width };
-            let limb_as_num = limb.term.collapse_into_num(cs)?;
-            let limb_decomposition = limb_as_num.into_bits_le(cs, Some(chunk_bitlen))?;
-            binary_decomposition.extend(limb_decomposition.into_iter())
+            let max_chunk_bitlen = if is_last { params.msl_width } else { params.binary_limb_width };
+            let chunk_bitlen = std::cmp::min(max_chunk_bitlen, limit - num_bits_accumulated);
+
+            if !exceeds_limit {
+                let limb_as_num = limb.term.collapse_into_num(cs)?;
+                let limb_decomposition = limb_as_num.into_bits_le(cs, Some(chunk_bitlen))?;
+                binary_decomposition.extend(limb_decomposition.into_iter());
+                num_bits_accumulated += chunk_bitlen;
+                exceeds_limit = num_bits_accumulated >= limit;
+            } else {
+                limb.term.enforce_equal(cs, &Term::zero())?;
+            }
         }
 
         Ok(binary_decomposition)
@@ -1781,9 +1791,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             //     let contribution = Term::from_constant(limb_shift_negated);
             //     reconstructed.add(cs, &contribution)?;
             // //}
-            println!("question?");
             chunk.term.enforce_equal(cs, &reconstructed)?;
-            println!("answer");
             //start_offset = end_offset;
         }
 

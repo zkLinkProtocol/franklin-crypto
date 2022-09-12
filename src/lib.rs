@@ -7,7 +7,6 @@ pub extern crate bellman;
 extern crate blake2_rfc_bellman_edition as blake2_rfc;
 extern crate digest;
 extern crate rand;
-extern crate rescue_poseidon;
 extern crate byteorder;
 extern crate tiny_keccak;
 extern crate sha2;

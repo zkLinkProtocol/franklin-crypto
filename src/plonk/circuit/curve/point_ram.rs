@@ -18,7 +18,8 @@ use plonk::circuit::curve::structual_eq::CircuitSelectable;
 use plonk::circuit::utils::u64_to_fe;
 use std::convert::TryInto;
 use plonk::circuit::curve::sponge::*;
-use rescue_poseidon::*;
+use plonk::circuit::rescue_copy::traits::HashParams;
+use plonk::circuit::rescue_copy::sponge::generic_round_function;
 
 use crate::bellman::plonk::better_better_cs::cs::{
     ArithmeticTerm, Coefficient, ConstraintSystem, Gate, GateInternal,
@@ -1003,7 +1004,9 @@ mod test {
         const RATE: usize = 2;
         const WIDTH: usize = 3;
         const INPUT_LENGTH: usize = 1;
-        use rescue_poseidon::{HashParams, RescueParams, CustomGate};
+        // use rescue_poseidon::{HashParams, RescueParams, CustomGate};
+        use plonk::circuit::rescue_copy::sponge::GenericSponge;
+        use plonk::circuit::rescue_copy::rescue::params::RescueParams;
         // let mut params = crate::utils::bn254_rescue_params();
         let rescue_params = RescueParams::<Bn256, RATE, WIDTH>::default();
         let committer = GenericHasher::<Bn256, RescueParams<Bn256, 2, 3>, 2, 3>::new_from_params(&rescue_params);

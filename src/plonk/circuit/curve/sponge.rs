@@ -13,6 +13,8 @@ use plonk::circuit::curve::structual_eq::CircuitSelectable;
 use plonk::circuit::curve::point_ram::can_not_be_false_if_flagged;
 use plonk::circuit::curve::structual_eq::CircuitEq;
 use super::super::allocated_num::*;
+use plonk::circuit::rescue_copy::traits::HashParams;
+use plonk::circuit::rescue_copy::sponge::GenericSponge;
 
 // #[derive(Derivative)]
 // #[derivative(Clone, Debug)]
@@ -291,7 +293,6 @@ impl<
         assert!(self.requests.is_empty(), "requests were not enforced!");
     }
 }
-use rescue_poseidon::*;
 
 pub trait ArithmeticEncodable<E: Engine>: Clone + Send + Sync {
     fn encoding_length_is_constant() -> bool {

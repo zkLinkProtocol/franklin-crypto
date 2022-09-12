@@ -22,7 +22,7 @@ pub mod permutation_network;
 pub mod edwards;
 pub mod custom_5th_degree_gate_optimized;
 pub mod smart_op;
-
+pub mod rescue_copy;
 pub mod assignment;
 pub mod hashes_with_tables;
 

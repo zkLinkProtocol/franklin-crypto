@@ -5,13 +5,12 @@ use num_traits::Zero;
 use plonk::circuit::boolean::Boolean;
 use num_bigint::BigUint;
 use plonk::circuit::curve::AffinePoint;
-use plonk::circuit::allocated_num::Num;
 use plonk::circuit::bigint::FieldElement;
 use plonk::circuit::SynthesisError;
 use crate::bellman::pairing::{Engine, GenericCurveAffine, GenericCurveProjective};
 use crate::bellman::pairing::ff::{BitIterator, Field, PrimeField, PrimeFieldRepr, ScalarEngine};
-use super::super::allocated_num::{AllocatedNum};
-use super::super::linear_combination::LinearCombination;
+use super::super::allocated_num::*;
+use plonk::circuit::linear_combination::*;
 use plonk::circuit::bigint::RnsParameters;
 use std::cell::RefCell;
 use plonk::circuit::curve::structual_eq::CircuitEq;
@@ -19,9 +18,10 @@ use plonk::circuit::curve::structual_eq::CircuitSelectable;
 use plonk::circuit::utils::u64_to_fe;
 use std::convert::TryInto;
 use plonk::circuit::curve::sponge::*;
+use rescue_poseidon::*;
 
 use crate::bellman::plonk::better_better_cs::cs::{
-    ArithmeticTerm, Coefficient, ConstraintSystem, Gate, GateInternal, LinearCombinationOfTerms,
+    ArithmeticTerm, Coefficient, ConstraintSystem, Gate, GateInternal,
     MainGate, MainGateTerm, PlonkConstraintSystemParams, PlonkCsWidth4WithNextStepParams,
     PolynomialInConstraint, PolynomialMultiplicativeTerm, TimeDilation, TrivialAssembly, Variable,
     Width4MainGateWithDNext,
@@ -125,10 +125,6 @@ pub trait CircuitArithmeticRoundFunction<E: Engine, const AWIDTH: usize, const S
         Ok(state)
     }
 
-    // fn round_function_absorb_lcs<CS: ConstraintSystem<E>, const N: usize>(
-    //     &self, cs: &mut CS, state: [Self::StateElement; N], input: &[LinearCombination<E>]
-    // ) -> Result<[Self::StateElement; N], SynthesisError>;
-
     fn state_into_commitment(
         state: [Self::StateElement; SWIDTH]
     ) -> Result<Num<E>, SynthesisError>;
@@ -141,6 +137,184 @@ pub trait CircuitArithmeticRoundFunction<E: Engine, const AWIDTH: usize, const S
         &self,
         input: &[Num<E>]
     ) -> Vec<Vec<Num<E>>>;
+}
+
+impl<E: Engine, P: HashParams<E, AWIDTH, SWIDTH>, const AWIDTH: usize, const SWIDTH: usize> CircuitArithmeticRoundFunction<E, AWIDTH, SWIDTH> for GenericHasher<E, P, AWIDTH, SWIDTH>
+{
+    type StateElement = Num<E>;
+
+    fn simulate_round_function(
+        &self,
+        state: [E::Fr; SWIDTH]
+    ) -> [E::Fr; SWIDTH] {
+        
+        let mut new_state = state;
+
+        generic_round_function(&self.params, &mut new_state);
+
+        new_state
+    }
+
+    fn num_absorbtion_rounds_for_input_length(
+        &self,
+        length: usize
+    ) -> usize {
+        let mut num_rounds = length / AWIDTH;
+        if length % AWIDTH != 0 {
+            num_rounds += 1;
+        }
+
+        num_rounds
+    }
+
+    fn simulate_absorb_multiple_rounds(
+        &self,
+        state: [E::Fr; SWIDTH],
+        input: &[E::Fr]
+    ) -> Vec<([E::Fr; SWIDTH], [E::Fr; SWIDTH])> {
+        let padding = E::Fr::one();
+        let length = input.len();
+        let rate = AWIDTH;
+        let num_rounds = self.num_absorbtion_rounds_for_input_length(length);
+
+        let pad_by = rate - length % rate;
+        let mut it = input.iter().chain(std::iter::repeat(&padding).take(pad_by));
+        let mut state = state;
+
+        let mut round_outputs = vec![];
+
+        let iterable = &mut it;
+        for _ in 0..num_rounds {
+            for (s, inp) in state.iter_mut().zip(iterable.take(rate)) {
+                s.add_assign(inp);
+            }
+            let initial_state = state;
+            state = self.simulate_round_function(state);
+            round_outputs.push((initial_state, state));
+        }
+        
+        round_outputs
+    }
+
+    #[track_caller]
+    fn simulate_apply_length_specialization(
+        &self, state: [E::Fr; SWIDTH], length: usize
+    ) -> [E::Fr; SWIDTH] {
+        assert!(state == self.simulate_empty_state());
+        let mut state = state;
+        let idx = state.len() - 1;
+        state[idx] = u64_to_fe(length as u64);
+
+        state
+    }
+
+    fn empty_state() -> [Self::StateElement; SWIDTH] {
+        [Num::zero(); SWIDTH]
+    }
+
+    fn apply_length_specialization(
+        &self, state: [Self::StateElement; SWIDTH], length: usize
+    ) -> [Self::StateElement; SWIDTH]{
+        assert!(state.eq(&Self::empty_state()));
+
+        let mut state = state;
+        *state.last_mut().expect("is some") = Num::Constant(u64_to_fe(length as u64));
+
+        state
+    }
+
+    fn round_function<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, state: [Self::StateElement; SWIDTH]
+    ) -> Result<[Self::StateElement; SWIDTH], SynthesisError> {
+
+        let mut state_lcs = vec![];
+        for s in state.iter() {
+            let mut lc = LinearCombination::from(*s);
+            state_lcs.push(lc);
+        }
+
+        // let mut state:[LinearCombination<E>; SWIDTH];
+        // for i in 0..state_lcs.len(){
+        //     state[i] = state_lcs[i];
+        // }
+        let mut state_lcs: [_; SWIDTH]= state_lcs.try_into().unwrap();
+
+        // circuit_generic_round_function(
+        //     cs,
+        //     &mut state_lcs,
+        //     &self.params
+        // )?;
+
+
+        let mut new_state = [Num::Constant(E::Fr::zero()); SWIDTH];
+        for (a, b) in new_state.iter_mut().zip(state_lcs.iter()){
+            *a = b.clone().into_num(cs)?;
+        }
+
+        Ok(new_state)
+    }
+
+    fn round_function_absorb_nums<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, state: [Self::StateElement; SWIDTH], input: &[Num<E>]
+    ) -> Result<[Self::StateElement; SWIDTH], SynthesisError> {
+        assert_eq!(input.len(), AWIDTH);
+
+        let mut state_lcs = vec![];
+        for (s, inp) in state[..input.len()].iter().zip(input.iter())  {
+            let mut lc = LinearCombination::from(*s);
+            lc.add_assign_number_with_coeff(&inp, E::Fr::one());
+            state_lcs.push(lc);
+        }
+
+        for s in state[input.len()..].iter() {
+            let lc = LinearCombination::from(*s);
+            state_lcs.push(lc);
+        }
+
+        // let mut state_lcs = state_lcs.try_into().expect("state width should match");
+        
+        // circuit_generic_round_function(cs, &mut state_lcs, &self.params)?;
+
+        let mut new_state = [Num::Constant(E::Fr::zero()); SWIDTH];
+        for (a, b) in new_state.iter_mut().zip(state_lcs.into_iter()) {
+            *a = b.into_num(cs)?;
+        }
+
+        Ok(new_state)
+    }
+
+    // fn round_function_absorb_lcs<CS: ConstraintSystem<E>, const N: usize>(
+    //     cs: &mut CS, state: [Self::StateElement; N], input: &[LinearCombination<E>]
+    // ) -> Result<[Self::StateElement; N], SynthesisError>;
+
+    fn state_into_commitment(
+        state: [Self::StateElement; SWIDTH]
+    ) -> Result<Num<E>, SynthesisError> {
+        Ok(state[0])
+    }
+
+    fn simulate_state_into_commitment(
+        state: [E::Fr; SWIDTH]
+    ) -> E::Fr {
+        state[0]
+    }
+
+    fn chunk_and_pad_input(
+        &self,
+        input: &[Num<E>]
+    ) -> Vec<Vec<Num<E>>> {
+        let mut result = vec![];
+        let num_rounds = self.num_absorbtion_rounds_for_input_length(input.len());
+        let rate = AWIDTH;
+        let mut chunks_it = input.chunks(rate);
+        for _ in 0..num_rounds {
+            let mut chunk = chunks_it.next().expect("is some").to_vec();
+            chunk.resize(rate, Num::Constant(E::Fr::one()));
+            result.push(chunk);
+        }
+
+        result
+    }
 }
 pub fn variable_length_absorb_into_state<
     E: Engine,
@@ -415,121 +589,153 @@ where
     }
 
 
-    // pub fn ram_permutation_entry_point<CS: ConstraintSystem<E>,     R: CircuitArithmeticRoundFunction<E, 2, 3, StateElement = Num<E>>>(&self, cs: &mut CS, round_function: &R) -> Result<(), SynthesisError>{
+    pub fn ram_permutation_entry_point<CS: ConstraintSystem<E>,     R: CircuitArithmeticRoundFunction<E, 2, 3, StateElement = Num<E>>>(&self, cs: &mut CS, round_function: &R) -> Result<(), SynthesisError>{
         
-    //     let size = self.block.len();
-    //     let permutation = Self::calculate_permutation(&self.block);
-    //     let permutation = if let Some(permutation) = permutation {
-    //         permutation
-    //     } else {
-    //         IntegerPermutation::new(size)
-    //     };
+        let size = self.block.len();
+        let permutation = Self::calculate_permutation(&self.block);
+        let permutation = if let Some(permutation) = permutation {
+            permutation
+        } else {
+            IntegerPermutation::new(size)
+        };
 
-    //     let switches = order_into_switches_set(cs, &permutation)?;
+        let switches = order_into_switches_set(cs, &permutation)?;
 
-    //     let mut total_num_switches = 0;
-    //     for layer in switches.iter() {
-    //         total_num_switches += layer.len();
-    //     }
+        let mut total_num_switches = 0;
+        for layer in switches.iter() {
+            total_num_switches += layer.len();
+        }
 
-    //     use plonk::circuit::bigint_new::compute_shifts;
-    //     let shifts = compute_shifts::<E::Fr>();
-    //     let mut original_values = vec![];
-    //     let mut original_indexes = vec![];
-    //     // let mut original_addres = vec![];
+        use plonk::circuit::bigint_new::compute_shifts;
+        let shifts = compute_shifts::<E::Fr>();
+        let mut original_values = vec![];
+        let mut original_indexes = vec![];
+        // let mut original_addres = vec![];
 
-    //     let mut sorted_values = vec![];
-    //     let mut sorted_indexes = vec![];
-    //     // let mut original_addres = vec![];
+        let mut sorted_values = vec![];
+        let mut sorted_indexes = vec![];
+        // let mut original_addres = vec![];
 
-    //     let mut packed_original_values = vec![];
-    //     let mut packed_sorted_values = vec![];
+        let mut packed_left_colum = vec![];
+        let mut packed_right_colum = vec![];
 
-    //     for (addr, value ) in self.block.iter() {
 
-    //         let value = value.clone();
-    //         let x = FieldElement::into_limbs(value.clone().x.clone());
+        let mut vec_mul_left = vec![];
+        let mut vec_mul_right = vec![];
 
-    //         let chunk = value.x.representation_params.binary_limbs_bit_widths[0];
-    //         let iter = value.x.representation_params.binary_limbs_bit_widths.clone().into_iter();
+        for ((addr, value), index) in self.block.iter().zip(permutation.elements.iter()) {
+            let mut right_polinom =  LinearCombination::zero();
+            let mut left_polinom =  LinearCombination::zero();
+            let value = value.clone();
+            let x = FieldElement::into_limbs(value.clone().x.clone());
+
+            let chunk = value.x.representation_params.binary_limbs_bit_widths[0];
+            let iter = value.x.representation_params.binary_limbs_bit_widths.clone().into_iter();
             
-    //         let chunk_x = 253 / chunk;
-    //         let mut i = 0;
-    //         let mut lc_low = LinearCombination::zero(); 
-    //         for l in 0..chunk_x{
-    //             lc_low.add_assign_number_with_coeff(&x[l].num, shifts[i]);
-    //             i+= iter.clone().next().unwrap();
+            let chunk_x = 253 / chunk;
+            let mut i = 0;
+            let mut lc_low = LinearCombination::zero(); 
+            for l in 0..chunk_x{
+                lc_low.add_assign_number_with_coeff(&x[l].num, shifts[i]);
+                i+= iter.clone().next().unwrap();
 
-    //         }
-    //         let value_low = lc_low.into_num(cs)?.get_variable();
-    //         i=0;
+            }
+            let value_low = lc_low.into_num(cs)?;
+            i=0;
 
-    //         let mut lc_high = LinearCombination::zero();
-    //         for l in chunk_x..x.len(){
-    //             lc_high.add_assign_number_with_coeff(&x[l].num, shifts[i]);
-    //             i+= iter.clone().next().unwrap();
-    //         }
-    //         let (odd_y, y) = value.clone().point_compression(cs)?;
-    //         lc_high.add_assign_boolean_with_coeff(&odd_y, shifts[i]);  // point compression
-    //         i+= 1;
+            let mut lc_high = LinearCombination::zero();
+            for l in chunk_x..x.len(){
+                lc_high.add_assign_number_with_coeff(&x[l].num, shifts[i]);
+                i+= iter.clone().next().unwrap();
+            }
+            let (odd_y, y) = value.clone().point_compression(cs)?;
+            lc_high.add_assign_boolean_with_coeff(&odd_y, shifts[i]);  // point compression
+            i+= 1;
 
-    //         lc_high.add_assign_number_with_coeff(&addr, shifts[i]);
+            lc_high.add_assign_number_with_coeff(&addr, shifts[i]);
 
-    //         let value_high = lc_high.into_num(cs)?.get_variable();
+            let value_high = lc_high.into_num(cs)?;
 
-    //         packed_original_values.push([value_low, value_high]);
-    //         original_values.push(value);
-    //         original_indexes.push(addr);
+            packed_left_colum.push(value_low);
+            packed_right_colum.push(value_high);
+            original_values.push(value);
+            original_indexes.push(addr);
 
-    //     }
+            let value = original_values[*index].clone();
+            let addr = original_indexes[*index].clone();
+            sorted_values.push(value.x.clone());
+            sorted_indexes.push(addr.clone());
 
-    //     for index in permutation.elements.iter() {
+            let value_from_sorted = value.clone();
+            let y = FieldElement::into_limbs(value_from_sorted.clone().y.clone());
+            let x = FieldElement::into_limbs(value_from_sorted.clone().x.clone());
 
-    //         let value = original_values[*index].clone();
-    //         let addr = original_indexes[*index].clone();
-    //         sorted_values.push(value.x.clone());
-    //         sorted_indexes.push(addr.clone());
-
-    //         let value = value.clone();
-    //         let y = FieldElement::into_limbs(value.clone().y.clone());
-    //         let x = FieldElement::into_limbs(value.clone().x.clone());
-
-    //         let chunk = value.x.representation_params.binary_limbs_bit_widths[0];
-    //         let iter = value.x.representation_params.binary_limbs_bit_widths.clone().into_iter();
+            let chunk = value_from_sorted.x.representation_params.binary_limbs_bit_widths[0];
+            let iter = value_from_sorted.x.representation_params.binary_limbs_bit_widths.clone().into_iter();
             
-    //         let chunk_x = 253 / chunk;
-    //         let mut i = 0;
-    //         let mut lc_low = LinearCombination::zero(); 
-    //         for l in 0..chunk_x{
-    //             lc_low.add_assign_number_with_coeff(&x[l].num, shifts[i]);
-    //             i+= iter.clone().next().unwrap();
+            let chunk_x = 253 / chunk;
+            let mut i = 0;
+            let mut lc_low = LinearCombination::zero(); 
+            for l in 0..chunk_x{
+                lc_low.add_assign_number_with_coeff(&x[l].num, shifts[i]);
+                i+= iter.clone().next().unwrap();
 
-    //         }
-    //         let value_low = lc_low.into_num(cs)?;
-    //         i=0;
+            }
+            let value_low_sorted = lc_low.into_num(cs)?;
+            i=0;
 
-    //         let mut lc_high = LinearCombination::zero();
-    //         for l in chunk_x..x.len(){
-    //             lc_high.add_assign_number_with_coeff(&x[l].num, shifts[i]);
-    //             i+= iter.clone().next().unwrap();
-    //         }
+            let mut lc_high = LinearCombination::zero();
+            for l in chunk_x..x.len(){
+                lc_high.add_assign_number_with_coeff(&x[l].num, shifts[i]);
+                i+= iter.clone().next().unwrap();
+            }
 
-    //         let (odd_y, y) = value.clone().point_compression(cs)?;
-    //         lc_high.add_assign_boolean_with_coeff(&odd_y, shifts[i]);  // point compression
-    //         i+= 1;
+            let (odd_y, y) = value_from_sorted.clone().point_compression(cs)?;
+            lc_high.add_assign_boolean_with_coeff(&odd_y, shifts[i]);  // point compression
+            i+= 1;
 
-    //         lc_high.add_assign_number_with_coeff(&addr, shifts[i]);
+            lc_high.add_assign_number_with_coeff(&addr, shifts[i]);
 
-    //         let value_high = lc_high.into_num(cs)?;
+            let value_high_sorted = lc_high.into_num(cs)?;
 
-    //         packed_sorted_values.push([value_low, value_high]);
+            packed_left_colum.push(value_low_sorted);
+            packed_right_colum.push(value_high_sorted);
 
-    //     }
+            let chaleng_a = variable_length_hash(cs, &packed_left_colum, round_function)?;
+            let chaleng_b = variable_length_hash(cs, &packed_left_colum, round_function)?;
 
-    //     let chaleng = variable_length_hash(cs, &packed_sorted_values, round_function)?;
+            let mut minus_one = E::Fr::one();
+            minus_one.negate();
+            left_polinom.add_assign_number_with_coeff(&chaleng_a.clone(), E::Fr::one());
+            left_polinom.add_assign_number_with_coeff(&value_low, minus_one);
 
-    //     todo!();
-    // }
+            let b_mul_chalenge = value_high.mul(cs, &chaleng_b)?;
+            left_polinom.add_assign_number_with_coeff(&b_mul_chalenge, minus_one);
+
+            let multiplier= left_polinom.into_num(cs)?;
+            vec_mul_left.push(multiplier);
+
+            right_polinom.add_assign_number_with_coeff(&chaleng_a.clone(), E::Fr::one());
+            right_polinom.add_assign_number_with_coeff(&value_low_sorted, minus_one);
+
+            let b_mul_chalenge = value_high_sorted.mul(cs, &chaleng_b)?;
+            right_polinom.add_assign_number_with_coeff(&b_mul_chalenge, minus_one);
+
+            let multiplier_other= right_polinom.into_num(cs)?;
+            vec_mul_right.push(multiplier_other);
+        }
+
+        let mut left_polinom = Num::Constant(E::Fr::one());
+        let mut right_polinom = Num::Constant(E::Fr::one());
+        for (right, left) in vec_mul_right.iter().zip(vec_mul_left.iter()){
+            left_polinom = left_polinom.mul(cs, left)?;
+            right_polinom = right_polinom.mul(cs, right)?;
+        }
+        left_polinom.enforce_equal(cs, &right_polinom)?;
+
+        Ok(())
+
+    }
     pub fn waksman_permutation<CS: ConstraintSystem<E>>(&self, cs: &mut CS, window: usize) -> Result<(), SynthesisError>{
 
         let size = self.block.len();
@@ -664,7 +870,6 @@ where
         use plonk::circuit::utils::u64_to_fe;
         let mut lc_count = LinearCombination::<E>::zero(); 
         let constanta = bit_window_decompose(window);
-        println!("constanta{}", constanta);
         let constant = Num::Constant(u64_to_fe(constanta as u64));
         lc_count.add_assign_number_with_coeff(&constant, E::Fr::one());
         let mut pre_value_1 = packed_sorted_values.clone().into_iter().next().map(|el| el[0]).unwrap();
@@ -673,18 +878,12 @@ where
         minus_one.negate();
         for i in packed_sorted_values.into_iter(){
             let is_equal_1 = AllocatedNum::equals(cs, &pre_value_1, &i[0])?;
-            println!("is_equal_1{:?}", is_equal_1);
             let is_equal_2 = AllocatedNum::equals(cs, &pre_value_2, &i[1])?;
-            println!("is_equal_2{:?}", is_equal_2);
             let condition = Boolean::and(cs, &is_equal_1, &is_equal_2)?;
-            println!("{:?}", condition);
             let count = Num::mask(cs, &Num::Constant(E::Fr::one()), &condition)?;
-            println!("{:?}", count);
             lc_count.add_assign_number_with_coeff(&count, minus_one);
             pre_value_1 = i[0];
             pre_value_2 = i[1];
-
-
         }
 
         lc_count.enforce_zero(cs)?;
@@ -724,7 +923,7 @@ mod test {
     use plonk::circuit::tables::inscribe_combined_bitwise_ops_and_range_table;
 
     #[test]
-    fn test_ram() {
+    fn test_ram_waksman() {
         
         use rand::{Rng, SeedableRng, XorShiftRng};
         let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
@@ -762,6 +961,53 @@ mod test {
         }
 
         ram.waksman_permutation(&mut cs, 2);
+
+    }
+    #[test]
+    fn test_ram_hash_permut() {
+        
+        use rand::{Rng, SeedableRng, XorShiftRng};
+        let rng = &mut XorShiftRng::from_seed([0x3dbe6259, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+
+        let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
+
+        let mut ram = Memory::new();
+        let mut vec_verif = vec![];
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+        inscribe_combined_bitwise_ops_and_range_table(&mut cs, 8);
+        let mut array_addr = vec![];
+        for i in 0..100 {
+
+            let a_f: G1Affine = rng.gen();
+            let a_fr: Fr = rng.gen();
+
+            let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
+            let num_adr =Num::alloc(&mut cs, Some(a_fr)).unwrap();
+            array_addr.push(num_adr);
+
+
+            vec_verif.push(a.clone());
+
+            ram.block.push((num_adr, a.clone()));
+            let biguint = fe_to_biguint(&a_fr);
+            ram.witness_map.insert(biguint, RefCell::new(a.clone())); 
+        }
+        for j in 0..100{
+            let addres = array_addr[j];
+            
+            let point = ram.read_and_alloc(&mut cs, addres, &params).unwrap();
+            // assert_eq!(vec_verif[j].value.unwrap(), point.value.unwrap());
+
+            
+        }
+        const RATE: usize = 2;
+        const WIDTH: usize = 3;
+        const INPUT_LENGTH: usize = 1;
+        use rescue_poseidon::{HashParams, RescueParams, CustomGate};
+        // let mut params = crate::utils::bn254_rescue_params();
+        let rescue_params = RescueParams::<Bn256, RATE, WIDTH>::default();
+        let committer = GenericHasher::<Bn256, RescueParams<Bn256, 2, 3>, 2, 3>::new_from_params(&rescue_params);
+        ram.ram_permutation_entry_point(&mut cs, &committer);
 
 
 

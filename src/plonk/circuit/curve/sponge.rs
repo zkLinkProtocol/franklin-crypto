@@ -2,10 +2,8 @@ use super::*;
 
 
 use crate::bellman::plonk::better_better_cs::cs::{Variable, Index, ConstraintSystem};
-// use crate::traits::*;
 use crate::bellman::pairing::{Engine, GenericCurveAffine, GenericCurveProjective};
 use plonk::circuit::{boolean::Boolean, SynthesisError, allocated_num::AllocatedNum, smart_op::* };
-use plonk::circuit::allocated_num::Num;
 use plonk::circuit::simple_term::Term;
 use itertools::partition;
 use bellman::PrimeField;
@@ -14,6 +12,7 @@ use plonk::circuit::utils::u64_to_fe;
 use plonk::circuit::curve::structual_eq::CircuitSelectable;
 use plonk::circuit::curve::point_ram::can_not_be_false_if_flagged;
 use plonk::circuit::curve::structual_eq::CircuitEq;
+use super::super::allocated_num::*;
 
 // #[derive(Derivative)]
 // #[derivative(Clone, Debug)]
@@ -292,49 +291,80 @@ impl<
         assert!(self.requests.is_empty(), "requests were not enforced!");
     }
 }
+use rescue_poseidon::*;
 
-// #[cfg(test)]
-// mod test {
-//     use super::*;
+pub trait ArithmeticEncodable<E: Engine>: Clone + Send + Sync {
+    fn encoding_length_is_constant() -> bool {
+        true
+    }
+    fn encoding_length() -> usize;
+    fn encode(&self) -> Result<Vec<E::Fr>, SynthesisError>;
+    fn encoding_length_for_instance(&self) -> usize {
+        if Self::encoding_length_is_constant() {
+            Self::encoding_length()
+        } else {
+            unimplemented!()
+        }
+    }
+}
 
-//     use rand::Rng;
-//     use crate::pairing::bn256::{Bn256, Fr};
-//     use crate::traits::{GenericHasher, ArithmeticCommitter};
-//     use crate::utils::*;
-//     use crate::testing::*;
-//     use rescue_poseidon::RescueParams;
-//     use crate::utils::{AWIDTH_VALUE, SWIDTH_VALUE};
-//     use crate::glue::optimizable_queue::*;
+pub trait ArithmeticDecodable<E: Engine>: Clone + Send + Sync {
+    fn parse(values: &[E::Fr]) -> Result<Self, SynthesisError>;
+}
 
-//     type E = Bn256;
+pub trait FixedLengthEncodable<E: Engine, const N: usize>: Clone + std::fmt::Debug{
+    fn encode(&self) -> [E::Fr; N];
+    fn placeholder() -> Self;
+}
 
-//     use std::convert::TryInto;
+pub trait FixedLengthDecodable<E: Engine, const N: usize>: Clone + Send + Sync {
+    fn parse(values: &[E::Fr; N]) -> Self;
+    fn parse_conditionally(values: &[E::Fr; N], should_execute: bool) -> Self;
+}
 
-//     #[test]
-//     fn test_long_commitment() -> Result<(), SynthesisError> {
-//         let (mut dummy_cs, committer, _) = create_test_artifacts();
-//         let cs = &mut dummy_cs;
-//         inscribe_default_range_table_for_bit_width_over_first_three_columns(cs, 16)?;
-//         let mut rng = deterministic_rng();
+pub trait ArithmeticCommitter<E: Engine>: Clone + Send + Sync {
+    fn commit(&self, values: &[E::Fr]) -> Result<Vec<E::Fr>, SynthesisError>;
+}
 
-//         let witness: [Fr; 4] = rng.gen();
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
+#[serde(bound = "")]
+pub struct GenericHasher<E: Engine, P: HashParams<E, AWIDTH, SWIDTH>, const AWIDTH: usize, const SWIDTH: usize> {
+    pub(crate) params: P,
+    #[serde(skip)]
+    _m : std::marker::PhantomData<E>,
+}
 
-//         let input = Num::alloc_multiple(cs, Some(witness))?;
+impl<E: Engine, P: HashParams<E, AWIDTH, SWIDTH>, const AWIDTH: usize, const SWIDTH: usize> std::cmp::PartialEq for GenericHasher<E, P, AWIDTH, SWIDTH> {
+    fn eq(&self, other: &Self) -> bool {
+        self.params.hash_family() == other.params.hash_family()
+    }
+}
 
-//         let rf = committer.clone();
-//         let mut optimizer = SpongeOptimizer::<_, _, 2, 3>::new(rf, 2);
+impl<E: Engine, P: HashParams<E, AWIDTH, SWIDTH>, const AWIDTH: usize, const SWIDTH: usize> std::cmp::Eq for GenericHasher<E, P, AWIDTH, SWIDTH> {}
 
-//         let naive = variable_length_hash(cs, &input, &committer)?;
-//         let optimized = variable_length_hash_using_optimizer(cs, &input, 123, Boolean::constant(true), &mut optimizer)?;
+impl<E: Engine, P: HashParams<E, AWIDTH, SWIDTH>, const AWIDTH: usize, const SWIDTH: usize> GenericHasher<E, P, AWIDTH, SWIDTH> {
+    pub fn new_from_params(params: &P) -> Self {
+        Self {
+            params: params.clone(),
+            _m: std::marker::PhantomData,
+        }
+    }
+}
 
-//         assert_eq!(naive.get_value(), optimized.get_value());
+impl<E: Engine, P: HashParams<E, AWIDTH, SWIDTH>, const AWIDTH: usize, const SWIDTH: usize> ArithmeticCommitter<E> for GenericHasher<E, P, AWIDTH, SWIDTH> {
+    fn commit(&self, values: &[E::Fr]) -> Result<Vec<E::Fr>, SynthesisError> {
+        let output = GenericSponge::hash(values, &self.params, None).to_vec();
 
-//         optimizer.enforce(cs)?;
+        Ok(output)
+    }
+}
 
-//         assert!(cs.is_satisfied());
+pub trait ArithmeticCommitable<E: Engine>: ArithmeticEncodable<E> {
+    fn commit<C: ArithmeticCommitter<E>>(&self, committer: &C) -> Result<E::Fr, SynthesisError> {
+        let encoding = self.encode()?;
+        let result = committer.commit(&encoding)?;
 
-//         Ok(())
-//     }
-// }
-
-
+        Ok(result[0])
+    }
+}

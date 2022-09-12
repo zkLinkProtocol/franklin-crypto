@@ -38,6 +38,7 @@ bellman = { package = "bellman_ce", git = "https://github.com/matter-labs/bellma
 blake2-rfc_bellman_edition = "0.0.1"
 #poseidon_hash = { path = "../poseidon_hash" }
 #poseidon_hash = {git = "https://github.com/shamatar/poseidon_hash.git"}
+rescue_poseidon = {path = "../rescue-poseidon"}
 
 blake2s_simd = { version = "0.5" }
 hex = "0.4"

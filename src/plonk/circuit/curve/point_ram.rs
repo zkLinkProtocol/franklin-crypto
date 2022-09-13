@@ -276,7 +276,7 @@ impl<E: Engine, P: HashParams<E, AWIDTH, SWIDTH>, const AWIDTH: usize, const SWI
 
         let mut new_state = [Num::Constant(E::Fr::zero()); SWIDTH];
         for (a, b) in new_state.iter_mut().zip(state_lcs.into_iter()) {
-            *a = b.into_num(cs)?;
+            *a = b.clone().into_num(cs)?;
         }
 
         Ok(new_state)
@@ -626,8 +626,8 @@ where
         let mut sorted_value_high = vec![];
 
         for ((addr, value), index) in self.block.iter().zip(permutation.elements.iter()) {
-            let mut right_polinom =  LinearCombination::zero();
-            let mut left_polinom =  LinearCombination::zero();
+            let mut right_polinom =  LinearCombination::<E>::zero();
+            let mut left_polinom =  LinearCombination::<E>::zero();
             let value = value.clone();
             let x = FieldElement::into_limbs(value.clone().x.clone());
 
@@ -705,24 +705,24 @@ where
 
         }
 
-        for left_unsort in unsorted_value_low.iter(){
+        for left_unsort in unsorted_value_low.clone().into_iter(){
             packed_left_colum.push(left_unsort);
         }
-        for left_sort in sorted_value_low.iter(){
+        for left_sort in sorted_value_low.clone().into_iter(){
             packed_left_colum.push(left_sort);
         }
 
-        for right_unsort in unsorted_value_high.iter(){
+        for right_unsort in unsorted_value_high.clone().into_iter(){
             packed_right_colum.push(right_unsort);
         }
-        for right_sort in sorted_value_high.iter(){
+        for right_sort in sorted_value_high.clone().into_iter(){
             packed_right_colum.push(right_sort);
         }
 
-        let left_colum = packed_left_colum.try_into().unwrap();
-        let chaleng_a = variable_length_hash(cs, left_colum, round_function)?;
-        let right_colum = packed_right_colum.try_into().unwrap();
-        let chaleng_b = variable_length_hash(cs, &right_colum, round_function)?;
+        // let left_colum = packed_left_colum.try_into().unwrap();
+        let chaleng_a = variable_length_hash(cs, &packed_left_colum, round_function)?;
+        // let right_colum = packed_right_colum.try_into().unwrap();
+        let chaleng_b = variable_length_hash(cs, &packed_right_colum, round_function)?;
 
         let mut minus_one = E::Fr::one();
         minus_one.negate();
@@ -740,10 +740,10 @@ where
 
         let mut right_polinom = LinearCombination::zero(); 
         for (value_sorted_low, value_sorted_high) in sorted_value_low.iter().zip(sorted_value_high.iter()){
-            left_polinom.add_assign_number_with_coeff(&chaleng_a.clone(), E::Fr::one());
-            left_polinom.add_assign_number_with_coeff(&value_sorted_low, minus_one);
+            right_polinom.add_assign_number_with_coeff(&chaleng_a.clone(), E::Fr::one());
+            right_polinom.add_assign_number_with_coeff(&value_sorted_low, minus_one);
             let b_mul_chalenge = value_sorted_high.mul(cs, &chaleng_b)?;
-            left_polinom.add_assign_number_with_coeff(&b_mul_chalenge, minus_one);
+            right_polinom.add_assign_number_with_coeff(&b_mul_chalenge, minus_one);
         }
 
         let multiplier_other= right_polinom.into_num(cs)?;

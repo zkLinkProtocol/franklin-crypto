@@ -1,6 +1,7 @@
 use super::super::permutation_network::*;
 
 use std::collections::HashMap;
+use digest::generic_array::typenum::array;
 use num_traits::Zero;
 use plonk::circuit::boolean::Boolean;
 use num_bigint::BigUint;
@@ -606,8 +607,8 @@ where
         let mut sorted_values = vec![];
         let mut sorted_indexes = vec![];
 
-        let mut packed_left_colum = vec![];
-        let mut packed_right_colum = vec![];
+        // let mut packed_left_colum = vec![];
+        // let mut packed_right_colum = vec![];
 
 
         let mut vec_mul_left = vec![];
@@ -695,22 +696,25 @@ where
 
         }
 
+        let mut array_for_len_hash = vec![];
         for left_unsort in unsorted_value_low.clone().into_iter(){
-            packed_left_colum.push(left_unsort);
+            array_for_len_hash.push(left_unsort);
         }
         for left_sort in sorted_value_low.clone().into_iter(){
-            packed_left_colum.push(left_sort);
+            array_for_len_hash.push(left_sort);
         }
 
         for right_unsort in unsorted_value_high.clone().into_iter(){
-            packed_right_colum.push(right_unsort);
+            array_for_len_hash.push(right_unsort);
         }
         for right_sort in sorted_value_high.clone().into_iter(){
-            packed_right_colum.push(right_sort);
+            array_for_len_hash.push(right_sort);
         }
 
-        let chaleng_a = variable_length_hash(cs, &packed_left_colum, round_function)?;
-        let chaleng_b = variable_length_hash(cs, &packed_right_colum, round_function)?;
+        let state1 = variable_length_absorb_into_empty_state(cs, &array_for_len_hash, round_function)?;
+        let chaleng_a = R::state_into_commitment(state1)?;
+        let state2 = variable_length_absorb_into_state(cs, &[], &state1, round_function)?;
+        let chaleng_b = R::state_into_commitment(state2)?;
 
         let mut minus_one = E::Fr::one();
         minus_one.negate();
@@ -969,7 +973,7 @@ mod test {
             
         }
 
-        ram.waksman_permutation(&mut cs, 2).unwrap();
+        ram.waksman_permutation(&mut cs, 2);
 
     }
     #[test]
@@ -1017,7 +1021,7 @@ mod test {
         // let mut params = crate::utils::bn254_rescue_params();
         let rescue_params = RescueParams::<Bn256, RATE, WIDTH>::default();
         let committer = GenericHasher::<Bn256, RescueParams<Bn256, 2, 3>, 2, 3>::new_from_params(&rescue_params);
-        ram.ram_permutation_entry_point(&mut cs, &committer).unwrap();
+        ram.ram_permutation_entry_point(&mut cs, &committer);
 
 
 

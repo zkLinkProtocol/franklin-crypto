@@ -180,7 +180,7 @@ pub(crate) fn get_random_field_elements_from_seed<E: Engine>(num_elements: usize
             .write_u32::<BigEndian>(nonce)
             .unwrap();
         use blake2::Digest;
-        let mut h = blake2::Blake2s256::new();
+        let mut h = blake2::Blake2b::new();
         h.update(tag);
         h.update(constants::GH_FIRST_BLOCK);
         h.update(&nonce_bytes[..]);

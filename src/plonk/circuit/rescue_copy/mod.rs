@@ -1,4 +1,4 @@
-mod circuit_rescue;
+pub mod circuit_rescue;
 #[allow(dead_code)]
 mod common;
 pub mod sponge;

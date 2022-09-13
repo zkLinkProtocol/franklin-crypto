@@ -20,6 +20,7 @@ use std::convert::TryInto;
 use plonk::circuit::curve::sponge::*;
 use plonk::circuit::rescue_copy::traits::HashParams;
 use plonk::circuit::rescue_copy::sponge::generic_round_function;
+use plonk::circuit::rescue_copy::circuit_rescue::sponge::circuit_generic_round_function;
 
 use crate::bellman::plonk::better_better_cs::cs::{
     ArithmeticTerm, Coefficient, ConstraintSystem, Gate, GateInternal,
@@ -234,17 +235,14 @@ impl<E: Engine, P: HashParams<E, AWIDTH, SWIDTH>, const AWIDTH: usize, const SWI
             state_lcs.push(lc);
         }
 
-        // let mut state:[LinearCombination<E>; SWIDTH];
-        // for i in 0..state_lcs.len(){
-        //     state[i] = state_lcs[i];
-        // }
-        let mut state_lcs: [_; SWIDTH]= state_lcs.try_into().unwrap();
 
-        // circuit_generic_round_function(
-        //     cs,
-        //     &mut state_lcs,
-        //     &self.params
-        // )?;
+        let mut state_lcs = state_lcs.try_into().expect("state width should match");
+
+        circuit_generic_round_function(
+            cs,
+            &mut state_lcs,
+            &self.params
+        )?;
 
 
         let mut new_state = [Num::Constant(E::Fr::zero()); SWIDTH];
@@ -272,9 +270,9 @@ impl<E: Engine, P: HashParams<E, AWIDTH, SWIDTH>, const AWIDTH: usize, const SWI
             state_lcs.push(lc);
         }
 
-        // let mut state_lcs = state_lcs.try_into().expect("state width should match");
+        let mut state_lcs = state_lcs.try_into().expect("state width should match");
         
-        // circuit_generic_round_function(cs, &mut state_lcs, &self.params)?;
+        circuit_generic_round_function(cs, &mut state_lcs, &self.params)?;
 
         let mut new_state = [Num::Constant(E::Fr::zero()); SWIDTH];
         for (a, b) in new_state.iter_mut().zip(state_lcs.into_iter()) {
@@ -611,11 +609,9 @@ where
         let shifts = compute_shifts::<E::Fr>();
         let mut original_values = vec![];
         let mut original_indexes = vec![];
-        // let mut original_addres = vec![];
 
         let mut sorted_values = vec![];
         let mut sorted_indexes = vec![];
-        // let mut original_addres = vec![];
 
         let mut packed_left_colum = vec![];
         let mut packed_right_colum = vec![];
@@ -623,6 +619,11 @@ where
 
         let mut vec_mul_left = vec![];
         let mut vec_mul_right = vec![];
+
+        let mut unsorted_value_low = vec![];
+        let mut unsorted_value_high = vec![];
+        let mut sorted_value_low = vec![];
+        let mut sorted_value_high = vec![];
 
         for ((addr, value), index) in self.block.iter().zip(permutation.elements.iter()) {
             let mut right_polinom =  LinearCombination::zero();
@@ -656,12 +657,13 @@ where
             lc_high.add_assign_number_with_coeff(&addr, shifts[i]);
 
             let value_high = lc_high.into_num(cs)?;
-
-            packed_left_colum.push(value_low);
-            packed_right_colum.push(value_high);
             original_values.push(value);
             original_indexes.push(addr);
+            unsorted_value_low.push(value_low);
+            unsorted_value_high.push(value_high);
+        }
 
+        for index in permutation.elements.iter() {
             let value = original_values[*index].clone();
             let addr = original_indexes[*index].clone();
             sorted_values.push(value.x.clone());
@@ -698,33 +700,55 @@ where
             lc_high.add_assign_number_with_coeff(&addr, shifts[i]);
 
             let value_high_sorted = lc_high.into_num(cs)?;
+            sorted_value_low.push(value_low_sorted);
+            sorted_value_high.push(value_high_sorted);
 
-            packed_left_colum.push(value_low_sorted);
-            packed_right_colum.push(value_high_sorted);
-
-            let chaleng_a = variable_length_hash(cs, &packed_left_colum, round_function)?;
-            let chaleng_b = variable_length_hash(cs, &packed_left_colum, round_function)?;
-
-            let mut minus_one = E::Fr::one();
-            minus_one.negate();
-            left_polinom.add_assign_number_with_coeff(&chaleng_a.clone(), E::Fr::one());
-            left_polinom.add_assign_number_with_coeff(&value_low, minus_one);
-
-            let b_mul_chalenge = value_high.mul(cs, &chaleng_b)?;
-            left_polinom.add_assign_number_with_coeff(&b_mul_chalenge, minus_one);
-
-            let multiplier= left_polinom.into_num(cs)?;
-            vec_mul_left.push(multiplier);
-
-            right_polinom.add_assign_number_with_coeff(&chaleng_a.clone(), E::Fr::one());
-            right_polinom.add_assign_number_with_coeff(&value_low_sorted, minus_one);
-
-            let b_mul_chalenge = value_high_sorted.mul(cs, &chaleng_b)?;
-            right_polinom.add_assign_number_with_coeff(&b_mul_chalenge, minus_one);
-
-            let multiplier_other= right_polinom.into_num(cs)?;
-            vec_mul_right.push(multiplier_other);
         }
+
+        for left_unsort in unsorted_value_low.iter(){
+            packed_left_colum.push(left_unsort);
+        }
+        for left_sort in sorted_value_low.iter(){
+            packed_left_colum.push(left_sort);
+        }
+
+        for right_unsort in unsorted_value_high.iter(){
+            packed_right_colum.push(right_unsort);
+        }
+        for right_sort in sorted_value_high.iter(){
+            packed_right_colum.push(right_sort);
+        }
+
+        let left_colum = packed_left_colum.try_into().unwrap();
+        let chaleng_a = variable_length_hash(cs, left_colum, round_function)?;
+        let right_colum = packed_right_colum.try_into().unwrap();
+        let chaleng_b = variable_length_hash(cs, &right_colum, round_function)?;
+
+        let mut minus_one = E::Fr::one();
+        minus_one.negate();
+        let mut left_polinom = LinearCombination::zero(); 
+
+        for (value_unsorted_low, value_unsorted_high) in unsorted_value_low.iter().zip(unsorted_value_high.iter()){
+            left_polinom.add_assign_number_with_coeff(&chaleng_a.clone(), E::Fr::one());
+            left_polinom.add_assign_number_with_coeff(&value_unsorted_low, minus_one);
+            let b_mul_chalenge = value_unsorted_high.mul(cs, &chaleng_b)?;
+            left_polinom.add_assign_number_with_coeff(&b_mul_chalenge, minus_one);
+        }
+
+        let multiplier= left_polinom.into_num(cs)?;
+        vec_mul_left.push(multiplier);
+
+        let mut right_polinom = LinearCombination::zero(); 
+        for (value_sorted_low, value_sorted_high) in sorted_value_low.iter().zip(sorted_value_high.iter()){
+            left_polinom.add_assign_number_with_coeff(&chaleng_a.clone(), E::Fr::one());
+            left_polinom.add_assign_number_with_coeff(&value_sorted_low, minus_one);
+            let b_mul_chalenge = value_sorted_high.mul(cs, &chaleng_b)?;
+            left_polinom.add_assign_number_with_coeff(&b_mul_chalenge, minus_one);
+        }
+
+        let multiplier_other= right_polinom.into_num(cs)?;
+        vec_mul_right.push(multiplier_other);
+
 
         let mut left_polinom = Num::Constant(E::Fr::one());
         let mut right_polinom = Num::Constant(E::Fr::one());

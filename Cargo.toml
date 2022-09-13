@@ -27,7 +27,7 @@ num-integer = "0.1"
 num-traits = "0.2"
 itertools = "0.10"
 splitmut = "0.2"
-blake2 = "0.10"
+blake2 = "0.9"
 lazy_static = "1.4"
 serde = {version = "1", features = ["derive"]}
 num-derive = "0.2"

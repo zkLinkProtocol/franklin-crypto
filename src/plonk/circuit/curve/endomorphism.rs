@@ -68,7 +68,7 @@ impl <E: Engine> EndomorphismParameters<E>  {
             }
 
             Num::Variable(var) =>{
-                let mut w = var.get_value().unwrap();
+                let w = var.get_value().unwrap();
                 value = fe_to_biguint(&w);
             }
         }

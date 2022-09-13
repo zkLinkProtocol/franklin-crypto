@@ -213,7 +213,7 @@ impl<
         for _ in 0..self.limit {
             let mut per_round_requests = vec![];
             for k in keys.iter() {
-                let mut requests_per_id = self.requests.get_mut(k).expect("is some");
+                let requests_per_id = self.requests.get_mut(k).expect("is some");
                 if !requests_per_id.is_empty() {
                     let el = requests_per_id.drain(0..1).next().expect("is some");
                     per_round_requests.push(el);

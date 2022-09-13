@@ -64,7 +64,7 @@ pub trait CircuitArithmeticRoundFunction<E: Engine, const AWIDTH: usize, const S
     }
     #[track_caller]
     fn apply_length_specialization(
-        &self, state: [Self::StateElement; SWIDTH], length: usize
+        &self, state: [Self::StateElement; SWIDTH], _length: usize
     ) -> [Self::StateElement; SWIDTH] {
         assert!(state.eq(&Self::empty_state()));
         unimplemented!();
@@ -231,7 +231,7 @@ impl<E: Engine, P: HashParams<E, AWIDTH, SWIDTH>, const AWIDTH: usize, const SWI
 
         let mut state_lcs = vec![];
         for s in state.iter() {
-            let mut lc = LinearCombination::from(*s);
+            let lc = LinearCombination::from(*s);
             state_lcs.push(lc);
         }
 
@@ -275,7 +275,7 @@ impl<E: Engine, P: HashParams<E, AWIDTH, SWIDTH>, const AWIDTH: usize, const SWI
         circuit_generic_round_function(cs, &mut state_lcs, &self.params)?;
 
         let mut new_state = [Num::Constant(E::Fr::zero()); SWIDTH];
-        for (a, b) in new_state.iter_mut().zip(state_lcs.into_iter()) {
+        for (a, b) in new_state.iter_mut().zip(state_lcs.iter()) {
             *a = b.clone().into_num(cs)?;
         }
 
@@ -522,7 +522,7 @@ pub fn bit_window_decompose(window: usize) -> usize{
     for i in 0..window{
         bit_window += two.pow(i as u32);
     }
-    (bit_window as usize)
+    bit_window as usize
 }
 pub fn can_not_be_false_if_flagged<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS,
@@ -641,7 +641,7 @@ where
                 lc_high.add_assign_number_with_coeff(&x[l].num, shifts[i]);
                 i+= iter.clone().next().unwrap();
             }
-            let (odd_y, y) = value.clone().point_compression(cs)?;
+            let (odd_y, _) = value.clone().point_compression(cs)?;
             lc_high.add_assign_boolean_with_coeff(&odd_y, shifts[i]);  // point compression
             i+= 1;
 
@@ -661,7 +661,6 @@ where
             sorted_indexes.push(addr.clone());
 
             let value_from_sorted = value.clone();
-            let y = FieldElement::into_limbs(value_from_sorted.clone().y.clone());
             let x = FieldElement::into_limbs(value_from_sorted.clone().x.clone());
 
             let chunk = value_from_sorted.x.representation_params.binary_limbs_bit_widths[0];
@@ -684,7 +683,7 @@ where
                 i+= iter.clone().next().unwrap();
             }
 
-            let (odd_y, y) = value_from_sorted.clone().point_compression(cs)?;
+            let (odd_y, _) = value_from_sorted.clone().point_compression(cs)?;
             lc_high.add_assign_boolean_with_coeff(&odd_y, shifts[i]);  // point compression
             i+= 1;
 
@@ -803,7 +802,7 @@ where
                 lc_high.add_assign_number_with_coeff(&x[l].num, shifts[i]);
                 i+= iter.clone().next().unwrap();
             }
-            let (odd_y, y) = value.clone().point_compression(cs)?;
+            let (odd_y, _) = value.clone().point_compression(cs)?;
             lc_high.add_assign_boolean_with_coeff(&odd_y, shifts[i]);  // point compression
             i+= 1;
 
@@ -825,7 +824,6 @@ where
             sorted_indexes.push(addr.clone());
 
             let value = value.clone();
-            let y = FieldElement::into_limbs(value.clone().y.clone());
             let x = FieldElement::into_limbs(value.clone().x.clone());
 
             let chunk = value.x.representation_params.binary_limbs_bit_widths[0];
@@ -848,7 +846,7 @@ where
                 i+= iter.clone().next().unwrap();
             }
 
-            let (odd_y, y) = value.clone().point_compression(cs)?;
+            let (odd_y, _) = value.clone().point_compression(cs)?;
             lc_high.add_assign_boolean_with_coeff(&odd_y, shifts[i]);  // point compression
             i+= 1;
 
@@ -944,9 +942,9 @@ mod test {
         let mut ram = Memory::new();
         let mut vec_verif = vec![];
         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
-        inscribe_combined_bitwise_ops_and_range_table(&mut cs, 8);
+        inscribe_combined_bitwise_ops_and_range_table(&mut cs, 8).unwrap();
         let mut array_addr = vec![];
-        for i in 0..100 {
+        for _ in 0..100 {
 
             let a_f: G1Affine = rng.gen();
             let a_fr: Fr = rng.gen();
@@ -965,13 +963,13 @@ mod test {
         for j in 0..100{
             let addres = array_addr[j];
             
-            let point = ram.read_and_alloc(&mut cs, addres, &params).unwrap();
+            let _point = ram.read_and_alloc(&mut cs, addres, &params).unwrap();
             // assert_eq!(vec_verif[j].value.unwrap(), point.value.unwrap());
 
             
         }
 
-        ram.waksman_permutation(&mut cs, 2);
+        ram.waksman_permutation(&mut cs, 2).unwrap();
 
     }
     #[test]
@@ -985,9 +983,9 @@ mod test {
         let mut ram = Memory::new();
         let mut vec_verif = vec![];
         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
-        inscribe_combined_bitwise_ops_and_range_table(&mut cs, 8);
+        inscribe_combined_bitwise_ops_and_range_table(&mut cs, 8).unwrap();
         let mut array_addr = vec![];
-        for i in 0..100 {
+        for _ in 0..100 {
 
             let a_f: G1Affine = rng.gen();
             let a_fr: Fr = rng.gen();
@@ -1006,7 +1004,7 @@ mod test {
         for j in 0..100{
             let addres = array_addr[j];
             
-            let point = ram.read_and_alloc(&mut cs, addres, &params).unwrap();
+            let _point = ram.read_and_alloc(&mut cs, addres, &params).unwrap();
             // assert_eq!(vec_verif[j].value.unwrap(), point.value.unwrap());
 
             
@@ -1019,7 +1017,7 @@ mod test {
         // let mut params = crate::utils::bn254_rescue_params();
         let rescue_params = RescueParams::<Bn256, RATE, WIDTH>::default();
         let committer = GenericHasher::<Bn256, RescueParams<Bn256, 2, 3>, 2, 3>::new_from_params(&rescue_params);
-        ram.ram_permutation_entry_point(&mut cs, &committer);
+        ram.ram_permutation_entry_point(&mut cs, &committer).unwrap();
 
 
 

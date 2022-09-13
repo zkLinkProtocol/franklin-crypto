@@ -1276,9 +1276,8 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         use plonk::circuit::hashes_with_tables::utils::u64_to_ff;
         let mut table  = vec![];
         let bit_window = (2 as u64).pow(window as u32);
-        let mut count = 0 as u64;
         for i in 0..bit_window{
-            let (d_k, number) = vec_of_bit(i as usize, window);
+            let (_, number) = vec_of_bit(i as usize, window);
             let is_ne_flag = sign_i64(number);
             let unsign_nuber = i64::abs(number);
             let q_point = self.clone();
@@ -1511,7 +1510,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             acc = new_acc;
             step += window;
         };
-        memory.waksman_permutation(cs, window);
+        memory.waksman_permutation(cs, window)?;
 
         let (with_skew, (acc, this)) = acc.sub_unequal(cs, self.clone())?;
         let (with_skew, (acc, this)) = acc.sub_unequal(cs, q_endo.clone())?;

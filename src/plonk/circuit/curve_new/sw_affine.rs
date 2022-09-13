@@ -47,6 +47,7 @@ use bellman::CurveAffine;
 use num_bigint::BigUint;
 use num_integer::Integer;
 use num_traits::Zero;
+use std::str::FromStr;
 
 use crate::plonk::circuit::bigint_new::*;
 use crate::plonk::circuit::curve_new::sw_projective::*;
@@ -55,6 +56,15 @@ use crate::plonk::circuit::curve_new::sw_projective::*;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PointByScalarMulStrategy {
     Basic,
+}
+
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ScalarDecomposition {
+    pub k1_is_negative: bool,
+    pub k2_is_negative: bool,
+    pub k1_modulus: BigUint,
+    pub k2_modulus: BigUint
 }
 
 
@@ -105,37 +115,84 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
 impl<E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> CurveCircuitParameters<E, G, T> 
 where <G as GenericCurveAffine>::Base: PrimeField {
-    // const fn rounded_div(dividend: BigUint, divisor: BigUint) -> BigUint {
-    //     (dividend + (divisor >> 1)) / divisor
-    // }
+    fn rounded_div(dividend: BigUint, divisor: BigUint) -> BigUint {
+        (dividend + (divisor.clone() >> 1)) / divisor
+    }
 
-    // pub fn calculate_decomposition(&self, val: G::Scalar) -> (G::Scalar, G::Scalar) {
-    //     // Compute c1 = |b2 * k/n| and c2 = |−b1 * k/n|.
-    //     // Compute k1 = k − c1 * a1 −c2 * a2 and k2 = −c1 * b1 − c2 * b2
-    //     let k = fe_to_biguint(&val);
-    //     let n = repr_to_biguint::<G::Scalar>(&G::Scalar::char());
-    //     // TODO: is it possible to rigorouly proof, that for every choice of scalar k
-    //     // k1 and k2 will always be of halved bitlength of k (ano not longer) 
-    //     // it is an interesting research question!
-    //     let limit = (G::Scalar::NUM_BITS + 1)/2;
+    pub fn get_endomorphism_bitlen_limit(&self) -> usize {
+        // https://www.iacr.org/archive/crypto2001/21390189.pdf, lemma2:
+        // The vector u = (k1, k2), has norm at most max(||v1||, ||v2||), where 
+        // v1 = (a1, b1), v2 = (a2, b2)
+        let v1_squared_norm = self.a1.clone() * self.a1.clone() + self.minus_b1.clone() * self.minus_b1.clone();
+        let v2_squared_norm = self.a2.clone() * self.a2.clone() + self.b2.clone() * self.b2.clone();
+        let max_squared_norm = BigUint::max(v1_squared_norm, v2_squared_norm);
+        let limit = (max_squared_norm.bits() / 2) as usize;
+        limit
+    }
 
-    //     let c1 = Self::rounded_div(k * self.b2, n); 
-    //     let c2 = Self::rounded_div(k * self.minus_b1, n);
+    pub fn calculate_decomposition(&self, num: G::Scalar) -> ScalarDecomposition {
+        // Compute c1 = |b2 * k/n| and c2 = |−b1 * k/n|.
+        // Compute k1 = k − c1 * a1 −c2 * a2 and k2 = −c1 * b1 − c2 * b2
+        let n = repr_to_biguint::<G::Scalar>(&G::Scalar::char());
+        let k = fe_to_biguint(&num);
+        let limit = self.get_endomorphism_bitlen_limit();
 
-    //     let k1 = k - c1 * self.a1 - c2 * self.a2;
-    //     let k2 = c1 * self.minus_b1 - c2 * self.b2;
+        let c1 = Self::rounded_div(k.clone() * self.b2.clone(), n.clone()); 
+        let c2 = Self::rounded_div(k.clone() * self.minus_b1.clone(), n.clone());
 
-    //     // assert, that k = k1 + \lambda * k2
-    //     // asert, than bitlen(k1) <= limit, bitlen(k2) <= limit
-    //     // assert_eq!(k, k1 + self.lambda * k2);
-    //     // assert!(k1.nbits() <= limit);
-    //     // assert!(k2.nbits() <= limit);
+        let a1_as_fe = biguint_to_fe::<G::Scalar>(self.a1.clone());
+        let a2_as_fe = biguint_to_fe::<G::Scalar>(self.a2.clone());
+        let minus_b1_as_fe = biguint_to_fe::<G::Scalar>(self.minus_b1.clone());
+        let b2_as_fe = biguint_to_fe::<G::Scalar>(self.b2.clone());
+        let c1_as_fe = biguint_to_fe::<G::Scalar>(c1);
+        let c2_as_fe = biguint_to_fe::<G::Scalar>(c2);
 
-    //     let k1 = biguint_to_fe::<G::Scalar>(k1);
-    //     let k2 = biguint_to_fe::<G::Scalar>(k2);
+        let k1 = {
+            let mut tmp0 = c1_as_fe.clone();
+            tmp0.mul_assign(&a1_as_fe);
+            let mut tmp1 = c2_as_fe.clone();
+            tmp1.mul_assign(&a2_as_fe);
+            
+            let mut res = num;
+            res.sub_assign(&tmp0);
+            res.sub_assign(&tmp1);
+            res
+        };
+        
+        let k2 = {
+            let mut tmp0 = c1_as_fe.clone();
+            tmp0.mul_assign(&minus_b1_as_fe);
+            let mut tmp1 = c2_as_fe.clone();
+            tmp1.mul_assign(&b2_as_fe);
+            
+            let mut res = tmp0;
+            res.sub_assign(&tmp1);
+            res
+        };
 
-    //     (k1, k2)
-    // }
+        let mut k1 = fe_to_biguint(&k1);
+        let k1_is_negative = k1.bits() as usize > limit;
+        if k1_is_negative {
+            k1 = n.clone() - k1;
+            println!("k1 bits: {}", k1.bits());
+        }
+
+        let mut k2 = fe_to_biguint(&k2);
+        let k2_is_negative = k2.bits() as usize > limit;
+        if k2_is_negative {
+            k2 = n.clone() - k2;
+        }
+
+        println!("k1 is negative: {}", k1_is_negative);
+        println!("k2 is negative: {}", k2_is_negative);
+
+        ScalarDecomposition {
+            k1_is_negative,
+            k2_is_negative,
+            k1_modulus: k1,
+            k2_modulus: k2
+        }
+    }
 }
 
 use crate::bellman::pairing::bn256::Bn256;
@@ -160,6 +217,18 @@ pub fn generate_optimal_circuit_params_for_bn256<E: Engine, CS: ConstraintSystem
         "11945101449646283729085354065658026304542755875752930267052478828467356003660"
     ).expect("should parse");
 
+    let lambda = Fr::from_str(
+        "21888242871839275217838484774961031246154997185409878258781734729429964517155"
+    ).expect("should parse");
+    let beta = Fq::from_str(
+        "21888242871839275220042445260109153167277707414472061641714758635765020556616"
+    ).expect("should parse");
+
+    let a1 = BigUint::from_str("147946756881789319000765030803803410728").expect("should parse");
+    let a2 = BigUint::from_str("9931322734385697763").expect("should parse");
+    let minus_b1 = BigUint::from_str("9931322734385697763").expect("should parse");
+    let b2 = BigUint::from_str("147946756881789319010696353538189108491").expect("should parse");
+
     CurveCircuitParameters {
         base_field_rns_params: RnsParameters::<E, Fq>::new_optimal(cs, base_field_limb_size),
         scalar_field_rns_params: RnsParameters::<E, Fr>::new_optimal(cs, scalar_field_limb_size),
@@ -169,12 +238,7 @@ pub fn generate_optimal_circuit_params_for_bn256<E: Engine, CS: ConstraintSystem
         fp2_generator_x_c1,
         fp2_generator_y_c0,
         fp2_generator_y_c1,
-        lambda: Fr::zero(),
-        beta: Fq::zero(),
-        a1: BigUint::zero(),
-        a2: BigUint::zero(),
-        minus_b1: BigUint::zero(),
-        b2: BigUint::zero(),
+        lambda, beta, a1, a2, minus_b1, b2,
         _marker: std::marker::PhantomData::<Bn256Extension2Params>
     }
 }
@@ -945,47 +1009,106 @@ where <G as GenericCurveAffine>::Base: PrimeField {
     }
 
     pub fn mul_by_scalar_for_prime_order_curve_endo<CS: ConstraintSystem<E>>(
-        &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>
+        &self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>
     ) -> Result<ProjectivePoint<'a, E, G, T>, SynthesisError> {
         let params = self.circuit_params;
         let scalar_rns_params = &params.scalar_field_rns_params;
         let base_rns_params = &params.base_field_rns_params;
 
         let limit = params.get_endomorphism_bitlen_limit();
-        let (k1_wit, k2_wit) = scalar.get_value().map(|x| params.calculate_decomposition(x)).unzip();
-        let k1 = FieldElement::<E, G::Scalar>::alloc_for_known_bitlen(cs, k1_wit, limit);
-        let k2 = FieldElement::<E, G::Scalar>::alloc_for_known_bitlen(cs, k2_wit, limit);
+        let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
+            Some(x) => {
+                let dcmp = params.calculate_decomposition(x);
+                (Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus))
+            },
+            None => (None, None, None, None)
+        };
+        let mut k1_abs = FieldElement::alloc_for_known_bitwidth(cs, k1_abs_wit, limit, scalar_rns_params, true)?;
+        let mut k2_abs = FieldElement::alloc_for_known_bitwidth(cs, k2_abs_wit, limit, scalar_rns_params, true)?;
+        let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
+        let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
+
+        println!("HERE");
         
-        // constraint that that scalar = k1 + lambda * k2
+        // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
+        let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
+        println!("HERE0");
+        let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
+        println!("HERE1");
         let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&k1).add_neg_term(&scalar);
         let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
-        FieldElement::constraint_fma(cs, &k2, &lambda, &chain)?;
+        FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
+
+
+        println!("HERE32");
         
-        let beta = FieldElement::constant(params.beta.clone(), scalar_rns_params);
-        let x_mul_beta = self.get_x().mul(cs, &beta)?;
-        let y_negated = self.get_y().negate(cs)?;
-        let point_endo = unsafe { AffinePoint::from_xy_unchecked(x_mul_beta, y_negated, base_rns_params) };
+        let mut point = self.conditionally_negate(cs, &k1_is_negative_flag)?;
+        let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+        let x_endo = point.get_x().mul(cs, &beta)?;
+        let y_endo = point.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
+        let mut point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
 
-        let k1_decomposition = k1.decompose_into_binary_representation(cs)?;
-        let k2_decomposition = k2.decompose_into_binary_representation(cs)?;
-        let point_plus_point_endo = self.add_unequal_unchecked(cs, &point_endo)?;
+        println!("HERE2");
 
-        let mut acc = ProjectivePoint::<E, G, T>::from(self.clone());
-        let mut y_negated = self.get_y().negate(cs)?;
-        y_negated.reduce(cs)?;
-      
-        for (_, is_last, bit) in scalar_decomposition.into_iter().rev().into_iter().identify_first_last() {
-            if !is_last {  
+        let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
+        let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
+        let point_minus_point_endo = point.sub_unequal_unchecked(cs, &mut point_endo)?;
+        let point_plus_point_endo = point.add_unequal_unchecked(cs, &point_endo)?;
+       
+        let mut acc = ProjectivePoint::<E, G, T>::from(point_plus_point_endo.clone());
+        let iter = k1_decomposition.into_iter().zip(k2_decomposition.into_iter()).rev().identify_first_last();
+
+        for (_, is_last, (k1_bit, k2_bit)) in iter {
+            if !is_last {
+                // selection tree looks like following:
+                //                              
+                //                         |true --- P + Q
+                //         |true---k2_bit--|
+                //         |               |false --- P - Q
+                // k1_bit--|
+                //         |        
+                //         |                |true --- -P + Q
+                //         |false---k2_bit--|
+                //                          |false --- -P - Q
+                //
+                // hence:
+                // res.X = select(k1_bit ^ k2_bit, P-Q.X, P+Q.X)
+                // tmp.Y = select(k1_bit ^ k2_bit, P-Q.Y, P+Q.Y)
+                // res.Y = conditionally_negate(!k1, tmp.Y)
                 acc = acc.double(cs)?;
-                let selected_y = FieldElement::conditionally_select(cs, &bit, &self.y, &y_negated)?;
-                let mut tmp = unsafe { AffinePoint::from_xy_unchecked(self.x.clone(), selected_y, params) };
+                let xor_flag = Boolean::xor(cs, &k1_bit, &k2_bit)?;
+                let selected_x = FieldElement:: conditionally_select(
+                    cs, &xor_flag, &point_minus_point_endo.get_x(), &point_plus_point_endo.get_x()
+                )?;
+                let tmp_y = FieldElement::conditionally_select(
+                    cs, &xor_flag, &point_minus_point_endo.get_y(), &point_plus_point_endo.get_y()
+                )?;
+                let selected_y = tmp_y.conditionally_negate(cs, &k1_bit.not())?;
+                let mut tmp = unsafe { AffinePoint::from_xy_unchecked(selected_x, selected_y, params) };
                 acc = acc.add_mixed(cs, &mut tmp)?;
             }
             else {
-                let mut tmp = unsafe { AffinePoint::from_xy_unchecked(self.x.clone(), y_negated.clone(), params) };
-                let skewed_acc = acc.add_mixed(cs, &mut tmp)?;
-                acc = ProjectivePoint::conditionally_select(cs, &bit, &acc, &skewed_acc)?;
+                // we subtract either O, or P, or Q or P + Q
+                // selection tree in this case looks like following:
+                //                              
+                //                         |true --- O
+                //         |true---k2_bit--|
+                //         |               |false --- Q
+                // k1_bit--|
+                //         |        
+                //         |                |true --- P
+                //         |false---k2_bit--|
+                //                          |false --- P+Q
+                //
+                let tmp0 = ProjectivePoint::conditionally_select(
+                    cs, &k2_bit, &ProjectivePoint::zero(params), &ProjectivePoint::from(point_endo.clone())
+                )?;
+                let tmp1 = ProjectivePoint::from(AffinePoint::conditionally_select(
+                    cs, &k2_bit, &self, &point_plus_point_endo
+                )?);
+                let mut point_to_sub = ProjectivePoint::conditionally_select(cs, &k1_bit, &tmp0, &tmp1)?;
+                acc = acc.sub(cs, &mut point_to_sub)?;
             }
         }
         

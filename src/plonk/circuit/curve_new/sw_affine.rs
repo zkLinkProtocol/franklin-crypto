@@ -699,6 +699,83 @@ where <G as GenericCurveAffine>::Base: PrimeField
         };
         Ok(new)
     }
+
+    // given P = (x, y) returns normalized x and the parity bit of y
+    // #[track_caller]
+    // pub fn point_compression<CS: ConstraintSystem<E>>(
+    //     &mut self, cs: &mut CS
+    // ) -> Result<(FieldElement<'a, E, G::Base>, Boolean), SynthesisError> {
+    //     // we restric ourselves for table based range checks only
+    //     assert!(self.circuit_params.base_field_rns_params.range_check_strategy.is_table_based_strategy());
+    //     self.normalize(cs)?;
+
+    //     let y_parity_bit = if self.y.is_constant() {
+    //         let is_odd_wit = self.y.get_field_value().unwrap().into_repr().is_odd();
+    //         Boolean::constant(is_odd_wit)
+    //     } else {
+    //         let dummy = CS::get_dummy_variable();
+    //         let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
+    //         let mut two = E::Fr::one();
+    //         two.double();
+    //         let two_inv = two.inverse().unwrap();
+    //         let mut minus_one = E::Fr::one();
+    //         minus_one.negate();
+    //         let mut minus_two = two.clone();
+    //         minus_two.negate(); 
+
+    //         let dcmp = constraint_bit_length_ext(
+    //             cs,  &self.y.binary_limbs[0].term.num.get_variable(), num_bits
+    //         )?;
+    //         let a = dcmp.get_vars()[0];
+    //         let (parity_flag_wit, b_wit) = match 
+
+    //         is_odd(&self) -> bool;
+
+    // /// Returns true iff this number is even.
+    // fn is_even(&self) -> bool;
+
+    // /// Performs a rightwise bitshift of this number, effectively dividing
+    // /// it by 2.
+    // fn div2(&mut self);
+
+           
+    //     let y_odd_witness = Self::make_witness_y_odd(a.value);
+    //     let y_is_odd = AllocatedBit::alloc(cs, y_odd_witness[0])?;
+    //     let b = AllocatedNum::alloc(cs, || {
+    //         let mut tmp = a.get_value().grab()?;
+    //         tmp.sub_assign(&y_is_odd.get_value_as_field_element::<E>().grab()?);
+    //         tmp.mul_assign(&two_inv);
+    //         Ok(tmp)
+    //     })?; 
+    //     let a_xor_b = match (a.get_value(), b.get_value()) {
+    //         (Some(a_val), Some(b_val)) => {
+    //             let res = table.query(&[a_val, b_val])?;
+    //             AllocatedNum::alloc(cs, || Ok(res[0]))?
+    //         },  
+    //         (_, _) => AllocatedNum::alloc(cs, || Err(SynthesisError::AssignmentMissing))?
+    //     };
+
+    //     let y_is_odd_var = y_is_odd.get_variable();
+    //     let vars = [
+    //         a.get_variable(), b.get_variable(), a_xor_b.get_variable(), y_is_odd_var
+    //     ];
+    //     let coeffs = [E::Fr::one(), minus_two.clone(), E::Fr::zero(), E::Fr::one()];
+    //     cs.begin_gates_batch_for_step()?;
+    //     cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
+        
+    //     let gate_term = MainGateTerm::new();
+    //     let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;
+    //     for (idx, coef) in range_of_linear_terms.clone().zip(coeffs.iter()) {
+    //         gate_coefs[idx] = *coef;
+    //     }
+
+    //     let mg = CS::MainGate::default();
+    //     cs.new_gate_in_batch(&mg, &gate_coefs, &vars, &[])?;
+    //     cs.end_gates_batch_for_step()?;
+
+    //     let odd_bit = Boolean::from(y_is_odd);
+    //     Ok((odd_bit, rcd))
+    // }
 }
 
 
@@ -752,20 +829,17 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as Gen
         let other_x_minus_this_x = other.x.sub(cs, &self.x)?;
         let mut chain = Fp2Chain::new();
         chain.add_pos_term(&other.y).add_neg_term(&self.y);
-        println!("ololo");
         let lambda = Fp2::div_with_chain(cs, chain, &other_x_minus_this_x)?;
         
         // lambda^2 + (-x' - x)
         let mut chain = Fp2Chain::new();
         chain.add_neg_term(&other.x).add_neg_term(&self.x);
-        println!("ololo2");
         let new_x = lambda.square_with_chain(cs, chain)?;
 
         // lambda * (x - new_x) + (- y)
         let this_x_minus_new_x = self.x.sub(cs, &new_x)?;
         let mut chain = Fp2Chain::new();
         chain.add_neg_term(&self.y);
-        println!("ololo3");
         let new_y = Fp2::mul_with_chain(cs, &lambda, &this_x_minus_new_x, chain)?;
 
         let new = Self { x: new_x, y: new_y };
@@ -798,6 +872,7 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as Gen
         let mut chain = Fp2Chain::new();
         chain.add_neg_term(&self.y);
         let new_y = Fp2::mul_with_chain(cs, &t1, &new_x_minus_x, chain)?;
+        println!("HERE");
 
         let new = Self { x: new_x, y: new_y };
         Ok(new)
@@ -847,93 +922,214 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as Gen
         let new = Self { x: new_x, y: new_y };
         Ok(new)
     }
+
+    #[track_caller]
+    pub fn conditionally_select<CS: ConstraintSystem<E>>(
+        cs: &mut CS, flag: &Boolean, first: &Self, second: &Self
+    ) -> Result<Self, SynthesisError> {
+        let x = Fp2::conditionally_select(cs, &flag, &first.x, &second.x)?;
+        let y = Fp2::conditionally_select(cs, &flag, &first.y, &second.y)?;
+        Ok(AffinePointExt {x, y})
+    }
 }
 
 
 // we are particularly interested in three curves: secp256k1, bn256 and bls12-281
 // unfortunately, only bls12-381 has a cofactor
-// impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand, T: Extension2Params<G::Base>> AffinePoint<'a, E, G, T> 
-// where <G as GenericCurveAffine>::Base: PrimeField 
-// {
-//     #[track_caller]
-//     pub fn mul_by_scalar_for_composite_order_curve<CS: ConstraintSystem<E>>(
-//         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
-//     ) -> Result<Self, SynthesisError> {
-//         if let Some(value) = scalar.get_field_value() {
-//             assert!(!value.is_zero(), "can not multiply by zero in the current approach");
-//         }
-//         if scalar.is_constant() {
-//             unimplemented!();
-//         }
+impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand, T: Extension2Params<G::Base>> AffinePoint<'a, E, G, T> 
+where <G as GenericCurveAffine>::Base: PrimeField 
+{
+    #[track_caller]
+    pub fn mul_by_scalar_for_composite_order_curve<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
+    ) -> Result<Self, SynthesisError> {
+        if let Some(value) = scalar.get_field_value() {
+            assert!(!value.is_zero(), "can not multiply by zero in the current approach");
+        }
+        if scalar.is_constant() {
+            unimplemented!();
+        }
         
-//         let circuit_params = self.circuit_params;
-//         let mut entries = scalar.decompose_into_binary_representation(cs, None)?;
+        let circuit_params = self.circuit_params;
+        let scalar_decomposition = scalar.decompose_into_binary_representation(cs, None)?;
 
-//         let offset_generator = AffinePointExt::constant(
-//             circuit_params.fp2_generator_x_c0, circuit_params.fp2_generator_x_c1,
-//             circuit_params.fp2_generator_y_c0, circuit_params.fp2_generator_y_c1,
-//             circuit_params
-//         );
-//         let mut acc = offset_generator.add_unequal_unchecked(cs, &AffinePointExt::from(self.clone()))?;
+        let offset_generator = AffinePointExt::constant(
+            circuit_params.fp2_generator_x_c0, circuit_params.fp2_generator_x_c1,
+            circuit_params.fp2_generator_y_c0, circuit_params.fp2_generator_y_c1,
+            circuit_params
+        );
+        let mut acc = offset_generator.add_unequal_unchecked(cs, &AffinePointExt::from(self.clone()))?;
+        let mut y_negated = self.get_y().negate(cs)?;
+        y_negated.reduce(cs)?;
+        let num_of_doubles = scalar_decomposition[1..].len();
+      
+        for bit in scalar_decomposition[1..].into_iter().rev() {
+            let selected_y = FieldElement::conditionally_select(cs, &bit, &self.y, &y_negated)?;
+            let mut tmp = AffinePointExt::from(
+                unsafe { AffinePoint::from_xy_unchecked(self.x.clone(), selected_y, circuit_params) }
+            );
+            acc = acc.double_and_add_unchecked(cs, &mut tmp)?;
+        }
 
-//         let mut num_doubles = 0;
-//         let x = self.x.clone();
-//         let mut minus_y = self.y.negate(cs)?;
-//         minus_y.reduce(cs)?;
-//         println!("HERE");
+        let with_skew = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(self.clone()))?;
+        let flag = scalar_decomposition.first().unwrap();
+        acc = AffinePointExt::conditionally_select(cs, flag, &acc, &with_skew)?;
+        
+        let mut scaled_offset = offset_generator;
+        for _ in 0..num_of_doubles {
+            scaled_offset = scaled_offset.double(cs)?;
+        }
+        acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?;
 
-//         for e in entries[1..].iter().rev() {
-//             let selected_y = FieldElement::conditionally_select(cs, e, &minus_y, &self.y)?;  
-//             let t_value = match (self.value, e.get_value()) {
-//                 (Some(val), Some(bit)) => {
-//                     let mut val = val;
-//                     if bit {
-//                         val.negate();
-//                     }
-//                     Some(val)
-//                 },
-//                 _ => None
-//             };
-//             let t = Self {
-//                 x: x.clone(),
-//                 y: selected_y,
-//                 value: t_value,
-//                 is_in_subgroup: self.is_in_subgroup,
-//                 circuit_params
-//             };
+        let final_x = acc.get_x().c0;
+        let final_y = acc.get_y().c0;
+        let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
+            G::from_xy_checked(x, y).expect("should be on the curve")
+        }); 
+        // let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
+        //     G::from_xy_unchecked(x, y)
+        // });
 
-//             acc = acc.double_and_add_unchecked(cs, &t.into())?;
-//             num_doubles += 1;
-//         }
+       let result = AffinePoint { 
+            x: final_x, 
+            y: final_y, 
+            value: final_value, 
+            is_in_subgroup: self.is_in_subgroup, 
+            circuit_params: self.circuit_params 
+        };
+        Ok(result)
+    }
 
-//         // let mut scaled_offset = offset_generator.clone();
-//         // for _ in 0..num_doubles {
-//         //     scaled_offset = scaled_offset.double(cs)?;
-//         // }
-//         //acc = acc.sub_unequal_unchecked(cs, &mut offset)?;
+    #[track_caller]
+    pub fn mul_by_scalar_for_composite_order_curve_with_endo<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
+    ) -> Result<Self, SynthesisError> {
+        if let Some(value) = scalar.get_field_value() {
+            assert!(!value.is_zero(), "can not multiply by zero in the current approach");
+        }
+        if scalar.is_constant() {
+            unimplemented!();
+        }
 
-//         let with_skew = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(self.clone()))?;
-//         let flag = entries.first().unwrap();
-//         let final_x = FieldElement::conditionally_select(cs, flag, &with_skew.x.c0, &acc.x.c0)?;
-//         let final_y = FieldElement::conditionally_select(cs, flag, &with_skew.y.c0, &acc.y.c0)?;
+        let params = self.circuit_params;
+        let scalar_rns_params = &params.scalar_field_rns_params;
+        let base_rns_params = &params.base_field_rns_params;
 
-//         // let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
-//         //     G::from_xy_checked(x, y).expect("should be on the curve")
-//         // }); 
-//         let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
-//             G::from_xy_unchecked(x, y)
-//         });
+        let limit = params.get_endomorphism_bitlen_limit();
+        let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
+            Some(x) => {
+                let dcmp = params.calculate_decomposition(x);
+                (Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus))
+            },
+            None => (None, None, None, None)
+        };
+        let mut k1_abs = FieldElement::alloc_for_known_bitwidth(cs, k1_abs_wit, limit, scalar_rns_params, true)?;
+        let mut k2_abs = FieldElement::alloc_for_known_bitwidth(cs, k2_abs_wit, limit, scalar_rns_params, true)?;
+        let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
+        let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
 
-//        let result = AffinePoint { 
-//             x: final_x, 
-//             y: final_y, 
-//             value: final_value, 
-//             is_in_subgroup: self.is_in_subgroup, 
-//             circuit_params: self.circuit_params 
-//         };
-//         Ok(result)
-//     }
-// }
+        // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
+        let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
+        let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
+        let mut chain = FieldElementsChain::new();
+        chain.add_pos_term(&k1).add_neg_term(&scalar);
+        let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
+        FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
+
+        let mut point = self.conditionally_negate(cs, &k1_is_negative_flag)?;
+        let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+        let x_endo = point.get_x().mul(cs, &beta)?;
+        let y_endo = self.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
+        let mut point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
+
+        let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
+        let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
+        let point_minus_point_endo = point.sub_unequal_unchecked(cs, &mut point_endo)?;
+        let point_plus_point_endo = point.add_unequal_unchecked(cs, &point_endo)?;
+       
+        let offset_generator = AffinePointExt::constant(
+            params.fp2_generator_x_c0, params.fp2_generator_x_c1,
+            params.fp2_generator_y_c0, params.fp2_generator_y_c1,
+            params
+        );
+        let mut acc = offset_generator.add_unequal_unchecked(
+            cs, &AffinePointExt::from(point_plus_point_endo.clone())
+        )?;
+        let num_of_doubles = k1_decomposition[1..].len();
+        let iter = k1_decomposition[1..].into_iter().zip(k2_decomposition[1..].into_iter()).rev();
+
+        for (k1_bit, k2_bit) in iter {
+            // selection tree looks like following:
+            //                              
+            //                         |true --- P + Q
+            //         |true---k2_bit--|
+            //         |               |false --- P - Q
+            // k1_bit--|
+            //         |        
+            //         |                |true --- -P + Q
+            //         |false---k2_bit--|
+            //                          |false --- -P - Q
+            //
+            // hence:
+            // res.X = select(k1_bit ^ k2_bit, P-Q.X, P+Q.X)
+            // tmp.Y = select(k1_bit ^ k2_bit, P-Q.Y, P+Q.Y)
+            // res.Y = conditionally_negate(!k1, tmp.Y)
+            let xor_flag = Boolean::xor(cs, &k1_bit, &k2_bit)?;
+            let selected_x = FieldElement:: conditionally_select(
+                cs, &xor_flag, &point_minus_point_endo.get_x(), &point_plus_point_endo.get_x()
+            )?;
+            let tmp_y = FieldElement::conditionally_select(
+                cs, &xor_flag, &point_minus_point_endo.get_y(), &point_plus_point_endo.get_y()
+            )?;
+            let selected_y = tmp_y.conditionally_negate(cs, &k1_bit.not())?;
+            let mut tmp = AffinePointExt::from(
+                unsafe { AffinePoint::from_xy_unchecked(selected_x, selected_y, params) }
+            );
+            acc = acc.double_and_add_unchecked(cs, &mut tmp)?;
+        }
+
+        // we subtract either O, or P, or Q or P + Q
+        // selection tree in this case looks like following:
+        //                              
+        //                         |true --- O
+        //         |true---k2_bit--|
+        //         |               |false --- Q
+        // k1_bit--|
+        //         |        
+        //         |                |true --- P
+        //         |false---k2_bit--|
+        //                          |false --- P+Q
+        //
+        let k1_bit = k1_decomposition.first().unwrap();
+        let k2_bit = k2_decomposition.first().unwrap();
+        let acc_is_unchanged = Boolean::and(cs, &k1_bit, &k2_bit)?; 
+        let mut tmp = AffinePoint::conditionally_select(cs, &k2_bit, &point, &point_plus_point_endo)?;
+        tmp = AffinePoint::conditionally_select(cs, &k1_bit, &point_endo, &tmp)?;
+        let skew_acc = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(tmp))?;
+        acc = AffinePointExt::conditionally_select(cs, &acc_is_unchanged, &acc, &skew_acc)?;
+       
+        let mut scaled_offset = offset_generator;
+        for _ in 0..num_of_doubles {
+            scaled_offset = scaled_offset.double(cs)?;
+        }
+        acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?; 
+
+        let final_x = acc.get_x().c0;
+        let final_y = acc.get_y().c0;
+        let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
+            G::from_xy_checked(x, y).expect("should be on the curve")
+        }); 
+
+       let result = AffinePoint { 
+            x: final_x, 
+            y: final_y, 
+            value: final_value, 
+            is_in_subgroup: self.is_in_subgroup, 
+            circuit_params: self.circuit_params 
+        };
+        Ok(result)
+    }
+}
 
 
 impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> AffinePoint<'a, E, G, T> 
@@ -1028,28 +1224,19 @@ where <G as GenericCurveAffine>::Base: PrimeField {
         let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
         let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
 
-        println!("HERE");
-        
         // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
         let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
-        println!("HERE0");
         let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
-        println!("HERE1");
         let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&k1).add_neg_term(&scalar);
         let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
         FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
 
-
-        println!("HERE32");
-        
         let mut point = self.conditionally_negate(cs, &k1_is_negative_flag)?;
         let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
         let x_endo = point.get_x().mul(cs, &beta)?;
-        let y_endo = point.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
+        let y_endo = self.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
         let mut point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
-
-        println!("HERE2");
 
         let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
         let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
@@ -1105,7 +1292,7 @@ where <G as GenericCurveAffine>::Base: PrimeField {
                     cs, &k2_bit, &ProjectivePoint::zero(params), &ProjectivePoint::from(point_endo.clone())
                 )?;
                 let tmp1 = ProjectivePoint::from(AffinePoint::conditionally_select(
-                    cs, &k2_bit, &self, &point_plus_point_endo
+                    cs, &k2_bit, &point, &point_plus_point_endo
                 )?);
                 let mut point_to_sub = ProjectivePoint::conditionally_select(cs, &k1_bit, &tmp0, &tmp1)?;
                 acc = acc.sub(cs, &mut point_to_sub)?;
@@ -1114,194 +1301,6 @@ where <G as GenericCurveAffine>::Base: PrimeField {
         
         Ok(acc)
     }
-
-    // pub fn mul_by_scalar_for_prime_order_curve_with_endomorphism<CS: ConstraintSystem<E>>(
-    //     &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>
-    // ) -> Result<ProjectivePoint<'a, E, G, T>, SynthesisError> {
-    //     let params = self.circuit_params;
-    //     let scalar_rns_params = &params.scalar_field_rns_params;
-    //     let base_rns_params = &params.base_field_rns_params;
-
-    //     let limit = params.get_endomorphism_bitlen_limit();
-    //     let (k1_wit, k2_wit) = scalar.get_value().map(|x| params.calculate_decomposition(x)).unzip();
-    //     let k1 = FieldElement::<E, G::Scalar>::alloc_for_known_bitlen(cs, k1_wit, limit);
-    //     let k2 = FieldElement::<E, G::Scalar>::alloc_for_known_bitlen(cs, k2_wit, limit);
-        
-    //     // constraint that that scalar = k1 + lambda * k2
-    //     let mut chain = FieldElementsChain::new();
-    //     chain.add_pos_term(&k1).add_neg_term(&scalar);
-    //     let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
-    //     FieldElement::constraint_fma(cs, &k2, &lambda, &chain)?;
-        
-    //     let beta = FieldElement::constant(params.beta.clone(), scalar_rns_params);
-    //     let x_mul_beta = self.get_x().mul(cs, &beta)?;
-    //     let y_negated = self.get_y().negate(cs)?;
-    //     let point_endo = unsafe { AffinePoint::from_xy_unchecked(x_mul_beta, y_negated, base_rns_params) };
-
-    //     let k1_decomposition = k1.decompose_into_binary_representation(cs)?;
-    //     let k2_decomposition = k2.decompose_into_binary_representation(cs)?;
-    //     let point_plus_point_endo = self.add_unequal_unchecked(cs, &point_endo)?;
-
-    //     let point_negated = AffinePoint::negate(&self, cs)?;
-    //     let bit = scalar_decomposition[0];
-    //     let mut acc = ProjectivePoint::<E, G, T>::conditionally_select(
-    //         cs, &bit, &ProjectivePoint::zero(params), &ProjectivePoint::<E, G, T>::from(point_negated)
-    //     )?;
-    //     let mut tmp : AffinePoint<_, _, _> = self.clone();
-        
-    //     for (_is_first, is_last, bit) in scalar_decomposition[1..].into_iter().identify_first_last() {
-    //         let mut to_add = tmp.conditionally_negate(cs, &bit.not())?;
-    //         acc = acc.add_mixed(cs, &mut to_add)?;
-    //         if !is_last {   
-    //             tmp = AffinePoint::double(&tmp, cs)?;
-    //         }
-    //     }
-        
-    //     Ok(acc)
-    // }
-
-    //     let mut acc = ProjectivePoint::<E, G, T>::zero(params);
-    //     let mut tmp : AffinePoint<E, G, T> = self.clone();
-
-    //     for (k1_bit, k2_bit) in k1_decomposition.into_iter().zip(k2_decomposition.into_iter()) {
-    //         let tmp0 = AffinePoint::conditionally_select()
-    //         let added = acc.add_mixed(cs, &mut tmp)?;
-    //         acc = ProjectivePoint::conditionally_select(cs, &bit, &added, &acc)?;
-    //         tmp = AffinePoint::double(&tmp, cs)?;
-    //     }
-    // //     let entries_2 = decompose_allocated_num_into_skewed_table(cs, &v_2, bit_limit)?;
-
-   
-    // //     let mut minus_one = E::Fr::one();
-    // //     minus_one.negate();
-    // //     let (k1, k2) = endomorphism_params.calculate_decomposition_num(cs, *scalar);
-
-    // //     // k = k1 - lambda * k2
-    // //     // lambda * k2 + k - k1 = 0
-  
-
-    // //     let v_1 = k1.get_variable();
-    // //     let v_2 = k2.get_variable();
-
-   
-
-    // //     let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log_proj::<E>(
-    // //         &crate::constants::MULTIEXP_DST[..], 
-    // //         1
-    // //     )[0];
-
-    // //     let generator = Self::constant(offset_generator, params);
-
-    // //     let (mut acc_1, (_, _)) = self.clone().add_unequal(cs, generator.clone())?;
-
-    // //     let mut x_1 = self.clone().x;
-    // //     let y_1 = self.clone().y;
-
-    // //     let mut x_2 = q_endo.clone().x;
-    // //     let y_2 = q_endo.clone().y;
-
-    // //     let entries_1_without_first_and_last = &entries_1[1..(entries_1.len() - 1)];
-    // //     let entries_1_without_first_and_last_vec: Vec<_> = entries_1_without_first_and_last.iter().collect(); 
-    // //     let entries_2_without_first_and_last = &entries_2[1..(entries_2.len() - 1)];
-    // //     let entries_2_without_first_and_last_vec: Vec<_> = entries_2_without_first_and_last.into_iter().collect(); 
-
-    // //     let mut num_doubles = 0;
-
-    // //     let (minus_y_1, y_1) = y_1.negated(cs)?;
-    // //     let (minus_y_2, y_2) = y_2.negated(cs)?;
-
-    // //     let (mut acc, (_, _)) = acc_1.add_unequal(cs, q_endo.clone())?;
-    // //     let bit_window = (2 as u64).pow(window as u32) - 1;
-
-    // //     //precompute 
-    // //     use plonk::circuit::curve::point_ram::Memory;
-    // //     use plonk::circuit::hashes_with_tables::utils::u64_to_ff;
-    // //     let mut memory =  Memory::new();
-    // //     let mut count = 0 as u64;
-    // //     for i in 0..bit_window+1{
-    // //         let (d_k, number) = vec_of_bit(i as usize, window);
-    // //         let is_ne_flag = sign_i64(number);
-    // //         let unsign_nuber = i64::abs(number);
-    // //         let q_point = self.clone();
-    // //         let (mut r_point, _) = q_point.clone().double(cs)?;
-
-    // //         if unsign_nuber >2{
-    // //             for i in 0..unsign_nuber-1{
-    // //                 (r_point, _) = r_point.add_unequal(cs, q_point.clone())?;
-    // //             }
-    // //         }
-
-    // //         let y = r_point.y.clone();
-    // //         let (minus_y, y) = y.negated(cs)?;
-    // //         let (selected_y, _) = FieldElement::select(cs, &is_ne_flag, minus_y.clone(), y.clone())?;  
-  
-    // //         let r_value = match (r_point.get_value(), is_ne_flag.get_value()) {
-    // //             (Some(val), Some(bit)) => {
-    // //                 let mut val = val;
-    // //                 if bit {
-    // //                     val.negate();
-    // //                 }
-
-    // //                 Some(val)
-    // //             },
-    // //             _ => None
-    // //         };
-
-    // //         let r = Self {
-    // //             x: r_point.x,
-    // //             y: selected_y,
-    // //             value: r_value
-    // //         };
-
-    // //         for j in 0..bit_window+1{
-    // //             let (d_m, number) = vec_of_bit(j as usize, window);
-    // //             let is_ne_flag = sign_i64(number);
-    // //             let unsign_nuber = i64::abs(number);
-    // //             let q_point = q_endo.clone();
-    // //             let (mut endo_point, _) = q_point.clone().double(cs)?;
-    
-    // //             if unsign_nuber >2{
-    // //                 for i in 0..unsign_nuber-1{
-    // //                     (endo_point, _) = endo_point.add_unequal(cs, q_point.clone())?;
-    // //                 }
-    // //             }
-
-    // //             let y = endo_point.y.clone();
-    // //             let (minus_y, y) = y.negated(cs)?;
-    // //             let (selected_y, _) = FieldElement::select(cs, &is_ne_flag, minus_y.clone(), y.clone())?;  
-      
-    // //             let endo_value = match (endo_point.get_value(), is_ne_flag.get_value()) {
-    // //                 (Some(val), Some(bit)) => {
-    // //                     let mut val = val;
-    // //                     if bit {
-    // //                         val.negate();
-    // //                     }
-    
-    // //                     Some(val)
-    // //                 },
-    // //                 _ => None
-    // //             };
-    
-    // //             let endo = Self {
-    // //                 x: endo_point.x,
-    // //                 y: selected_y,
-    // //                 value: endo_value
-    // //             };
-
-    //     let scalar_decomposition = scalar.decompose_into_binary_representation(cs)?;
-
-    //     // TODO: use standard double-add algorithm for now, optimize later
-    //     let mut acc = ProjectivePoint::<E, G, T>::zero(params);
-    //     let mut tmp : AffinePoint<E, G, T> = self.clone();
-
-    //     for bit in scalar_decomposition.into_iter() {
-    //         let added = acc.add_mixed(cs, &mut tmp)?;
-    //         acc = ProjectivePoint::conditionally_select(cs, &bit, &added, &acc)?;
-    //         tmp = AffinePoint::double(&tmp, cs)?;
-    //     }
-        
-    //     Ok(acc)
-    // }
 }
 
 
@@ -1379,11 +1378,10 @@ mod test {
             let naive_mul_start = cs.get_current_step_number();
 
             let mut result = if self.use_projective {
-                let result = a.mul_by_scalar_for_prime_order_curve_endo(cs, &mut scalar)?;
-                let mut result = unsafe { result.convert_to_affine(cs)? };
-                result 
+                let result = a.mul_by_scalar_for_composite_order_curve_with_endo(cs, &mut scalar)?;
+                result
             } else {
-                let result = a.mul_by_scalar_for_prime_order_curve(cs, &mut scalar)?;
+                let result = a.mul_by_scalar_for_prime_order_curve_endo(cs, &mut scalar)?;
                 let mut result = unsafe { result.convert_to_affine(cs)? };
                 result 
             };

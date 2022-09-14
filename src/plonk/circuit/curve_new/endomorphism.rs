@@ -101,46 +101,46 @@ use crate::plonk::circuit::bigint::bigint::*;
 
 
 
-// // # Decomposition of the scalar k in two scalars k1 and k2 with half bit-length, such that k=k1+k2*THETA (mod p)
-// // # param theta is a root of the characteristic polynomial of an endomorphism of the curve
-// // def endomorphism_params_calc(theta, n):
-// //     bound = n.isqrt()
-// //     u = n
-// //     v = theta
-// //     x1 = 1 
-// //     y1 = 0
-// //     x2 = 0
-// //     y2 = 1
-// //     while True:
-// //         q = int(v/u)
-// //         r = v - q*u 
-// //         x = x2 - q*x1
-// //         y = y2 - q*y1
-// //         v = u
-// //         u = r
-// //         x2 = x1
-// //         x1 = x
-// //         y2 = y1
-// //         y1 = y
-// //         if r < bound:
-// //             a1= r 
-// //             b1 = -y1
-// //             r_l = x2 * n + y2 * theta
-// //             t_l = y2
-// //             q = int(v/u)
-// //             r_l2 = v - q*u 
-// //             x_l2 = x2 - q*x1
-// //             y_l2 = y2 - q*y1
-// //             if r_l^2 + t_l^2 <= r_l2^2 + y_l2^2:
-// //                 a2 = r_l,
-// //                 b2 = -t_l
-// //             else:
-// //                 a2 = r_l2
-// //                 b2 = -y_l2
-// //             return (a1, b1, a2, b2)
+// # Decomposition of the scalar k in two scalars k1 and k2 with half bit-length, such that k=k1+k2*THETA (mod p)
+// # param theta is a root of the characteristic polynomial of an endomorphism of the curve
+// def endomorphism_params_calc(theta, n):
+//     bound = n.isqrt()
+//     u = n
+//     v = theta
+//     x1 = 1 
+//     y1 = 0
+//     x2 = 0
+//     y2 = 1
+//     while True:
+//         q = int(v/u)
+//         r = v - q*u 
+//         x = x2 - q*x1
+//         y = y2 - q*y1
+//         v = u
+//         u = r
+//         x2 = x1
+//         x1 = x
+//         y2 = y1
+//         y1 = y
+//         if r < bound:
+//             a1= r 
+//             b1 = -y1
+//             r_l = x2 * n + y2 * theta
+//             t_l = y2
+//             q = int(v/u)
+//             r_l2 = v - q*u 
+//             x_l2 = x2 - q*x1
+//             y_l2 = y2 - q*y1
+//             if r_l^2 + t_l^2 <= r_l2^2 + y_l2^2:
+//                 a2 = r_l,
+//                 b2 = -t_l
+//             else:
+//                 a2 = r_l2
+//                 b2 = -y_l2
+//             return (a1, b1, a2, b2)
             
             
 
-// // n = 1461501637330902918203687013445034429194588307251
-// // theta = 903860042511079968555273866340564498116022318806
-// // print endomorphism_params_calc(theta, n)
+// n = 1461501637330902918203687013445034429194588307251
+// theta = 903860042511079968555273866340564498116022318806
+// print endomorphism_params_calc(theta, n)

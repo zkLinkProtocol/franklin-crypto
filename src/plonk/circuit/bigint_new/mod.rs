@@ -89,6 +89,13 @@ pub enum RangeConstraintStrategy {
 }
 
 impl RangeConstraintStrategy {
+    pub fn is_table_based_strategy(&self) -> bool {
+        match self {
+            RangeConstraintStrategy::WithBitwiseOpTable(_) => true,
+            _ => false
+        }
+    }
+
     pub fn get_range_check_granularity(&self) -> usize {
         match self {
             RangeConstraintStrategy::NaiveSingleBit => 1,

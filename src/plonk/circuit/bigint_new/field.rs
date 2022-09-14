@@ -961,12 +961,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         let mut const_constituent_chunks = Vec::with_capacity(params.num_binary_limbs);
         let mut tmp = multiples_to_add_at_least.clone();
-        println!("max val: {}", max_val);
 
         for (_is_first, is_last, limb) in limbs_max_vals.into_iter().identify_first_last() {
             if !is_last { 
-                // it could be buggy for small values, so better to rewrite this algo
-                let bitlen = limb.bits();
+                let bitlen = std::cmp::max(limb.bits(), params.binary_limb_width as u64);
                 let modulus = BigUint::one() << bitlen;
                 let rem = tmp.clone() % modulus.clone();
                 if rem >= limb {
@@ -983,7 +981,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             } else { 
                 const_constituent_chunks.push(tmp.clone());
             };
-            println!("CYCLE");
         }
 
         (multiples_to_add_at_least, const_constituent_chunks)
@@ -1088,8 +1085,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let params = self.representation_params;
         assert!(Self::check_params_equivalence(self, other));
 
-        println!("INSIDE SUB");
-
         if self.is_constant() && other.is_constant() {
             let tmp = self.get_field_value().sub(&other.get_field_value());
             let new = Self::constant(tmp.unwrap(), params);
@@ -1103,13 +1098,11 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             return Ok(result);
         }
 
-        println!("DEBUG");
         // now we can determine how many moduluses of the represented field we have to add to never underflow
         let max_val = other.get_maximal_possible_stored_value();
         let limbs_max_vals = other.binary_limbs.iter().map(|x| x.max_value()).collect::<Vec<BigUint>>();
         let (multiples_to_add_at_least, const_constituent_chunks) = Self::subtraction_helper(max_val, limbs_max_vals, params);
         
-        println!("AFTER SUB HELPER");
         // create new limbs
         let mut new_binary_limbs = vec![];
         let iter = itertools::multizip((&self.binary_limbs, &other.binary_limbs, const_constituent_chunks));
@@ -1141,8 +1134,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             representation_params: params,
             reduction_status: ReductionStatus::Unreduced
         };
-
-        println!("INSIDE SUB END");
 
         if cfg!(debug_assertions) {
             new.debug_check_value_coherency();

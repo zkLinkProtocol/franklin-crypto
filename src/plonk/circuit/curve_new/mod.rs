@@ -7,5 +7,5 @@ pub use self::sw_projective::*;
 pub mod secp256k1;
 pub use self::secp256k1::*;
 
-// pub mod endomorphism;
-// pub use endomorphism::*;
+pub mod point_selection_tree;
+pub use self::point_selection_tree::*;

@@ -255,36 +255,6 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         FieldElement::constraint_fma(cs, &a, &b, subchain)
     }
 
-    pub fn mul_with_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, first: &Self, second: &Self, chain: Fp2Chain<'a, E, F, T>
-    ) -> Result<Self, SynthesisError> {
-         // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.16
-        // for a = a0 + u * a1 and b = b0 + u * b1 compute a * b = c0 + u * c1 [\beta = u^2]
-        // 1) v0 = a0 * b0
-        // 2) v1 = a1 * b1
-        // 3) c0 = v0 + \beta * v1 = v0 - v1
-        // 4) c1 = (a0 + a1) * (b0 + b1) - v0 - v1
-        // in our case c0 = c0_prev + subchain 
-        let v0 = first.c0.mul(cs, &second.c0)?;
-        let v1 = first.c1.mul(cs, &second.c1)?;
-       
-        // TODO: this only works for \beta = -1 (we test only BN curve for now)
-        let mut subchain = chain.get_coordinate_subchain(0);
-        subchain.add_pos_term(&v0);
-        subchain.add_neg_term(&v1);
-        let c0 = FieldElement::linear_combination(cs, subchain)?;
-        println!("computed faulty c0");
-
-        let a = first.c0.add(cs, &first.c1)?;
-        let b = second.c0.add(cs, &second.c1)?;
-        let mut subchain = chain.get_coordinate_subchain(1);
-        subchain.add_neg_term(&v0);
-        subchain.add_neg_term(&v1);
-        let c1 = FieldElement::mul_with_chain(cs, &a, &b, subchain)?;
-        
-        Ok(Self::from_coordinates(c0, c1))
-    }
-
     // pub fn mul_with_chain<CS: ConstraintSystem<E>>(
     //     cs: &mut CS, first: &Self, second: &Self, chain: Fp2Chain<'a, E, F, T>
     // ) -> Result<Self, SynthesisError> {
@@ -295,30 +265,62 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
     //     // 3) c0 = v0 + \beta * v1 = v0 - v1
     //     // 4) c1 = (a0 + a1) * (b0 + b1) - v0 - v1
     //     // in our case c0 = c0_prev + subchain 
-    //     //let v0 = c0 + v1 - chain, c1 = -c0 - v1 + chain
+    //     let params = first.c0.representation_params;
+    //     let v0 = first.c0.mul(cs, &second.c0)?;
     //     let v1 = first.c1.mul(cs, &second.c1)?;
        
     //     // TODO: this only works for \beta = -1 (we test only BN curve for now)
     //     let mut subchain = chain.get_coordinate_subchain(0);
-    //     //subchain.add_pos_term(&v0);
+    //     subchain.add_pos_term(&v0);
     //     subchain.add_neg_term(&v1);
-    //     let mut c0 = FieldElement::mul_with_chain(cs, &first.c0, &second.c0, subchain)?;
+    //     let c0 = FieldElement::mul_with_chain(
+    //         cs, &FieldElement::zero(params), &FieldElement::zero(params), subchain
+    //     )?;
 
     //     let a = first.c0.add(cs, &first.c1)?;
     //     let b = second.c0.add(cs, &second.c1)?;
     //     let mut subchain = chain.get_coordinate_subchain(1);
-    //     subchain.add_neg_term(&c0);
-    //     let x = v1.double(cs)?;
-    //     subchain.add_neg_term(&x);
-    //     for elem in chain.get_coordinate_subchain(0).elems_to_add.iter() {
-    //         subchain.add_pos_term(elem);
-    //     }
-    //     for elem in chain.get_coordinate_subchain(0).elems_to_sub.iter() {
-    //         subchain.add_neg_term(elem);
-    //     }
+    //     subchain.add_neg_term(&v0);
+    //     subchain.add_neg_term(&v1);
     //     let c1 = FieldElement::mul_with_chain(cs, &a, &b, subchain)?;
+        
     //     Ok(Self::from_coordinates(c0, c1))
     // }
+
+    pub fn mul_with_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, first: &Self, second: &Self, chain: Fp2Chain<'a, E, F, T>
+    ) -> Result<Self, SynthesisError> {
+         // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.16
+        // for a = a0 + u * a1 and b = b0 + u * b1 compute a * b = c0 + u * c1 [\beta = u^2]
+        // 1) v0 = a0 * b0
+        // 2) v1 = a1 * b1
+        // 3) c0 = v0 + \beta * v1 = v0 - v1
+        // 4) c1 = (a0 + a1) * (b0 + b1) - v0 - v1
+        // in our case c0 = c0_prev + subchain 
+        //let v0 = c0 + v1 - chain, c1 = -c0 - v1 + chain
+        let v1 = first.c1.mul(cs, &second.c1)?;
+       
+        // TODO: this only works for \beta = -1 (we test only BN curve for now)
+        let mut subchain = chain.get_coordinate_subchain(0);
+        //subchain.add_pos_term(&v0);
+        subchain.add_neg_term(&v1);
+        let mut c0 = FieldElement::mul_with_chain(cs, &first.c0, &second.c0, subchain)?;
+
+        let a = first.c0.add(cs, &first.c1)?;
+        let b = second.c0.add(cs, &second.c1)?;
+        let mut subchain = chain.get_coordinate_subchain(1);
+        subchain.add_neg_term(&c0);
+        let x = v1.double(cs)?;
+        subchain.add_neg_term(&x);
+        for elem in chain.get_coordinate_subchain(0).elems_to_add.iter() {
+            subchain.add_pos_term(elem);
+        }
+        for elem in chain.get_coordinate_subchain(0).elems_to_sub.iter() {
+            subchain.add_neg_term(elem);
+        }
+        let c1 = FieldElement::mul_with_chain(cs, &a, &b, subchain)?;
+        Ok(Self::from_coordinates(c0, c1))
+    }
  
     // pub fn mul_with_chain<CS: ConstraintSystem<E>>(
     //     cs: &mut CS, a: &Self, b: &Self, mut chain: Fp2Chain<'a, E, F, T>
@@ -370,9 +372,6 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
     pub fn square_with_chain<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, chain: Fp2Chain<'a, E, F, T>
     ) -> Result<Self, SynthesisError> {
-        if self.c1.get_field_value().unwrap().is_zero() {
-            println!("hit zero");
-        }
         // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.17
         // input: a = a0 + u * a1; output: a^2
         // 1) c1 = 2 * a0 * a1

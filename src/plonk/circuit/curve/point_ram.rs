@@ -589,7 +589,7 @@ where
     }
 
 
-    pub fn ram_permutation_entry_point<CS: ConstraintSystem<E>,     R: CircuitArithmeticRoundFunction<E, 2, 3, StateElement = Num<E>>>(&self, cs: &mut CS, round_function: &R) -> Result<(), SynthesisError>{
+    pub fn ram_permutation_entry_point<CS: ConstraintSystem<E>, R: CircuitArithmeticRoundFunction<E, 2, 3, StateElement = Num<E>>>(&self, cs: &mut CS, round_function: &R) -> Result<(), SynthesisError>{
         
         let size = self.block.len();
         let permutation = Self::calculate_permutation(&self.block);
@@ -598,7 +598,6 @@ where
         } else {
             IntegerPermutation::new(size)
         };
-
         use plonk::circuit::bigint_new::compute_shifts;
         let shifts = compute_shifts::<E::Fr>();
         let mut original_values = vec![];
@@ -635,20 +634,20 @@ where
 
             }
             let value_low = lc_low.into_num(cs)?;
-            i=0;
-
             let mut lc_high = LinearCombination::zero();
+            i = 0;
             for l in chunk_x..x.len(){
                 lc_high.add_assign_number_with_coeff(&x[l].num, shifts[i]);
                 i+= iter.clone().next().unwrap();
             }
+
             let (odd_y, _) = value.clone().point_compression(cs)?;
             lc_high.add_assign_boolean_with_coeff(&odd_y, shifts[i]);  // point compression
             i+= 1;
-
             lc_high.add_assign_number_with_coeff(&addr, shifts[i]);
 
             let value_high = lc_high.into_num(cs)?;
+            dbg!(value_high);
             original_values.push(value);
             original_indexes.push(addr);
             unsorted_value_low.push(value_low);
@@ -882,18 +881,26 @@ where
 
         use plonk::circuit::utils::u64_to_fe;
         let mut lc_count = LinearCombination::<E>::zero(); 
-        let constanta = bit_window_decompose(window);
+        let bit_window = (2 as u64).pow(window as u32);
+        // let constanta = bit_window_decompose(window)*bit_window_decompose(window);
+        let constanta =  bit_window * bit_window-1;
         let constant = Num::Constant(u64_to_fe(constanta as u64));
+        dbg!(constant);
         lc_count.add_assign_number_with_coeff(&constant, E::Fr::one());
-        let mut pre_value_1 = packed_sorted_values.clone().into_iter().next().map(|el| el[0]).unwrap();
-        let mut pre_value_2 = packed_sorted_values.clone().into_iter().next().map(|el| el[1]).unwrap();
+        // let mut pre_value_1 = packed_sorted_values.clone().into_iter().next().map(|el| el[0]).unwrap();
+        // let mut pre_value_2 = packed_sorted_values.clone().into_iter().next().map(|el| el[1]).unwrap();
+        let mut pre_value_1 = packed_sorted_values.clone()[0][0];
+        let mut pre_value_2= packed_sorted_values.clone()[0][1];
         let mut minus_one = E::Fr::one();
+        println!("{:?}",         packed_sorted_values.len());
         minus_one.negate();
         for i in packed_sorted_values.into_iter(){
             let is_equal_1 = AllocatedNum::equals(cs, &pre_value_1, &i[0])?;
             let is_equal_2 = AllocatedNum::equals(cs, &pre_value_2, &i[1])?;
             let condition = Boolean::and(cs, &is_equal_1, &is_equal_2)?;
-            let count = Num::mask(cs, &Num::Constant(E::Fr::one()), &condition)?;
+            println!("{:?}", condition);
+            let count = Num::mask(cs, &Num::Constant(E::Fr::one()), &condition.not())?;
+            println!("{:?}", count);
             lc_count.add_assign_number_with_coeff(&count, minus_one);
             pre_value_1 = i[0];
             pre_value_2 = i[1];
@@ -964,7 +971,7 @@ mod test {
             let biguint = fe_to_biguint(&a_fr);
             ram.witness_map.insert(biguint, RefCell::new(a.clone())); 
         }
-        for j in 0..100{
+        for j in 0..1{
             let addres = array_addr[j];
             
             let _point = ram.read_and_alloc(&mut cs, addres, &params).unwrap();
@@ -1008,7 +1015,8 @@ mod test {
         for j in 0..100{
             let addres = array_addr[j];
             
-            let _point = ram.read_and_alloc(&mut cs, addres, &params).unwrap();
+            let point = ram.read_and_alloc(&mut cs, addres, &params).unwrap();
+            println!("{:?}", point);
             // assert_eq!(vec_verif[j].value.unwrap(), point.value.unwrap());
 
             

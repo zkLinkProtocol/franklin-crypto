@@ -1158,7 +1158,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
         let (minus_y, y) = y.negated(cs)?;
 
-        let mut x2 = q_endo.x.clone();
+        let x2 = q_endo.x.clone();
         let y2 = q_endo.y.clone();
         let this_value2 = q_endo.get_value();
 
@@ -1213,7 +1213,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             acc = new_acc;
             x = t.x;
         }
-        let (with_skew, (acc, this)) = acc.sub_unequal(cs, self.clone())?;
+        let (_with_skew, (acc, _this)) = acc.sub_unequal(cs, self.clone())?;
         let (with_skew, (acc, this)) = acc.sub_unequal(cs, q_endo.clone())?;
         let last_entry_1 = entries_1.last().unwrap();
         let last_entry_2 = entries_2.last().unwrap();
@@ -1308,15 +1308,19 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             let is_ne_flag = sign_i64(number);
             let unsign_nuber = i64::abs(number);
             let q_point = self.clone();
-            let (mut r_point, _) = q_point.clone().double(cs)?;
+            let mut r_point :AffinePoint<E, <E as Engine>::G1Affine>;
+            if unsign_nuber == 1 {
+                r_point = q_point.clone();
 
-            if unsign_nuber >2{
+            } else{
+                (r_point, _) = q_point.clone().double(cs)?;
+
                 for i in 0..unsign_nuber-2{
 
-                    (r_point, _) = r_point.add_unequal(cs, q_point.clone())?;
+                    (r_point, _) = r_point.double_and_add(cs, q_point.clone())?;
                 }
             }
-
+        
             let y = r_point.y.clone();
             let (minus_y, y) = y.negated(cs)?;
             let (selected_y, _) = FieldElement::select(cs, &is_ne_flag, minus_y.clone(), y.clone())?;  
@@ -1340,15 +1344,21 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             };
 
             for j in 0..bit_window{
-                let (d_m, number) = vec_of_bit(j as usize, window);
+                let (_, number) = vec_of_bit(j as usize, window);
                 let is_ne_flag = sign_i64(number);
                 let unsign_nuber = i64::abs(number);
                 let q_point = other.clone();
-                let (mut endo_point, _) = q_point.clone().double(cs)?;
+                let mut endo_point :AffinePoint<E, <E as Engine>::G1Affine>;
+
+                if unsign_nuber == 1 {
+                    endo_point = q_point.clone();
     
-                if unsign_nuber >2{
-                    for i in 0..unsign_nuber-1{
-                        (endo_point, _) = endo_point.add_unequal(cs, q_point.clone())?;
+                } else{
+                    (endo_point, _) = q_point.clone().double(cs)?;
+    
+                    for _ in 0..unsign_nuber-2{
+    
+                        (endo_point, _) = endo_point.double_and_add(cs, q_point.clone())?;
                     }
                 }
 
@@ -1391,12 +1401,16 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             let is_ne_flag = sign_i64(number);
             let unsign_nuber = i64::abs(number);
             let q_point = self.clone();
-            let (mut r_point, _) = q_point.clone().double(cs)?;
+            let mut r_point :AffinePoint<E, <E as Engine>::G1Affine>;
+            if unsign_nuber == 1 {
+                r_point = q_point.clone();
 
-            if unsign_nuber >2{
+            } else{
+                (r_point, _) = q_point.clone().double(cs)?;
+
                 for i in 0..unsign_nuber-2{
 
-                    (r_point, _) = r_point.add_unequal(cs, q_point.clone())?;
+                    (r_point, _) = r_point.double_and_add(cs, q_point.clone())?;
                 }
             }
 
@@ -1427,11 +1441,17 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
                 let is_ne_flag = sign_i64(number);
                 let unsign_nuber = i64::abs(number);
                 let q_point = other.clone();
-                let (mut endo_point, _) = q_point.clone().double(cs)?;
+                let mut endo_point :AffinePoint<E, <E as Engine>::G1Affine>;
+
+                if unsign_nuber == 1 {
+                    endo_point = q_point.clone();
     
-                if unsign_nuber >2{
-                    for i in 0..unsign_nuber-1{
-                        (endo_point, _) = endo_point.add_unequal(cs, q_point.clone())?;
+                } else{
+                    (endo_point, _) = q_point.clone().double(cs)?;
+    
+                    for _ in 0..unsign_nuber-2{
+    
+                        (endo_point, _) = endo_point.double_and_add(cs, q_point.clone())?;
                     }
                 }
 
@@ -1546,7 +1566,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
         let (minus_y, y) = y.negated(cs)?;
 
-        let mut x2 = q_endo.x.clone();
+        let x2 = q_endo.x.clone();
         let y2 = q_endo.y.clone();
         let this_value2 = q_endo.get_value();
 
@@ -1603,7 +1623,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             x = t.x;
         }
 
-        let (with_skew, (acc, this)) = acc.sub_unequal(cs, self.clone())?;
+        let (_with_skew, (acc, _this)) = acc.sub_unequal(cs, self.clone())?;
         let (with_skew, (acc, this)) = acc.sub_unequal(cs, q_endo.clone())?;
         let last_entry_1 = entries_1.last().unwrap();
         let last_entry_2 = entries_2.last().unwrap();
@@ -1723,7 +1743,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
         let (minus_y, y) = y.negated(cs)?;
 
-        let mut x2 = q_endo.x.clone();
+        let x2 = q_endo.x.clone();
         let y2 = q_endo.y.clone();
         let this_value2 = q_endo.get_value();
 
@@ -3833,7 +3853,7 @@ mod test {
 
             let endo_parameters = super::super::endomorphism::bn254_endomorphism_parameters();
 
-            let (result, a) = a.mul_split_scalar(&mut cs, &b, endo_parameters.clone(), 5).unwrap();
+            let (result, a) = a.mul_split_scalar(&mut cs, &b, endo_parameters.clone(), 2).unwrap();
 
             let result_recalculated = a_f.mul(b_f.into_repr()).into_affine();
 
@@ -3879,7 +3899,7 @@ mod test {
             if i == 0 {
                 crate::plonk::circuit::counter::reset_counter();
                 let base = cs.n();
-                let _ = a.mul_split_scalar(&mut cs, &b, endo_parameters, 5).unwrap();
+                let _ = a.mul_split_scalar(&mut cs, &b, endo_parameters, 2).unwrap();
                 println!("single multiplication taken {} gates", cs.n() - base);
                 println!(
                     "Affine spent {} gates in equality checks",

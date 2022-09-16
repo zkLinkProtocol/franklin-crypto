@@ -1397,7 +1397,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         let bit_window = (2 as u64).pow(window as u32);
         let mut count = 0 as u64;
         for i in 0..bit_window{
-            let (d_k, number) = vec_of_bit(i as usize, window);
+            let (_, number) = vec_of_bit(i as usize, window);
             let is_ne_flag = sign_i64(number);
             let unsign_nuber = i64::abs(number);
             let q_point = self.clone();
@@ -1408,7 +1408,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             } else{
                 (r_point, _) = q_point.clone().double(cs)?;
 
-                for i in 0..unsign_nuber-2{
+                for _ in 0..unsign_nuber-2{
 
                     (r_point, _) = r_point.double_and_add(cs, q_point.clone())?;
                 }
@@ -1437,7 +1437,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             };
 
             for j in 0..bit_window{
-                let (d_m, number) = vec_of_bit(j as usize, window);
+                let (_, number) = vec_of_bit(j as usize, window);
                 let is_ne_flag = sign_i64(number);
                 let unsign_nuber = i64::abs(number);
                 let q_point = other.clone();
@@ -1481,7 +1481,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
                 let number: E::Fr = u64_to_ff(count);
                 let address = Num::Variable(AllocatedNum::alloc(cs, || Ok(number))?);
-                memory.clone().block.push((address, c.clone()));
+                memory.block.push((address, c.clone()));
                 memory.insert_witness(address, c);
                 count+=1;
             }
@@ -1558,7 +1558,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             acc = new_acc;
             step += window;
         };
-        memory.waksman_permutation(cs, window)?;
+
 
         let mut x = self.x.clone();
         let y = self.y.clone();
@@ -1664,6 +1664,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
 
         let (result, _) = result.sub_unequal(cs, offset)?;
 
+        memory.waksman_permutation(cs, window)?;
         Ok((result, this))
 
     }
@@ -1800,7 +1801,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             x = t.x;
         }
 
-        let (with_skew, (acc, this)) = acc.sub_unequal(cs, self.clone())?;
+        let (_with_skew, (acc, _this)) = acc.sub_unequal(cs, self.clone())?;
         let (with_skew, (acc, this)) = acc.sub_unequal(cs, q_endo.clone())?;
         let last_entry_1 = entries_1.last().unwrap();
         let last_entry_2 = entries_2.last().unwrap();
@@ -3774,7 +3775,7 @@ mod test {
 
             let endo_parameters = super::super::endomorphism::bn254_endomorphism_parameters();
 
-            let result = a.clone().mul_split_scalar_2(&mut cs, &b, endo_parameters.clone(), 2);
+            let result = a.clone().mul_split_scalar_2(&mut cs, &b, endo_parameters.clone(), 3);
             println!("{:?}", result);
 
             // let result_recalculated = a_f.mul(b_f.into_repr()).into_affine();

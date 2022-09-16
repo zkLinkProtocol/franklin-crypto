@@ -884,22 +884,16 @@ where
         // let constanta = bit_window_decompose(window)*bit_window_decompose(window);
         let constanta =  bit_window * bit_window-1;
         let constant = Num::Constant(u64_to_fe(constanta as u64));
-        dbg!(constant);
         lc_count.add_assign_number_with_coeff(&constant, E::Fr::one());
-        // let mut pre_value_1 = packed_sorted_values.clone().into_iter().next().map(|el| el[0]).unwrap();
-        // let mut pre_value_2 = packed_sorted_values.clone().into_iter().next().map(|el| el[1]).unwrap();
-        let mut pre_value_1 = packed_sorted_values.clone()[0][0];
-        let mut pre_value_2= packed_sorted_values.clone()[0][1];
+        let mut pre_value_1 = packed_sorted_values[0][0].clone();
+        let mut pre_value_2= packed_sorted_values[0][1].clone();
         let mut minus_one = E::Fr::one();
-        println!("{:?}",         packed_sorted_values.len());
         minus_one.negate();
         for i in packed_sorted_values.into_iter(){
             let is_equal_1 = AllocatedNum::equals(cs, &pre_value_1, &i[0])?;
             let is_equal_2 = AllocatedNum::equals(cs, &pre_value_2, &i[1])?;
             let condition = Boolean::and(cs, &is_equal_1, &is_equal_2)?;
-            println!("{:?}", condition);
             let count = Num::mask(cs, &Num::Constant(E::Fr::one()), &condition.not())?;
-            println!("{:?}", count);
             lc_count.add_assign_number_with_coeff(&count, minus_one);
             pre_value_1 = i[0];
             pre_value_2 = i[1];

@@ -647,7 +647,6 @@ where
             lc_high.add_assign_number_with_coeff(&addr, shifts[i]);
 
             let value_high = lc_high.into_num(cs)?;
-            dbg!(value_high);
             original_values.push(value);
             original_indexes.push(addr);
             unsorted_value_low.push(value_low);

@@ -3775,8 +3775,8 @@ mod test {
 
             let endo_parameters = super::super::endomorphism::bn254_endomorphism_parameters();
 
-            let result = a.clone().mul_split_scalar_2(&mut cs, &b, endo_parameters.clone(), 3);
-            println!("{:?}", result);
+            let result = a.clone().mul_split_scalar_2(&mut cs, &b, endo_parameters.clone(), 2);
+            // println!("{:?}", result);
 
             // let result_recalculated = a_f.mul(b_f.into_repr()).into_affine();
 
@@ -3819,16 +3819,16 @@ mod test {
             //     "y coords mismatch, input was mutated"
             // );
 
-            // if i == 0 {
-            //     crate::plonk::circuit::counter::reset_counter();
-            //     let base = cs.n();
-            //     let _ = a.mul_split_scalar_2(&mut cs, &b, endo_parameters, 2);
-            //     println!("single multiplication taken {} gates", cs.n() - base);
-            //     println!(
-            //         "Affine spent {} gates in equality checks",
-            //         crate::plonk::circuit::counter::output_counter()
-            //     );
-            // }
+            if i == 0 {
+                crate::plonk::circuit::counter::reset_counter();
+                let base = cs.n();
+                let _ = a.mul_split_scalar_2(&mut cs, &b, endo_parameters, 2);
+                println!("single multiplication taken {} gates", cs.n() - base);
+                println!(
+                    "Affine spent {} gates in equality checks",
+                    crate::plonk::circuit::counter::output_counter()
+                );
+            }
         }
     }
     #[test]

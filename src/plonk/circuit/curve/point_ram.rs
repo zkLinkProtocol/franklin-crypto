@@ -570,16 +570,16 @@ where
             witness_map: HashMap::new()
         }
     }
-    pub fn read_and_alloc<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, addr: Num<E>, params: &'a RnsParameters<E, G::Base>) -> Result<RefCell<AffinePoint<'a, E, G>>, SynthesisError>{
+    pub fn read_and_alloc<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, addr: Num<E>, params: &'a RnsParameters<E, G::Base>) -> Result<AffinePoint<'a, E, G>, SynthesisError>{
 
         let addres = fe_to_biguint(&addr.get_value().unwrap());
 
         let existing = self.witness_map.get(&addres).unwrap().clone();
         let witness_alloc = AffinePoint::alloc(cs, existing.clone().into_inner().value.clone(), params).unwrap();
 
-        self.block.push((addr, witness_alloc));
+        self.block.push((addr, witness_alloc.clone()));
 
-        Ok(existing)
+        Ok(witness_alloc)
     }
 
     pub fn insert_witness(&mut self, addr: Num<E>, point: AffinePoint<'a, E, G>){

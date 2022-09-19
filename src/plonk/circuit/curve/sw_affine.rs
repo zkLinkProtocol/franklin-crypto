@@ -1552,7 +1552,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             let addres = lc.into_num(cs)?;
 
             let point = unsafe { memory.read_and_alloc(cs, addres, params)? };
-            let (new_acc, (_, t)) = acc.clone().double_and_add(cs, point.into_inner())?;
+            let (new_acc, (_, t)) = acc.clone().double_and_add(cs, point)?;
 
             num_doubles += 1;
             acc = new_acc;
@@ -1731,7 +1731,7 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
             let addres = lc.into_num(cs)?;
 
             let point = unsafe { memory.read_and_alloc(cs, addres, params)? };
-            let (new_acc, (_, t)) = acc.clone().double_and_add(cs, point.into_inner())?;
+            let (new_acc, (_, t)) = acc.clone().double_and_add(cs, point)?;
             num_doubles += 1;
             acc = new_acc;
             step += window;
@@ -3947,7 +3947,7 @@ mod test {
 
             let result_recalculated = a_f.mul(b_f.into_repr()).into_affine();
 
-            // assert!(cs.is_satisfied());
+            assert!(cs.is_satisfied());
 
             // let x_fe = result.x.get_field_value().unwrap();
             // let y_fe = result.y.get_field_value().unwrap();
@@ -4107,7 +4107,7 @@ mod test {
         let vec_boolean = a.into_bits_le(&mut cs, Some(8)).unwrap();
         let y_odd_check = vec_boolean[0];
         println!("{:?}",  y_odd_check);
-
+        assert!(cs.is_satisfied());
 
         assert_eq!(y_odd.get_variable().unwrap().get_value().unwrap(), y_odd_check.get_variable().unwrap().get_value().unwrap());
     }

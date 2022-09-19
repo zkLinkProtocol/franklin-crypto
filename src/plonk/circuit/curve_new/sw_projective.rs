@@ -130,6 +130,31 @@ where <G as GenericCurveAffine>::Base: PrimeField
         Ok(new)
     }
 
+    pub fn conditionally_negate<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        let y_negated = self.y.conditionally_negate(cs, flag)?;
+        let new_value = match (self.value, flag.get_value()) {
+            (Some(val), Some(flag)) => { 
+                let mut t = val;
+                if flag { t.negate() };
+                Some(t)
+            },
+            _ => None,
+        };
+       
+        let new = Self {
+            x: self.x.clone(),
+            y: y_negated,
+            z: self.z.clone(),
+            value: new_value,
+            is_in_subgroup: self.is_in_subgroup,
+            circuit_params: self.circuit_params
+        };
+
+        Ok(new)
+    }
+
     pub fn sub<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
         let other_negated = other.negate(cs)?;
         self.add(cs, &other_negated)

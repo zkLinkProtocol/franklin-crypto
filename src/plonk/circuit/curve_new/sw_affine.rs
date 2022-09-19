@@ -51,6 +51,7 @@ use std::str::FromStr;
 
 use crate::plonk::circuit::bigint_new::*;
 use crate::plonk::circuit::curve_new::sw_projective::*;
+use super::point_selection_tree::*;
 
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -696,82 +697,110 @@ where <G as GenericCurveAffine>::Base: PrimeField
         Ok(new)
     }
 
-    // given P = (x, y) returns normalized x and the parity bit of y
-    // #[track_caller]
-    // pub fn point_compression<CS: ConstraintSystem<E>>(
-    //     &mut self, cs: &mut CS
-    // ) -> Result<(FieldElement<'a, E, G::Base>, Boolean), SynthesisError> {
-    //     // we restric ourselves for table based range checks only
-    //     assert!(self.circuit_params.base_field_rns_params.range_check_strategy.is_table_based_strategy());
-    //     self.normalize(cs)?;
-
-    //     let y_parity_bit = if self.y.is_constant() {
-    //         let is_odd_wit = self.y.get_field_value().unwrap().into_repr().is_odd();
-    //         Boolean::constant(is_odd_wit)
-    //     } else {
-    //         let dummy = CS::get_dummy_variable();
-    //         let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
-    //         let mut two = E::Fr::one();
-    //         two.double();
-    //         let two_inv = two.inverse().unwrap();
-    //         let mut minus_one = E::Fr::one();
-    //         minus_one.negate();
-    //         let mut minus_two = two.clone();
-    //         minus_two.negate(); 
-
-    //         let dcmp = constraint_bit_length_ext(
-    //             cs,  &self.y.binary_limbs[0].term.num.get_variable(), num_bits
-    //         )?;
-    //         let a = dcmp.get_vars()[0];
-    //         let (parity_flag_wit, b_wit) = match 
-
-    //         is_odd(&self) -> bool;
-
-    // /// Returns true iff this number is even.
-    // fn is_even(&self) -> bool;
-
-    // /// Performs a rightwise bitshift of this number, effectively dividing
-    // /// it by 2.
-    // fn div2(&mut self);
-
-           
-    //     let y_odd_witness = Self::make_witness_y_odd(a.value);
-    //     let y_is_odd = AllocatedBit::alloc(cs, y_odd_witness[0])?;
-    //     let b = AllocatedNum::alloc(cs, || {
-    //         let mut tmp = a.get_value().grab()?;
-    //         tmp.sub_assign(&y_is_odd.get_value_as_field_element::<E>().grab()?);
-    //         tmp.mul_assign(&two_inv);
-    //         Ok(tmp)
-    //     })?; 
-    //     let a_xor_b = match (a.get_value(), b.get_value()) {
-    //         (Some(a_val), Some(b_val)) => {
-    //             let res = table.query(&[a_val, b_val])?;
-    //             AllocatedNum::alloc(cs, || Ok(res[0]))?
-    //         },  
-    //         (_, _) => AllocatedNum::alloc(cs, || Err(SynthesisError::AssignmentMissing))?
-    //     };
-
-    //     let y_is_odd_var = y_is_odd.get_variable();
-    //     let vars = [
-    //         a.get_variable(), b.get_variable(), a_xor_b.get_variable(), y_is_odd_var
-    //     ];
-    //     let coeffs = [E::Fr::one(), minus_two.clone(), E::Fr::zero(), E::Fr::one()];
-    //     cs.begin_gates_batch_for_step()?;
-    //     cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
+    #[track_caller]
+    pub fn pack<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, address: &Num<E>, address_width: usize
+    ) -> Result<[Num<E>; 2], SynthesisError> {
+        let (x, parity_flag) = self.point_compression(cs)?;
+        let shifts = compute_shifts::<E::Fr>();
+        let raw_limbs = x.get_raw_limbs_representation(cs)?;
+        let limb_width = x.representation_params.binary_limb_width;
+        let total_width = x.representation_params.represented_field_modulus_bitlength;
+        let mut capacity = x.representation_params.native_field_modulus_bitlength;
+            
+        let mut result = [Num::<E>::zero(), Num::<E>::zero()];
+        let mut offset = 0;
+        let mut lc = LinearCombination::zero(); 
         
-    //     let gate_term = MainGateTerm::new();
-    //     let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;
-    //     for (idx, coef) in range_of_linear_terms.clone().zip(coeffs.iter()) {
-    //         gate_coefs[idx] = *coef;
-    //     }
+        for limb in raw_limbs.into_iter() {
+            if offset + limb_width >= capacity {
+                result[0] = lc.into_num(cs)?;
+                lc = LinearCombination::zero(); 
+                offset = 0;
+            }  
+            
+            lc.add_assign_number_with_coeff(&limb, shifts[offset]);
+            offset += limb_width;
+        }
+          
+        lc.add_assign_boolean_with_coeff(&parity_flag, shifts[offset]); 
+        offset += 1;
+        lc.add_assign_number_with_coeff(address, shifts[offset]); 
+        offset += address_width;
+        assert!(offset < capacity);
+        result[1] = lc.into_num(cs)?;
 
-    //     let mg = CS::MainGate::default();
-    //     cs.new_gate_in_batch(&mg, &gate_coefs, &vars, &[])?;
-    //     cs.end_gates_batch_for_step()?;
+        Ok(result)
+    }
 
-    //     let odd_bit = Boolean::from(y_is_odd);
-    //     Ok((odd_bit, rcd))
-    // }
+    // given P = (x, y) returns normalized x and the parity bit of y
+    #[track_caller]
+    pub fn point_compression<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS
+    ) -> Result<(FieldElement<'a, E, G::Base>, Boolean), SynthesisError> {
+        let table =  cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME)?;
+        let dummy = CS::get_dummy_variable();
+        let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
+        
+        let mut two = E::Fr::one();
+        two.double();
+        let mut minus_one = E::Fr::one();
+        minus_one.negate();
+
+        self.normalize_coordinates(cs)?;
+        let lowest_y_limb = self.y.binary_limbs[0];
+        
+        let parity_flag = if  lowest_y_limb.is_constant() {
+            let repr = lowest_y_limb.get_value().unwrap().into_repr();
+            Boolean::Constant(repr.is_odd())
+        }
+        else {
+            let limb_width = self.y.representation_params.binary_limb_width;
+            let rcd = constraint_bit_length_ext(cs,  &self.y.binary_limbs[0].term.num.get_variable(), limb_width)?;
+            let a = rcd.get_vars()[0];
+            let (parity_flag_wit, b_wit) = match a.get_value() {
+                Some(a_wit) => {
+                    let mut repr = a_wit.into_repr();
+                    let parity_flag_wit = repr.is_odd();
+                    repr.div2();
+                    let b_wit = E::Fr::from_repr(repr).expect("should parse");
+                    (Some(parity_flag_wit), Some(b_wit))
+                }
+                None => (None, None),
+            };
+        
+            let parity_flag = AllocatedBit::alloc(cs, parity_flag_wit)?;
+            let b = AllocatedNum::alloc(cs, || b_wit.grab())?;
+
+            let a_xor_b = match (a.get_value(), b.get_value()) {
+                (Some(a_val), Some(b_val)) => {
+                    let res = table.query(&[a_val, b_val])?;
+                    AllocatedNum::alloc(cs, || Ok(res[0]))?
+                },  
+                (_, _) => AllocatedNum::alloc(cs, || Err(SynthesisError::AssignmentMissing))?
+            };
+
+            // a = 2*b + parity_flag
+            let vars = [a.get_variable(), b.get_variable(), a_xor_b.get_variable(), parity_flag.get_variable()];
+            let coeffs = [minus_one, two, E::Fr::zero(), E::Fr::one()];
+            cs.begin_gates_batch_for_step()?;
+            cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
+            
+            let gate_term = MainGateTerm::new();
+            let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;
+            for (idx, coef) in range_of_linear_terms.clone().zip(coeffs.iter()) {
+                gate_coefs[idx] = *coef;
+            }
+
+            let mg = CS::MainGate::default();
+            cs.new_gate_in_batch(&mg, &gate_coefs, &vars, &[])?;
+            cs.end_gates_batch_for_step()?;
+
+            Boolean::from(parity_flag)
+        };
+        
+        Ok((self.x.clone(), parity_flag))
+    }
 }
 
 
@@ -1469,6 +1498,92 @@ where <G as GenericCurveAffine>::Base: PrimeField {
             }
         }
         
+        Ok(acc)
+    }
+
+    pub fn safe_multiexp_projective<CS: ConstraintSystem<E>>(
+        cs: &mut CS, scalars: &[FieldElement<'a, E, G::Scalar>], points: &[Self]
+    ) -> Result<ProjectivePoint<'a, E, G, T>, SynthesisError> {
+        assert_eq!(scalars.len() == points.len());
+        let params = points[0].circuit_params;
+        let scalar_rns_params = &params.scalar_field_rns_params;
+        let base_rns_params = &params.base_field_rns_params;
+        let limit = params.get_endomorphism_bitlen_limit();
+        
+        struct Multizip<T>(Vec<T>);
+        
+        impl<T> Iterator for Multizip<T>
+        where T: Iterator,
+        {
+            type Item = Vec<T::Item>;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                self.0.iter_mut().map(Iterator::next).collect()
+            }
+        }
+
+        let mut points_unrolled = Vec::with_capacity(points.len() << 1);
+        let mut scalars_unrolled = Vec::with_capacity(points.len() << 1);
+        for (scalar, point) in scalars.iter().zip(points.iter()) { 
+            let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
+                Some(x) => {
+                    let dcmp = params.calculate_decomposition(x);
+                    (
+                        Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), 
+                        Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus)
+                    )
+                },
+                None => (None, None, None, None)
+            };
+            let mut k1_abs = FieldElement::alloc_for_known_bitwidth(
+                cs, k1_abs_wit, limit, scalar_rns_params, true
+            )?;
+            let mut k2_abs = FieldElement::alloc_for_known_bitwidth(
+                cs, k2_abs_wit, limit, scalar_rns_params, true
+            )?;
+            let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
+            let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
+
+            // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
+            let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
+            let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
+            let mut chain = FieldElementsChain::new();
+            chain.add_pos_term(&k1).add_neg_term(&scalar);
+            let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
+            FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
+
+            let mut point = point.conditionally_negate(cs, &k1_is_negative_flag)?;
+            let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+            let x_endo = point.get_x().mul(cs, &beta)?;
+            let y_endo = point.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
+            let point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
+
+            let point_proj = ProjectivePoint::<E, G, T>::from(point);
+            let point_endo_proj = ProjectivePoint::<E, G, T>::from(point_endo);
+            points_unrolled.push(point_proj);
+            points_unrolled.push(point_endo_proj);
+
+            let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
+            let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
+            scalars_unrolled.push(k1_decomposition.into_iter());
+            scalars_unrolled.push(k2_decomposition.into_iter());
+        }
+
+        let selector_tree = SelectorTree::new(cs, &points_unrolled)?;
+        let mut acc = selector_tree.get_initial_accumulator();
+
+        for (_, is_last, bits) in Multizip(scalars_unrolled).identify_first_last() {
+            if !is_last {
+                acc = acc.double(cs)?;
+                let to_add = selector_tree.select(cs, &bits)?;
+                acc = acc.add(cs, &to_add)?;
+            }
+            else {
+                let to_add = selector_tree.select_last(cs, &bits)?;
+                acc = acc.add(cs, &to_add)?;
+            }
+        }
+
         Ok(acc)
     }
 

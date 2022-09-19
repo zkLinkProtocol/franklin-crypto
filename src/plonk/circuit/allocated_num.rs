@@ -467,6 +467,12 @@ impl<E: Engine> Num<E> {
         }
     }
 
+    pub fn conditionally_increment<CS>(&self, cs: &mut CS, condition: &Boolean) -> Result<Self, SynthesisError>
+    where CS: ConstraintSystem<E> {
+        let to_add = Num::Constant(E::Fr::one());
+        to_add.mask_by_boolean_into_accumulator(cs, condition, &self)  
+    }
+
     pub fn mask_by_boolean_into_accumulator<CS: ConstraintSystem<E>>(&self, cs: &mut CS, boolean: &Boolean, accumulator: &Self) -> Result<Self, SynthesisError>
     {   
         match (self, accumulator, boolean) {

@@ -80,14 +80,14 @@ pub struct RnsParameters<E: Engine, F: PrimeField>{
     range_check_strategy: RangeConstraintStrategy,
     range_check_granularity: usize,
 
-    num_binary_limbs: usize,
-    binary_limb_width: usize,
+    pub(crate) num_binary_limbs: usize,
+    pub(crate) binary_limb_width: usize,
     msl_width: usize, // hereinafter msl stands for Most Significant Limb
 
     native_field_modulus: BigUint,
-    native_field_modulus_bitlength: usize,
+    pub(crate) native_field_modulus_bitlength: usize,
     represented_field_modulus: BigUint,
-    represented_field_modulus_bitlength: usize,
+    pub(crate) represented_field_modulus_bitlength: usize,
     shift_left_by_limb_constant: E::Fr, // is equal to (1 << binary_limb_width)
     
     // these fields are required only for "if_zero" method

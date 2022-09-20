@@ -842,10 +842,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Self::zero(&self.representation_params).sub(cs, self)
     }
 
-    #[track_caller]
     // negates if true
     // TODO: we could create optimized conditional negation by p +/ sign_bit * x
-    pub fn conditionally_negate<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
+    #[track_caller]
+    pub fn conditionally_negate_unotimized<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         if flag.is_constant() {
@@ -853,6 +853,77 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         };
         let negated = self.negate(cs)?;
         Self::conditionally_select(cs, flag, &negated, self)
+    }
+
+    #[track_caller]
+    pub fn conditionally_negate<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        if flag.is_constant() {
+            if flag.get_value().unwrap() { return self.negate(cs) } else { return Ok(self.clone()) }
+        };
+        
+        let max_val = self.get_maximal_possible_stored_value();
+        let params = self.representation_params;
+        let limbs_max_vals = self.binary_limbs.iter().map(|x| x.max_value()).collect::<Vec<BigUint>>();
+        let (multiples_to_add, const_chunks) = Self::subtraction_helper(max_val, limbs_max_vals, params);
+        
+        // create new limbs
+        let mut new_binary_limbs = vec![];
+        let flag_term = Term::from_boolean(flag);
+        let mut minus_two = E::Fr::one();
+        minus_two.double();
+        minus_two.negate();
+        let iter = itertools::multizip((&self.binary_limbs, const_chunks));
+
+        for (limb, cnst) in iter 
+        {
+            // new_limb = flag * cnst + (1 - 2*flag) * limb = flag * cnst - 2 * flag * limb + limb
+            let constant_as_fe = biguint_to_fe::<E::Fr>(cnst.clone());
+            let mut alc = AmplifiedLinearCombination::zero();
+            alc.add_assign_term_with_coeff(&flag_term, constant_as_fe.clone());
+            alc.add_assign_product_of_terms_with_coeff(&flag_term, &limb.term, minus_two.clone());
+            alc.add_assign_term(&limb.term);
+            let (res, num_of_gates) = alc.into_num_ext(cs)?;
+            assert_eq!(num_of_gates, 1);
+
+            let new_max_value = cnst;
+            let limb = Limb::<E>::new(Term::from_num(res), new_max_value);
+            new_binary_limbs.push(limb);
+        }
+
+        let residue_to_add = multiples_to_add % &params.native_field_modulus;
+        let constant_as_fe = biguint_to_fe::<E::Fr>(residue_to_add.clone());
+
+        let mut alc = AmplifiedLinearCombination::zero();
+        alc.add_assign_term_with_coeff(&flag_term, constant_as_fe.clone());
+        alc.add_assign_product_of_terms_with_coeff(&flag_term, &self.base_field_limb, minus_two.clone());
+        alc.add_assign_term(&self.base_field_limb);
+        let (res, num_of_gates) = alc.into_num_ext(cs)?;
+        assert_eq!(num_of_gates, 1);
+        let new_field_limb = Term::from_num(res);
+
+        let new_value = match (self.get_field_value(), flag.get_value()) {
+            (Some(fr), Some(bit)) => {
+                let mut res = fr;
+                if bit { res.negate() };
+                Some(res)
+            },
+            _ => None,
+        };
+
+        let new = Self {
+            binary_limbs: new_binary_limbs,
+            base_field_limb: new_field_limb,
+            value: new_value,
+            representation_params: params,
+            reduction_status: ReductionStatus::Unreduced
+        };
+        
+        if cfg!(debug_assertions) {
+            new.debug_check_value_coherency();
+        }
+        Ok(new)
     }
 
     pub fn normalize<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
@@ -951,7 +1022,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     // such that k - x is nonzero
     // the function returns k - x and chunk division of k - x
     #[track_caller]
-    fn subtraction_helper(
+    fn subtraction_helper_buggy(
         max_val: BigUint, limbs_max_vals: Vec<BigUint>, params: &RnsParameters<E, F>
     ) -> (BigUint, Vec<BigUint>) {
         let mut multiples_to_add_at_least = params.represented_field_modulus.clone();
@@ -981,6 +1052,40 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             } else { 
                 const_constituent_chunks.push(tmp.clone());
             };
+        }
+
+        (multiples_to_add_at_least, const_constituent_chunks)
+    }
+
+    // helper function used in sub, mul_with_chain and div_with_chain functions:
+    // instead of substracting x we compute the least possible multiple of represented_field_modulus = k,
+    // such that k - x is nonnegative
+    // the function returns k and chunk division of k
+    #[track_caller]
+    fn subtraction_helper(
+        max_val: BigUint, limbs_max_vals: Vec<BigUint>, params: &RnsParameters<E, F>
+    ) -> (BigUint, Vec<BigUint>) {
+        let modulus = params.represented_field_modulus.clone();
+        let rem = max_val.clone() % modulus.clone();
+        let to_add = if rem.is_zero() { max_val.clone() } else { max_val.clone() + modulus - rem };
+        let multiples_to_add_at_least = max_val + to_add.clone();
+
+        let bits_per_limb = params.binary_limb_width;
+        let num_limbs = params.num_binary_limbs;
+        let chunks_to_add = split_into_fixed_number_of_limbs(to_add, bits_per_limb, num_limbs);
+        let mut const_constituent_chunks = Vec::<BigUint>::with_capacity(num_limbs);
+
+        for (left, right) in limbs_max_vals.into_iter().zip(chunks_to_add.into_iter()) {
+            const_constituent_chunks.push(left + right);
+        }
+
+        if cfg!(debug_assertions) {
+            let mut total = BigUint::zero();
+            for chunk in const_constituent_chunks.iter().rev() {
+                total <<= bits_per_limb;
+                total += chunk
+            }
+            assert_eq!(total, multiples_to_add_at_least)
         }
 
         (multiples_to_add_at_least, const_constituent_chunks)
@@ -1336,78 +1441,78 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok(equals)
     }
 
-    #[track_caller]
-    pub fn linear_combination<CS>(cs: &mut CS, chain: FieldElementsChain<'a, E, F>) -> Result<Self, SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {
-        // // debug: look at all elements of chain, find which are buggy
-        // // moreover sometimes actual value is smaller that maximal value
-        // for elem in chain.elems_to_add.iter().chain(chain.elems_to_sub.iter()) {
-        //     println!("val input max: {}", elem.get_maximal_possible_stored_value());
-        //     println!("val input actual: {}", elem.get_raw_value().unwrap());
-        // }
+    // #[track_caller]
+    // pub fn linear_combination<CS>(cs: &mut CS, chain: FieldElementsChain<'a, E, F>) -> Result<Self, SynthesisError> 
+    // where CS: ConstraintSystem<E>
+    // {
+    //     // // debug: look at all elements of chain, find which are buggy
+    //     // // moreover sometimes actual value is smaller that maximal value
+    //     // for elem in chain.elems_to_add.iter().chain(chain.elems_to_sub.iter()) {
+    //     //     println!("val input max: {}", elem.get_maximal_possible_stored_value());
+    //     //     println!("val input actual: {}", elem.get_raw_value().unwrap());
+    //     // }
 
-        let params = chain.elems_to_add.get(0).unwrap_or(
-            chain.elems_to_sub.get(0).expect("chain should not be empty")
-        ).representation_params;
-        // deal with negative elements and use the trick we have explained at the start of this fucntion
-        let (const_delta_value, const_delta_chunks) = {
-            let mut limbs_max_vals = vec![BigUint::zero(); params.num_binary_limbs];
-            let mut max_val = BigUint::zero();
-            for r in chain.elems_to_sub.iter() {
-                max_val += r.get_maximal_possible_stored_value();
-                for (r_limb, out_limb) in r.binary_limbs.iter().zip(limbs_max_vals.iter_mut()) {
-                    *out_limb += r_limb.max_value();
-                }
-            }
-            Self::subtraction_helper(max_val, limbs_max_vals, params)
-        };
-        let const_limbs : Vec<_> = const_delta_chunks.into_iter().map(|x| {
-            Limb::<E>::constant_from_biguint(x)
-        }).collect();
+    //     let params = chain.elems_to_add.get(0).unwrap_or(
+    //         chain.elems_to_sub.get(0).expect("chain should not be empty")
+    //     ).representation_params;
+    //     // deal with negative elements and use the trick we have explained at the start of this fucntion
+    //     let (const_delta_value, const_delta_chunks) = {
+    //         let mut limbs_max_vals = vec![BigUint::zero(); params.num_binary_limbs];
+    //         let mut max_val = BigUint::zero();
+    //         for r in chain.elems_to_sub.iter() {
+    //             max_val += r.get_maximal_possible_stored_value();
+    //             for (r_limb, out_limb) in r.binary_limbs.iter().zip(limbs_max_vals.iter_mut()) {
+    //                 *out_limb += r_limb.max_value();
+    //             }
+    //         }
+    //         Self::subtraction_helper(max_val, limbs_max_vals, params)
+    //     };
+    //     let const_limbs : Vec<_> = const_delta_chunks.into_iter().map(|x| {
+    //         Limb::<E>::constant_from_biguint(x)
+    //     }).collect();
 
-        let mut binary_limbs = Vec::<Limb<E>>::with_capacity(params.num_binary_limbs);
-        for i in 0..params.num_binary_limbs {
-            let mut lc = AmplifiedLinearCombination::zero();
-            lc.add_assign_term(&const_limbs[i].term);
-            let mut max_value = const_limbs[i].max_value(); 
+    //     let mut binary_limbs = Vec::<Limb<E>>::with_capacity(params.num_binary_limbs);
+    //     for i in 0..params.num_binary_limbs {
+    //         let mut lc = AmplifiedLinearCombination::zero();
+    //         lc.add_assign_term(&const_limbs[i].term);
+    //         let mut max_value = const_limbs[i].max_value(); 
 
-            for elem in chain.elems_to_add.iter() {
-                lc.add_assign_term(&elem.binary_limbs[i].term);
-                max_value += elem.binary_limbs[i].max_value();
-            }
-            for elem in chain.elems_to_sub.iter() {
-                lc.sub_assign_term(&elem.binary_limbs[i].term);
-            }
+    //         for elem in chain.elems_to_add.iter() {
+    //             lc.add_assign_term(&elem.binary_limbs[i].term);
+    //             max_value += elem.binary_limbs[i].max_value();
+    //         }
+    //         for elem in chain.elems_to_sub.iter() {
+    //             lc.sub_assign_term(&elem.binary_limbs[i].term);
+    //         }
 
-            let term = Term::<E>::from_num(lc.into_num(cs)?);
+    //         let term = Term::<E>::from_num(lc.into_num(cs)?);
           
-            let limb = Limb::<E>::new(term, max_value);
-            binary_limbs.push(limb);
-        }
+    //         let limb = Limb::<E>::new(term, max_value);
+    //         binary_limbs.push(limb);
+    //     }
 
-        let residue_to_add = const_delta_value % &params.native_field_modulus;
-        let constant_as_fe = biguint_to_fe::<E::Fr>(residue_to_add.clone());
-        let mut lc = LinearCombination::zero();
-        lc.add_assign_constant(constant_as_fe);
-        for elem in chain.elems_to_add.iter() {
-            lc.add_assign_term(&elem.base_field_limb)
-        }
-        for elem in chain.elems_to_sub.iter() {
-            lc.sub_assign_term(&elem.base_field_limb)
-        }
-        let base_field_term = Term::<E>::from_num(lc.into_num(cs)?);
+    //     let residue_to_add = const_delta_value % &params.native_field_modulus;
+    //     let constant_as_fe = biguint_to_fe::<E::Fr>(residue_to_add.clone());
+    //     let mut lc = LinearCombination::zero();
+    //     lc.add_assign_constant(constant_as_fe);
+    //     for elem in chain.elems_to_add.iter() {
+    //         lc.add_assign_term(&elem.base_field_limb)
+    //     }
+    //     for elem in chain.elems_to_sub.iter() {
+    //         lc.sub_assign_term(&elem.base_field_limb)
+    //     }
+    //     let base_field_term = Term::<E>::from_num(lc.into_num(cs)?);
       
-        let new = Self {
-            binary_limbs,
-            base_field_limb: base_field_term,
-            representation_params: params,
-            value: chain.get_field_value(),
-            reduction_status: ReductionStatus::Unreduced
-        };
+    //     let new = Self {
+    //         binary_limbs,
+    //         base_field_limb: base_field_term,
+    //         representation_params: params,
+    //         value: chain.get_field_value(),
+    //         reduction_status: ReductionStatus::Unreduced
+    //     };
 
-        Ok(new)
-    }
+    //     Ok(new)
+    // }
 
     #[track_caller]
     pub fn constraint_fma<CS: ConstraintSystem<E>>(

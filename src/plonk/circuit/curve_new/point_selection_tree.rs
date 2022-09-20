@@ -105,6 +105,23 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
         first.conditionally_negate(cs, flag)
     }
 
+    fn halving<CS: ConstraintSystem<E>>(cs: &mut CS, elem: &mut Self) -> Result<Self, SynthesisError> {
+        let wit = elem.get_value().map(|x| {
+            // if x = 2 * y and order of group is n - odd prime, then:
+            // (n-1)/2 * x = (n-1) * y = -y
+            let mut scalar = <G::Scalar as PrimeField>::char();
+            scalar.div2();
+            let mut res = x.mul(scalar).into_affine();
+            res.negate();
+            res
+        });
+
+        let halved = AffinePoint::alloc(cs, wit, elem.circuit_params)?;
+        let mut initial = halved.double(cs)?;
+        AffinePoint::enforce_equal(cs, elem, &mut initial)?;
+        
+        Ok(halved)
+    }
 }
 
 impl<'a, E: Engine, G: GenericCurveAffine, T> TreeSelectable<E> for ProjectivePoint<'a, E, G, T>
@@ -136,6 +153,28 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
         cs: &mut CS, flag: &Boolean, first: &mut Self
     ) -> Result<Self, SynthesisError> {
         first.conditionally_negate(cs, flag)
+    }
+
+    fn halving<CS: ConstraintSystem<E>>(cs: &mut CS, point: &mut Self) -> Result<Self, SynthesisError> {
+        let default = AffinePoint::constant(G::one(), point.circuit_params);
+        let (mut affine_point, is_point_at_infty) = point.convert_to_affine_or_default(cs, &default)?;
+        let wit = affine_point.get_value().map(|x| {
+            // if x = 2 * y and order of group is n - odd prime, then:
+            // (n-1)/2 * x = (n-1) * y = -y
+            let mut scalar = <G::Scalar as PrimeField>::char();
+            scalar.div2();
+            let mut res = x.mul(scalar).into_affine();
+            res.negate();
+            res
+        });
+
+        let halved = AffinePoint::alloc(cs, wit, point.circuit_params)?;
+        let mut initial = halved.double(cs)?;
+        AffinePoint::enforce_equal(cs, &mut affine_point, &mut initial)?;
+
+        ProjectivePoint::conditionally_select(
+            cs, &is_point_at_infty, &ProjectivePoint::zero(point.circuit_params), &ProjectivePoint::from(halved)
+        )
     }
 }
 
@@ -200,13 +239,14 @@ impl<E: Engine, T: TreeSelectable<E>> SelectorTree<E, T> {
         // on every iteration of the inner loop (except the last one) of the point by scalar mul algorithm
         // we want to retrieve the point which is dependent on bits as follows:
         // bits = [b_0, b_1, .., b_n] -> /sum (2* b_i - 1) P_i = A
-        // on the last iteratio we do however want to add the point \sum (b_i - 1) * P_i = B
+        // on the last iteration we do however want to add the point \sum (b_i - 1) * P_i = B
         // if we denote the starting value of accumulator = /sum P_i as C
         // then it is obvious that the following relation always holds: A - C = 2 * B
         // hence we reduced the computation to one subtraction and one doubling
         let mut a = self.select(cs, &bits)?;
         let mut c = self.get_initial_accumulator();
-        let tmp = T::sub(cs, &mut a, &mut c);
+        let mut tmp = T::sub(cs, &mut a, &mut c)?;
+        T::halving(cs, &mut tmp)
     }
 
     pub fn get_initial_accumulator(&self) -> T {
@@ -258,7 +298,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
     ) -> Result<AffinePoint<'a, E, G, T>, SynthesisError> {
         let wit = addr.get_value().and_then(|x| { self.witness_map.get(&ff_to_u64(&x)).cloned().unwrap_or(None) });
         let res = AffinePoint::alloc(cs, wit, params)?;
-        self.queries.push((addr, res));
+        self.queries.push((addr, res.clone()));
         self.validity_is_enforced = false;
 
         Ok(res)
@@ -280,9 +320,8 @@ where <G as GenericCurveAffine>::Base: PrimeField
         IntegerPermutation::new_from_permutation(integer_permutation)
     }
 
-    pub fn enforce_ram_correctness<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+    pub fn enforce_ram_correctness<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
         self.validity_is_enforced = true;
-        let shifts = compute_shifts::<E::Fr>();
         let size = self.queries.len();
 
         let permutation = self.calculate_permutation();
@@ -292,7 +331,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let mut sorted_packed_elems_0 = Vec::with_capacity(size);
         let mut sorted_packed_elems_1 = Vec::with_capacity(size);
 
-        for (addr, point) in self.queries.iter() {
+        for (addr, point) in self.queries.iter_mut() {
             let packed = point.pack(cs, addr, self.address_width)?;
             unsorted_packed_elems_0.push(packed[0]);
             unsorted_packed_elems_1.push(packed[1]);
@@ -322,7 +361,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
                 let is_equal_0 = Num::equals(cs, &el_0_prev, &el_0_cur)?;
                 let is_equal_1 = Num::equals(cs, &el_1_prev, &el_1_cur)?;
                 let both_are_equal = Boolean::and(cs, &is_equal_0, &is_equal_1)?;
-                counter.conditionally_increment(cs, &both_are_equal.not())?;
+                counter = counter.conditionally_increment(cs, &both_are_equal.not())?;
             }
            
             el_0_prev = *el_0_cur;

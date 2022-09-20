@@ -705,8 +705,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let shifts = compute_shifts::<E::Fr>();
         let raw_limbs = x.get_raw_limbs_representation(cs)?;
         let limb_width = x.representation_params.binary_limb_width;
-        let total_width = x.representation_params.represented_field_modulus_bitlength;
-        let mut capacity = x.representation_params.native_field_modulus_bitlength;
+        let capacity = x.representation_params.native_field_modulus_bitlength;
             
         let mut result = [Num::<E>::zero(), Num::<E>::zero()];
         let mut offset = 0;
@@ -748,15 +747,15 @@ where <G as GenericCurveAffine>::Base: PrimeField
         minus_one.negate();
 
         self.normalize_coordinates(cs)?;
-        let lowest_y_limb = self.y.binary_limbs[0];
+        let lowest_y_limb = &self.y.binary_limbs[0];
         
-        let parity_flag = if  lowest_y_limb.is_constant() {
+        let parity_flag = if lowest_y_limb.is_constant() {
             let repr = lowest_y_limb.get_value().unwrap().into_repr();
             Boolean::Constant(repr.is_odd())
         }
         else {
             let limb_width = self.y.representation_params.binary_limb_width;
-            let rcd = constraint_bit_length_ext(cs,  &self.y.binary_limbs[0].term.num.get_variable(), limb_width)?;
+            let rcd = constraint_bit_length_ext(cs,  &lowest_y_limb.term.num.get_variable(), limb_width)?;
             let a = rcd.get_vars()[0];
             let (parity_flag_wit, b_wit) = match a.get_value() {
                 Some(a_wit) => {
@@ -964,6 +963,37 @@ impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand, T: Extension2Params<G::B
 where <G as GenericCurveAffine>::Base: PrimeField 
 {
     #[track_caller]
+    pub fn mul_by_scalar_old_style<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
+    ) -> Result<Self, SynthesisError> {
+        if let Some(value) = scalar.get_field_value() {
+            assert!(!value.is_zero(), "can not multiply by zero in the current approach");
+        }
+        if scalar.is_constant() {
+            unimplemented!();
+        }
+        
+        let circuit_params = self.circuit_params;
+        let scalar_decomposition = scalar.decompose_into_binary_representation(cs, None)?;
+        let mut acc : AffinePoint<E, G, T> = self.clone();
+        let mut y_negated = self.get_y().negate(cs)?;
+        y_negated.reduce(cs)?;
+      
+        for bit in scalar_decomposition[1..].into_iter().rev() {
+            let selected_y = FieldElement::conditionally_select(cs, &bit, &self.y, &y_negated)?;
+            let mut tmp = unsafe { AffinePoint::from_xy_unchecked(self.x.clone(), selected_y, circuit_params) };
+            acc = AffinePoint::double(&acc, cs)?;
+            acc = acc.add_unequal_unchecked(cs, &mut tmp)?;
+        }
+
+        let with_skew = acc.sub_unequal_unchecked(cs, self)?;
+        let flag = scalar_decomposition.first().unwrap();
+        let result = AffinePoint::conditionally_select(cs, flag, &acc, &with_skew)?;
+        
+        Ok(result)
+    }
+    
+    #[track_caller]
     pub fn mul_by_scalar_for_composite_order_curve<CS: ConstraintSystem<E>>(
         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
     ) -> Result<Self, SynthesisError> {
@@ -1082,7 +1112,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let num_of_doubles = k1_decomposition[1..].len();
         let iter = k1_decomposition[1..].into_iter().zip(k2_decomposition[1..].into_iter()).rev().enumerate();
 
-        for (idx, (k1_bit, k2_bit)) in iter {
+        for (_idx, (k1_bit, k2_bit)) in iter {
             // selection tree looks like following:
             //                              
             //                         |true --- P + Q
@@ -1207,7 +1237,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let num_of_doubles = k1_decomposition[1..].len();
         let iter = k1_decomposition[1..].into_iter().zip(k2_decomposition[1..].into_iter()).rev().enumerate();
 
-        for (idx, (k1_bit, k2_bit)) in iter {
+        for (_idx, (k1_bit, k2_bit)) in iter {
             // selection tree looks like following:
             //                              
             //                         |true --- P + Q
@@ -1504,7 +1534,7 @@ where <G as GenericCurveAffine>::Base: PrimeField {
     pub fn safe_multiexp_projective<CS: ConstraintSystem<E>>(
         cs: &mut CS, scalars: &[FieldElement<'a, E, G::Scalar>], points: &[Self]
     ) -> Result<ProjectivePoint<'a, E, G, T>, SynthesisError> {
-        assert_eq!(scalars.len() == points.len());
+        assert_eq!(scalars.len(), points.len());
         let params = points[0].circuit_params;
         let scalar_rns_params = &params.scalar_field_rns_params;
         let base_rns_params = &params.base_field_rns_params;
@@ -1552,7 +1582,7 @@ where <G as GenericCurveAffine>::Base: PrimeField {
             let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
             FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
 
-            let mut point = point.conditionally_negate(cs, &k1_is_negative_flag)?;
+            let point = point.conditionally_negate(cs, &k1_is_negative_flag)?;
             let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
             let x_endo = point.get_x().mul(cs, &beta)?;
             let y_endo = point.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
@@ -1765,7 +1795,7 @@ mod test {
                 result
             } else {
                 let result = a.mul_by_scalar_for_prime_order_curve_endo(cs, &mut scalar)?;
-                let mut result = unsafe { result.convert_to_affine(cs)? };
+                let result = unsafe { result.convert_to_affine(cs)? };
                 result 
             };
 

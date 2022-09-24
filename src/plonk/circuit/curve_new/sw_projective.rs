@@ -91,6 +91,36 @@ where <G as GenericCurveAffine>::Base: PrimeField
         self.z.clone()
     }
 
+    #[track_caller]
+    pub fn alloc<CS: ConstraintSystem<E>>(
+        cs: &mut CS, value: Option<G::Projective>, params: &'a CurveCircuitParameters<E, G, T>
+    ) -> Result<Self, SynthesisError> {
+        let rns_params = &params.base_field_rns_params;
+        let (x, y, z) = match value {
+            Some(val) => {
+                (x, y, z) = G::Projective::into_xyz_unchecked(val);
+                (Some(x), Some(y), Some(z))
+            },
+            _ => (None, None, None)
+        };
+        let x = FieldElement::alloc(cs, x, &rns_params)?;
+        let y = FieldElement::alloc(cs, y, &rns_params)?;
+        let z = FieldElement::alloc(cs, z, &rns_params)?;
+
+        let point = ProjectivePoint<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+where <G as GenericCurveAffine>::Base: PrimeField 
+{
+    pub x: FieldElement<'a, E, G::Base>,
+    pub y: FieldElement<'a, E, G::Base>,
+    pub z: FieldElement<'a, E, G::Base>,
+    pub value: Option<G::Projective>,
+    pub is_in_subgroup: bool,
+    pub circuit_params: &'a CurveCircuitParameters<E, G, T>
+    }
+
+        is_on_curve()
+    }
+
     pub fn zero(params: &'a CurveCircuitParameters<E, G, T>) -> Self
     {
         let rns_params = &params.base_field_rns_params;

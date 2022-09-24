@@ -61,6 +61,17 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>> Index<usize> for Fp2<'a
     }
 }
 
+impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>> From<FieldElement<'a, E, F>> for Fp2<'a, E, F, T>
+{
+    fn from(x: FieldElement<'a, E, F>) -> Self {
+        let params = x.representation_params;
+        Fp2::<E, F, T> {
+            c0: x,
+            c1: FieldElement::<E, F>::zero(params),
+            _marker: std::marker::PhantomData::<T>
+        }
+    }    
+}
 
 pub struct Fp2Chain<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> {
     pub elems_to_add: Vec<Fp2<'a, E, F, T>>,

@@ -836,14 +836,53 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as Gen
         self.y.clone()
     }
 
+    pub fn uninitialized<CS: ConstraintSystem<E>>(params: &'a CurveCircuitParameters<E, G, T>) -> Self {
+        Self::constant(G::Base::zero(), G::Base::zero(), G::Base::zero(), G::Base::zero(), params)
+    }
+
+    #[track_caller]
+    pub fn alloc<CS: ConstraintSystem<E>>(
+        cs: &mut CS, x_c0_wit: Option<G::Base>, x_c1_wit: Option<G::Base>, 
+        y_c0_wit: Option<G::Base>, y_c1_wit: Option<G::Base>,
+        params: &'a CurveCircuitParameters<E, G, T>
+    ) -> Result<Self, SynthesisError> {
+        let rns_params = &params.base_field_rns_params;
+        let x = Fp2::alloc(cs, x_c0_wit, x_c1_wit, rns_params)?;
+        let y = Fp2::alloc(cs, y_c0_wit, y_c1_wit, rns_params)?;
+        let point = AffinePointExt::<E, G, T> { x, y };
+        point.enforce_if_on_curve(cs)?;
+
+        Ok(point)
+    } 
+
     #[track_caller]
     pub fn constant(
         x0: G::Base, x1: G::Base, y0: G::Base, y1: G::Base, params: &'a CurveCircuitParameters<E, G, T>
     ) -> Self {
         let rns_params = &params.base_field_rns_params;
         let x = Fp2::constant(x0, x1, rns_params);
-        let y = Fp2::constant(y0, y1, rns_params);
-        AffinePointExt::<E, G, T> { x, y }
+        let y = Fp2::constant(y0, y1, rns_params);  
+        AffinePointExt::<E, G, T> { x, y } 
+    }
+
+    #[track_caller]
+    pub fn enforce_if_on_curve<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+        let rns_params = self.x.c0.representation_params;
+        let a = Fp2::from(FieldElement::constant(G::a_coeff(), rns_params));
+        let b = Fp2::from(FieldElement::constant(G::b_coeff(), rns_params));
+
+        let mut lhs = self.y.square(cs)?;
+        let x_squared = self.x.square(cs)?;
+        let x_cubed = x_squared.mul(cs, &self.x)?;
+        let mut rhs = if a.c0.get_field_value().unwrap().is_zero() {
+            x_cubed.add(cs, &b)?
+        } else {
+            let mut chain = FieldElementsChain::new();
+            chain.add_pos_term(&x_cubed).add_pos_term(&b);
+            FieldElement::mul_with_chain(cs, &self.x, &a, chain)?
+        };
+
+        FieldElement::enforce_equal(cs, &mut lhs, &mut rhs)
     }
 
     #[track_caller]
@@ -1720,7 +1759,7 @@ where <G as GenericCurveAffine>::Base: PrimeField {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::bellman::pairing::bn256::{Fq, Bn256, Fr, G1Affine};
+    use crate::bellman::pairing::bn256::{Fq, Bn256, Fr, G1, G1Affine};
     use plonk::circuit::Width4WithCustomGates;
     use bellman::plonk::better_better_cs::gates::{selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext, self};
     use rand::{XorShiftRng, SeedableRng, Rng};
@@ -1820,6 +1859,101 @@ mod test {
         let circuit = TestCircuit { circuit_params, use_projective: USE_PROJECTIVE };
         circuit.synthesize(&mut cs).expect("must work");
         cs.finalize();
+        assert!(cs.is_satisfied()); 
+    }
+
+    #[test]
+    fn test_generic_projective_double_add() {
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+        let params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, 80usize, 80usize);
+        let mut rng = rand::thread_rng();
+
+        let mut a = G1::zero();
+        let mut b = G1::zero();
+        for out in std::iter::once(&mut a).chain(std::iter::once(&mut b)) { 
+            let affine_point: G1Affine = rng.gen();
+            let (mut x, mut y) = GenericCurveAffine::into_xy_unchecked(affine_point);
+            let z : Fq = rng.gen();
+            x.mul_assign(&z);
+            y.mul_assign(&z);
+            
+            let proj_point = G1::from_xyz_checked(x, y, z).expect("should be a valid point");
+            *out = proj_point;
+        }
+        let mut result = a.clone();
+        result.double(); 
+        result.add_assign(&b);
+
+        let a = ProjectivePoint::alloc(&mut cs, Some(a), &params).unwrap();
+        let mut b = ProjectivePoint::alloc(&mut cs, Some(b), &params).unwrap();
+        let mut actual_result = ProjectivePoint::alloc(&mut cs, Some(result), &params).unwrap();
+        
+        let naive_mul_start = cs.get_current_step_number();
+        let mut result = a.double(&mut cs)?; 
+        result = result.add_unequal_unchecked(&mut cs, &mut b).unwrap();
+        let naive_mul_end = cs.get_current_step_number();
+        println!("num of gates: {}", naive_mul_end - naive_mul_start);
+
+        ProjectivePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
+        assert!(cs.is_satisfied()); 
+    }
+
+    #[test]
+    fn test_generic_affine_extended_double_add() {
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+        let params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, 80usize, 80usize);
+        let mut rng = rand::thread_rng();
+
+        let a_x_c0 = "21351415837612682794658069250208578165717684602366660554728717293600025459494";
+        let a_x_c1 = "17454815528288421150140107519402637424257609075118209809806886875673089829752";
+        let a_y_c0 = "10500405464615503936510589466549233513506452398516985630397145923290122949290";
+        let a_y_c1 = "2761458570972565068982518872982725004033622060276130770802397549372645119104";
+        let a_coefs = [&a_x_c0, &a_x_c1, &a_y_c0, &a_y_c1];
+
+        let b_x_c0 = "7830447897768596883593535250220840700098647126751380490216575366956604243";
+        let b_x_c1 = "13141288670230638875124317858095165094322860859993156433096974391591029215944";
+        let b_y_c0 = "3490034263718334808942840164995076605412313774991235846222496754875590406145";
+        let b_y_c1 = "9172891601689256837576890136879577005656539338754679632472956007117684582144";
+        let b_coefs = [&b_x_c0, &b_x_c1, &b_y_c0, &b_y_c1];
+
+        let c_x_c0 = "19673865803939129911784000611697428795364496282382911626936452366564403191236";
+        let c_x_c1 = "14899765095772411546889735628793831623749801016601542435262877456069880983737";
+        let c_y_c0 = "8420173149245325202756562055329885607845775493405380301430733101207746883465";
+        let c_y_c1 = "17094884832660401480057446446073863380160468560002805035886351974780115569605";
+        let c_coefs = [&c_x_c0, &c_x_c1, &c_y_c0, &c_y_c1];
+
+        let mut a = AffinePointExt::<Bn256, G1Affine, Bn256Extension2Params>::uninitialized(&params);
+        let mut b = AffinePointExt::<Bn256, G1Affine, Bn256Extension2Params>::uninitialized(&params);
+        let mut c = AffinePointExt::<Bn256, G1Affine, Bn256Extension2Params>::uninitialized(&params);
+                
+        let iter = std::iter::once(&mut a).chain(std::iter::once(&mut b)).chain(std::iter::once(&mut c)).zip(
+            std::iter::once(&a_coefs).chain(std::iter::once(&b_coefs)).chain(std::iter::once(&c_coefs))
+        );
+
+        for (out, coeffs) in iter  { 
+            let x_c0 = Fq::from_str(coeffs[0]);
+            let x_c1 = Fq::from_str(coeffs[1]);
+            let y_c0 = Fq::from_str(coeffs[2]);
+            let y_c1 = Fq::from_str(coeffs[3]);
+            let point = AffinePointExt::alloc(&mut cs, x_c0, x_c1, y_c0, y_c1, &params)?;
+            *out = point;
+        }
+
+        let mut result = a.clone();
+        result.double(); 
+        result.add_assign(&b);
+
+        let a = ProjectivePoint::alloc(&mut cs, Some(a), &params).unwrap();
+        let mut b = ProjectivePoint::alloc(&mut cs, Some(b), &params).unwrap();
+        let mut actual_result = ProjectivePoint::alloc(&mut cs, Some(result), &params).unwrap();
+        
+        let naive_mul_start = cs.get_current_step_number();
+        let mut result = a.double(&mut cs)?; 
+        result = result.add_unequal_unchecked(&mut cs, &mut b).unwrap();
+        let naive_mul_end = cs.get_current_step_number();
+        println!("num of gates: {}", naive_mul_end - naive_mul_start);
+
+        ProjectivePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
         assert!(cs.is_satisfied()); 
     }
 

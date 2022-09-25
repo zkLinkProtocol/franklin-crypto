@@ -98,7 +98,10 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let rns_params = &params.base_field_rns_params;
         let (x, y, z) = match value {
             Some(val) => {
-                (x, y, z) = G::Projective::into_xyz_unchecked(val);
+                let (x, y, z) = G::Projective::into_xyz_unchecked(val);
+                let x = unsafe { std::mem::transmute_copy::<_, G::Base>(&x) };
+                let y = unsafe { std::mem::transmute_copy::<_, G::Base>(&y) };
+                let z = unsafe { std::mem::transmute_copy::<_, G::Base>(&z) };
                 (Some(x), Some(y), Some(z))
             },
             _ => (None, None, None)
@@ -107,18 +110,69 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let y = FieldElement::alloc(cs, y, &rns_params)?;
         let z = FieldElement::alloc(cs, z, &rns_params)?;
 
-        let point = ProjectivePoint<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
-where <G as GenericCurveAffine>::Base: PrimeField 
-{
-    pub x: FieldElement<'a, E, G::Base>,
-    pub y: FieldElement<'a, E, G::Base>,
-    pub z: FieldElement<'a, E, G::Base>,
-    pub value: Option<G::Projective>,
-    pub is_in_subgroup: bool,
-    pub circuit_params: &'a CurveCircuitParameters<E, G, T>
+        let mut point = ProjectivePoint {
+            x, y, z,
+            is_in_subgroup: true,
+            circuit_params: params,
+            value
+        };
+        point.enforce_if_on_curve(cs)?;
+
+        Ok(point)
     }
 
-        is_on_curve()
+    #[track_caller]
+    pub fn enforce_if_on_curve<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
+        let params = &self.x.representation_params;
+        let a = FieldElement::constant(G::a_coeff(), params);
+        let b = FieldElement::constant(G::b_coeff(), params);
+
+        // Y^2 * Z = X^3 + a * X * Z^2 + b * Z^3
+        let mut lhs = self.y.square(cs)?;
+        lhs = lhs.mul(cs, &self.z)?;
+
+        let x_squared = self.x.square(cs)?;
+        let x_cubed = x_squared.mul(cs, &self.x)?;
+        let z_squared = self.x.square(cs)?;
+        let z_cubed = z_squared.mul(cs, &self.z)?;
+
+        let mut rhs = z_cubed.mul(cs, &b)?;
+        rhs = rhs.add(cs, &x_cubed)?;
+        if !a.get_field_value().unwrap().is_zero() {
+            let mut tmp = z_squared.mul(cs, &self.x)?;
+            tmp = tmp.mul(cs, &a)?;
+            rhs = rhs.add(cs, &tmp)?
+        };
+
+        FieldElement::enforce_equal(cs, &mut lhs, &mut rhs)
+    }
+
+    #[track_caller]
+    pub fn enforce_equal<CS>(cs: &mut CS, left: &mut Self, right: &mut Self) -> Result<(), SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        // we should check that x2 = t * x1; y2 = t * y1; z2 = t * z1 for some scalar t
+        let mut t_wit = None;
+        let rns_params = &left.circuit_params.base_field_rns_params;
+        
+        for (cand1, cand2) in [&left.x, &left.y, &left.z].iter().zip([&right.x, &right.y, &right.z].iter()) {
+            if cand2.get_field_value().is_some() && !cand1.get_field_value().unwrap_or(G::Base::zero()).is_zero() {
+                let mut res = cand1.get_field_value().unwrap();
+                res.inverse();
+                res.mul_assign(&cand2.get_field_value().unwrap());
+                t_wit = Some(res);
+                break;
+            };
+        }
+        let t = FieldElement::alloc(cs, t_wit, rns_params)?;
+
+        for (a, b) in [&left.x, &left.y, &left.z].iter().zip([&right.x, &right.y, &right.z].iter()) {
+            let mut lhs = FieldElement::mul(&a, cs, &t)?;
+            let mut rhs : FieldElement<E, G::Base> = (*b).clone();
+            FieldElement::enforce_equal(cs, &mut lhs, &mut rhs)?;
+        }
+        
+        Ok(())
     }
 
     pub fn zero(params: &'a CurveCircuitParameters<E, G, T>) -> Self

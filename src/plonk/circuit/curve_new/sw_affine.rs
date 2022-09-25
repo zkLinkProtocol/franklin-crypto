@@ -836,7 +836,7 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as Gen
         self.y.clone()
     }
 
-    pub fn uninitialized<CS: ConstraintSystem<E>>(params: &'a CurveCircuitParameters<E, G, T>) -> Self {
+    pub fn uninitialized(params: &'a CurveCircuitParameters<E, G, T>) -> Self {
         Self::constant(G::Base::zero(), G::Base::zero(), G::Base::zero(), G::Base::zero(), params)
     }
 
@@ -877,12 +877,20 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as Gen
         let mut rhs = if a.c0.get_field_value().unwrap().is_zero() {
             x_cubed.add(cs, &b)?
         } else {
-            let mut chain = FieldElementsChain::new();
+            let mut chain = Fp2Chain::new();
             chain.add_pos_term(&x_cubed).add_pos_term(&b);
-            FieldElement::mul_with_chain(cs, &self.x, &a, chain)?
+            Fp2::mul_with_chain(cs, &self.x, &a, chain)?
         };
 
-        FieldElement::enforce_equal(cs, &mut lhs, &mut rhs)
+        Fp2::enforce_equal(cs, &mut lhs, &mut rhs)
+    }
+
+    #[track_caller]
+    pub fn enforce_equal<CS>(cs: &mut CS, left: &mut Self, right: &mut Self) -> Result<(), SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        Fp2::enforce_equal(cs, &mut left.x, &mut right.x)?;
+        Fp2::enforce_equal(cs, &mut left.y, &mut right.y)
     }
 
     #[track_caller]
@@ -1889,8 +1897,8 @@ mod test {
         let mut actual_result = ProjectivePoint::alloc(&mut cs, Some(result), &params).unwrap();
         
         let naive_mul_start = cs.get_current_step_number();
-        let mut result = a.double(&mut cs)?; 
-        result = result.add_unequal_unchecked(&mut cs, &mut b).unwrap();
+        let mut result = ProjectivePoint::double(&a, &mut cs).unwrap(); 
+        result = result.add(&mut cs, &mut b).unwrap();
         let naive_mul_end = cs.get_current_step_number();
         println!("num of gates: {}", naive_mul_end - naive_mul_start);
 
@@ -1902,24 +1910,23 @@ mod test {
     fn test_generic_affine_extended_double_add() {
         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
         let params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, 80usize, 80usize);
-        let mut rng = rand::thread_rng();
 
-        let a_x_c0 = "21351415837612682794658069250208578165717684602366660554728717293600025459494";
-        let a_x_c1 = "17454815528288421150140107519402637424257609075118209809806886875673089829752";
-        let a_y_c0 = "10500405464615503936510589466549233513506452398516985630397145923290122949290";
-        let a_y_c1 = "2761458570972565068982518872982725004033622060276130770802397549372645119104";
+        let a_x_c0 = "11947046220310406338075336430452637192462772637241719407011734688739628070508";
+        let a_x_c1 = "10557742219851096102260847081504953836102098067687282141689259525204118168143";
+        let a_y_c0 = "15601064320065192494908094207408122343972055839928949425916220757362334086123";
+        let a_y_c1 = "8529668414453473015102015524644323833697434755595850489456056849073813231365";
         let a_coefs = [&a_x_c0, &a_x_c1, &a_y_c0, &a_y_c1];
 
-        let b_x_c0 = "7830447897768596883593535250220840700098647126751380490216575366956604243";
-        let b_x_c1 = "13141288670230638875124317858095165094322860859993156433096974391591029215944";
-        let b_y_c0 = "3490034263718334808942840164995076605412313774991235846222496754875590406145";
-        let b_y_c1 = "9172891601689256837576890136879577005656539338754679632472956007117684582144";
+        let b_x_c0 = "220307984863270321646848220250400852276700881024772566232775081293241238563";
+        let b_x_c1 = "1268657104210478535811095545301172618324930929631779260627009638542643809713";
+        let b_y_c0 = "14716094244763148080513574234943212664563830050269302711516770265264441206811";
+        let b_y_c1 = "1767762926323305702692527140415867669545860126912362251081259289072812848508";
         let b_coefs = [&b_x_c0, &b_x_c1, &b_y_c0, &b_y_c1];
 
-        let c_x_c0 = "19673865803939129911784000611697428795364496282382911626936452366564403191236";
-        let c_x_c1 = "14899765095772411546889735628793831623749801016601542435262877456069880983737";
-        let c_y_c0 = "8420173149245325202756562055329885607845775493405380301430733101207746883465";
-        let c_y_c1 = "17094884832660401480057446446073863380160468560002805035886351974780115569605";
+        let c_x_c0 = "14502852985533014211323301556586986708073645991817525233238442508152308472745";
+        let c_x_c1 = "3731688454144978548314047313025143811107288207224347116507836166136690390974";
+        let c_y_c0 = "3341290380766155696716470666946884673121015452733721707932930112416013276659";
+        let c_y_c1 = "5650743550923202600541315224154807569595826295523387795464783550769874508672";
         let c_coefs = [&c_x_c0, &c_x_c1, &c_y_c0, &c_y_c1];
 
         let mut a = AffinePointExt::<Bn256, G1Affine, Bn256Extension2Params>::uninitialized(&params);
@@ -1935,25 +1942,16 @@ mod test {
             let x_c1 = Fq::from_str(coeffs[1]);
             let y_c0 = Fq::from_str(coeffs[2]);
             let y_c1 = Fq::from_str(coeffs[3]);
-            let point = AffinePointExt::alloc(&mut cs, x_c0, x_c1, y_c0, y_c1, &params)?;
+            let point = AffinePointExt::alloc(&mut cs, x_c0, x_c1, y_c0, y_c1, &params).unwrap();
             *out = point;
         }
 
-        let mut result = a.clone();
-        result.double(); 
-        result.add_assign(&b);
-
-        let a = ProjectivePoint::alloc(&mut cs, Some(a), &params).unwrap();
-        let mut b = ProjectivePoint::alloc(&mut cs, Some(b), &params).unwrap();
-        let mut actual_result = ProjectivePoint::alloc(&mut cs, Some(result), &params).unwrap();
-        
         let naive_mul_start = cs.get_current_step_number();
-        let mut result = a.double(&mut cs)?; 
-        result = result.add_unequal_unchecked(&mut cs, &mut b).unwrap();
+        let mut result = a.double_and_add_unchecked(&mut cs, &mut b).unwrap(); 
         let naive_mul_end = cs.get_current_step_number();
         println!("num of gates: {}", naive_mul_end - naive_mul_start);
 
-        ProjectivePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
+        AffinePointExt::enforce_equal(&mut cs, &mut result, &mut c).unwrap();
         assert!(cs.is_satisfied()); 
     }
 

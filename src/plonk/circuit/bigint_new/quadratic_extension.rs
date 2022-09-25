@@ -159,6 +159,13 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         let second_coordinate_check = FieldElement::equals(cs, &mut this.c1, &mut other.c1)?;
         Boolean::and(cs, &first_coordinate_check, &second_coordinate_check)
     }
+
+    pub fn enforce_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        FieldElement::enforce_equal(cs, &mut this.c0, &mut other.c0)?;
+        FieldElement::enforce_equal(cs, &mut this.c1, &mut other.c1)
+    }
     
     pub fn enforce_not_equal<CS>(cs: &mut CS, this: Self, other: Self) -> Result<(), SynthesisError> 
     where CS: ConstraintSystem<E>
@@ -315,7 +322,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         let mut subchain = chain.get_coordinate_subchain(0);
         //subchain.add_pos_term(&v0);
         subchain.add_neg_term(&v1);
-        let mut c0 = FieldElement::mul_with_chain(cs, &first.c0, &second.c0, subchain)?;
+        let c0 = FieldElement::mul_with_chain(cs, &first.c0, &second.c0, subchain)?;
 
         let a = first.c0.add(cs, &first.c1)?;
         let b = second.c0.add(cs, &second.c1)?;

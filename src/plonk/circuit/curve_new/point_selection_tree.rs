@@ -124,6 +124,83 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
     }
 }
 
+impl<'a, E: Engine, G: GenericCurveAffine, T> TreeSelectable<E> for AffinePointExt<'a, E, G, T>
+where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
+{
+    fn add<CS>(cs: &mut CS, first: &mut Self, second: &mut Self) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E> 
+    {
+        first.add_unequal_unchecked(cs, &second)
+    }
+
+    fn sub<CS>(cs: &mut CS, first: &mut Self, second: &mut Self) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        first.sub_unequal_unchecked(cs, second)
+    }
+
+    fn negate<CS: ConstraintSystem<E>>(cs: &mut CS, first: &mut Self) -> Result<Self, SynthesisError> {
+        AffinePointExt::negate(first, cs)
+    }
+
+    fn conditionally_select<CS: ConstraintSystem<E>>(
+        cs: &mut CS, flag: &Boolean, first: &Self, second: &Self
+    ) -> Result<Self, SynthesisError> {
+        AffinePointExt::conditionally_select(cs, flag, first, second)
+    }
+    
+    fn conditionally_negate<CS: ConstraintSystem<E>>(
+        cs: &mut CS, flag: &Boolean, first: &mut Self
+    ) -> Result<Self, SynthesisError> {
+        first.conditionally_negate(cs, flag)
+    }
+
+    fn halving<CS: ConstraintSystem<E>>(cs: &mut CS, elem: &mut Self) -> Result<Self, SynthesisError> {
+        let rns_params = elem.get_x().c0.representation_params;
+        let (wit_x_c0, wit_x_c1, wit_y_c0, wit_y_c1)  = match elem.get_value() {
+            Some((x_c0, x_c1, y_c0, y_c1)) => {
+                // if x = 2 * y and order of group is n - odd prime, then:
+                // (n-1)/2 * x = (n-1) * y = -y
+                let mut scalar = <G::Scalar as PrimeField>::char();
+                scalar.div2();
+                
+                // it is a dirty hack but fine for now
+                // at least we enforce that no new constraints will appear this way
+                let gate_count_start = cs.get_current_step_number();
+
+                let mut tmp = AffinePointExt::<E, G, T>::constant(x_c0, x_c1, y_c0, y_c1, rns_params);
+                let mut is_point_at_infty = true;
+                let mut acc = AffinePointExt::uninitialized(rns_params); 
+                for bit in BitIterator::new(scalar) {
+                    if bit == true {
+                        if is_point_at_infty {
+                            acc = tmp.clone();
+                        } else {
+                            acc = acc.add_unequal_unchecked(cs, &tmp)?;
+                        }            
+                        is_point_at_infty = false;
+                    };
+                    tmp = tmp.double(cs)?;
+                }
+                let res = acc.negate(cs)?;
+
+                let gate_count_end = cs.get_current_step_number();
+                assert_eq!(gate_count_end - gate_count_start, 0);
+                
+                let (x_c0, x_c1, y_c0, y_c1) = res.get_value().expect("should be some");
+                (Some(x_c0), Some(x_c1), Some(y_c0), Some(y_c1)) 
+            },
+            None => (None, None, None, None),
+        };
+
+        let halved = AffinePointExt::alloc(cs, wit_x_c0, wit_x_c1, wit_y_c0, wit_y_c1, rns_params)?;
+        let mut initial = halved.double(cs)?;
+        AffinePointExt::enforce_equal(cs, elem, &mut initial)?;
+        
+        Ok(halved)
+    }
+}
+
 impl<'a, E: Engine, G: GenericCurveAffine, T> TreeSelectable<E> for ProjectivePoint<'a, E, G, T>
 where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
 {

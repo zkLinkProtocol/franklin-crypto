@@ -218,6 +218,14 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         let new_c1 = self.c1.negate(cs)?;
         Ok(Self::from_coordinates(new_c0, new_c1))
     }
+
+    pub fn conditionally_negate<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E> 
+    {
+        let new_c0 = self.c0.conditionally_negate(cs, flag)?;
+        let new_c1 = self.c1.conditionally_negate(cs, flag)?;
+        Ok(Self::from_coordinates(new_c0, new_c1))
+    }
     
     pub fn add<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
         let new_c0 = self.c0.add(cs, &other.c0)?;

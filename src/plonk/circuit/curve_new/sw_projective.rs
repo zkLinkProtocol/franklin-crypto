@@ -246,7 +246,6 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
     pub unsafe fn convert_to_affine<CS>(&self, cs: &mut CS) -> Result<AffinePoint<'a, E, G, T>, SynthesisError> 
     where CS: ConstraintSystem<E> {
-        println!("z value: {}", self.z.get_field_value().unwrap());
         let x = self.x.div(cs, &self.z)?;
         let y = self.y.div(cs, &self.z)?;
         let value = self.get_value();

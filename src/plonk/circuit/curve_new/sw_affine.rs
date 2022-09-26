@@ -1644,37 +1644,47 @@ where <G as GenericCurveAffine>::Base: PrimeField
         assert_eq!(gate_count_end - gate_count_start, 0);
         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?;
 
-        let is_defined_over_base_field = |i: i32| -> i32 { i + 1 };
         let is_defined_over_base_field = |point: &AffinePointExt<'a, E, G, T>| -> Option<bool> {
-            point.get_value().map(|(x_c0, x_c1, y_c0, y_c1)| x_c1.is_zero() && y_c1.is_zero())
+            point.get_value().map(|(_x_c0, x_c1, _y_c0, y_c1)| x_c1.is_zero() && y_c1.is_zero())
         };
 
         // adj_offset is a point of order 3, hence one of acc, acc + adj_offset, acc - adj belong to E(F_p)
-        let need_to_negate = acc.get_value().map(|(x_c0, x_c1, y_c0, y_c1)| {
+        let need_to_negate_wit = acc.get_value().map(|(x_c0, x_c1, y_c0, y_c1)| {
             let gate_count_start = cs.get_current_step_number();
 
             let mut tmp = AffinePointExt::<E, G, T>::constant(x_c0, x_c1, y_c0, y_c1, base_rns_params);
-            tmp = tmp.add_unequal_unchecked(cs, &adj_offset)?;
+            tmp = tmp.add_unequal_unchecked(cs, &adj_offset).expect("should synthesize");
             let flag = is_defined_over_base_field(&tmp).expect("should be some");    
                
             let gate_count_end = cs.get_current_step_number();
             assert_eq!(gate_count_end - gate_count_start, 0);
-            flag
+            !flag
         });
+        let need_to_negate = Boolean::Is(AllocatedBit::alloc(cs, need_to_negate_wit)?);
         let to_add = adj_offset.conditionally_negate(cs, &need_to_negate)?;
-        let modified_acc = acc.add_unequal_unchecked()
+        let modified_acc = acc.add_unequal_unchecked(cs, &to_add)?;
+        
+        let cond_wit = is_defined_over_base_field(&modified_acc);
+        let cond = Boolean::Is(AllocatedBit::alloc(cs, cond_wit)?);
+        let res_ext = AffinePointExt::conditionally_select(cs, &cond, &modified_acc, &acc)?; 
 
-        let final_x = acc.get_x().c0;
-        let final_y = acc.get_y().c0;
-        let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
+        let mut final_x = res_ext.get_x();
+        let mut final_y = res_ext.get_y();
+        let final_value = final_x.c0.get_field_value().zip(final_y.c0.get_field_value()).map(|(x, y)| {
             G::from_xy_checked(x, y).expect("should be on the curve")
         }); 
+        let mut zero = FieldElement::<E, G::Base>::zero(base_rns_params);
+        FieldElement::enforce_equal(cs, &mut final_x.c1, &mut zero)?;
+        FieldElement::enforce_equal(cs, &mut final_y.c1, &mut zero)?;
 
-        let mut zero = FieldElement::<E, G::Base>::zero(&self.x.c0.representation_params);
-        FieldElement::enforce_equal(cs, &mut self.x.c1, &mut zero)?;
-        FieldElement::enforce_equal(cs, &mut self.y.c1, &mut zero)?;
-
-        Ok(acc)
+        let new = Self {
+            x: final_x.c0,
+            y: final_y.c0,
+            value: final_value,
+            is_in_subgroup: true,
+            circuit_params: params
+        };
+        Ok(new)
     }
 }
 

@@ -56,6 +56,7 @@ use plonk::circuit::curve::point_ram::*;
 use plonk::circuit::bigint_new::BITWISE_LOGICAL_OPS_TABLE_NAME;
 use plonk::circuit::hashes_with_tables::get_or_create_table;
 use plonk::circuit::curve::table_for_mul::ScalarPointTable;
+use std::sync::Arc;
 
 /// Returns a boolean of the sign of the number
 pub fn sign_i64(i64: i64)-> Boolean{
@@ -901,111 +902,162 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
 
         Ok((new, (this, other)))
     }
-    pub fn mul_by_fixed_point<CS: ConstraintSystem<E>>(cs: &mut CS, window: usize, params: &RnsParameters<E, G::Base>, scalar: &Num<E>, bit_limit: Option<usize>)-> Result<(), SynthesisError> {
-
-        let dummy = CS::get_dummy_variable();
-        let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
+    pub fn mul_by_fixed_point<CS: ConstraintSystem<E>>(cs: &mut CS, window: usize, params: &'a RnsParameters<E, G::Base>, scalar: &Num<E>, bit_limit: Option<usize>)-> Result<(), SynthesisError> {
 
         let columns3 = vec![
             PolyIdentifier::VariablesPolynomial(0), 
             PolyIdentifier::VariablesPolynomial(1), 
             PolyIdentifier::VariablesPolynomial(2)
         ];
-        let name1 : &'static str = "table for affine point, x coord";
+        let name : &'static str = "table for affine point, x coord";
         let affine_point_coord_x_table = get_or_create_table(
             cs,
-            name1,
+            name,
             || {
                 LookupTableApplication::new(
-                    name1,
-                    ScalarPointTable::new_x_table::<_, G>(window, name1, params),
+                    name,
+                    ScalarPointTable::new::<_, G>(window, name, params),
                     columns3.clone(),
                     None,
                     true
                 )
             } 
         ).unwrap();
-        let name2 : &'static str = "table for affine point, y coord";
-        let affine_point_coord_y_table = get_or_create_table(
-            cs,
-            name2,
-            || {
-                LookupTableApplication::new(
-                    name2,
-                    ScalarPointTable::new_y_table::<_, G>(window, name2, params),
-                    columns3.clone(),
-                    None,
-                    true
-                )
-            } 
-        ).unwrap();
-
         let v = scalar.get_variable();
 
         let entries = decompose_allocated_num_into_skewed_table(cs, &v, bit_limit)?;
         let entries_without_last = &entries[0..(entries.len() - 1)];
         let d = (bit_limit.unwrap()-1)/window; 
         let d_last_block = bit_limit.unwrap()-1 - d*window;
+        // Break the scalar into chunks the size of the window width
         let chunks: Vec<Vec<Boolean>> = entries_without_last.chunks(window).map(|s| s.into()).collect();
 
+
+        let mut pre_point: AffinePoint<E, <E as Engine>::G1Affine>;
+        for i in 0..d{
+            let scalar = chunks[i].clone();
+            let key = vec_boolean_to_usize(scalar);
+
+            let flag_low_f = Boolean::Constant(false);
+            let flag_low_t = Boolean::Constant(true);
+
+            let flag_high_f = Boolean::Constant(false);
+            let flag_high_t = Boolean::Constant(true);
+
+            let key_low_x = E::Fr::from_str(&format!("{}", (key*4))).unwrap();
+            let key_high_x = E::Fr::from_str(&format!("{}", (key*4+1))).unwrap();
+    
+            let key_low_y = E::Fr::from_str(&format!("{}", (key*4+2))).unwrap();
+            let key_high_y = E::Fr::from_str(&format!("{}", (key*4+3))).unwrap();
+
+            let low_limbs_x = Self::take_point_from_table(cs, key_low_x, &flag_high_f, &flag_low_f, &affine_point_coord_x_table)?;
+            let high_limbs_x = Self::take_point_from_table(cs, key_high_x, &flag_high_f, &flag_low_t, &affine_point_coord_x_table)?;
+            let low_limbs_y = Self::take_point_from_table(cs, key_low_y, &flag_high_t, &flag_low_f, &affine_point_coord_x_table)?;
+            let high_limbs_y = Self::take_point_from_table(cs, key_high_y, &flag_high_t, &flag_low_t, &affine_point_coord_x_table)?;
+
+
+            //                              Attention, I wrote this code late at night, so there may be errors
+            let limbs_x = [
+                Num::Variable(low_limbs_x[0].clone()),
+                Num::Variable(low_limbs_x[1].clone()),
+                Num::Variable(high_limbs_x[0].clone()),
+                Num::Variable(high_limbs_x[1].clone()),
+            ];
+            let limbs_y = [
+                Num::Variable(low_limbs_y[0].clone()),
+                Num::Variable(low_limbs_y[1].clone()),
+                Num::Variable(high_limbs_y[0].clone()),
+                Num::Variable(high_limbs_y[1].clone()),
+            ];
+
+            let x = FieldElement::from_single_limb_witnesses_unchecked(cs, &limbs_x, params)?;
+            let y = FieldElement::from_single_limb_witnesses_unchecked(cs, &limbs_y, params)?;
+
+            let g_value = match (x.get_field_value(), y.get_field_value()) {
+                (Some(x), Some(y)) => {
+                    Some(G::from_xy_unchecked(x, y))
+                },
+                _ => {
+                    None
+                }
+            };
+
+            let point = Self {
+                x: x,
+                y: y,
+                value: g_value
+            };
+        }
+
+        todo!()
+    }
+    pub fn take_point_from_table<CS: ConstraintSystem<E>>(cs: &mut CS, key: E::Fr, flag_high: &Boolean, flag_low: &Boolean, table: &Arc<LookupTableApplication<E>>)-> Result< [AllocatedNum<E>; 2], SynthesisError>{
         let mut two = E::Fr::one();
         two.double();
-        let two_inv = two.inverse().unwrap();
         let mut minus_one = E::Fr::one();
         minus_one.negate();
         let mut minus_two = two.clone();
         minus_two.negate(); 
 
-        for i in 0..d{
-            let scalar = chunks[i].clone();
-            let key = vec_boolean_to_usize(scalar);
-            let key_low = E::Fr::from_str(&format!("{}", (key*2))).unwrap();
-            let key_high = E::Fr::from_str(&format!("{}", (key*2+1))).unwrap();
-            let flag_0= Boolean::Constant(false);
-            let scalar_alloc = Num::alloc(cs, Some(key_low))?;
-            // expr = 2*n + flag
-            let mut expr_val = None;
-            if let Some(scalar_alloc) = scalar_alloc.get_value() {
-                let mut val = scalar_alloc;
-                val.add_assign(&scalar_alloc);
-                val.add_assign(&flag_0.get_value_in_field::<E>().grab()?);
-                expr_val = Some(val);
-            }
-            let expr = Num::alloc(cs, expr_val)?;
-            let res = affine_point_coord_x_table.query(&[key_low])?;
-
-            let chunk_x_low_0 = AllocatedNum::alloc(cs, || Ok(res[0]))?;
-            let chunk_x_low_1 =  AllocatedNum::alloc(cs, || Ok(res[1]))?;
-            let vars = [
-                expr.get_variable().get_variable(), chunk_x_low_0.get_variable(), chunk_x_low_1.get_variable(), scalar_alloc.get_variable().get_variable()
-            ];
-            let coeffs = [E::Fr::one(),  E::Fr::zero(), E::Fr::zero(), minus_two.clone()];
-            cs.begin_gates_batch_for_step()?;
-            cs.apply_single_lookup_gate(&vars[..affine_point_coord_x_table.width()], affine_point_coord_x_table.clone())?;
-            
-            let gate_term = MainGateTerm::new();
-            let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;
-            for (idx, coef) in range_of_linear_terms.clone().zip(coeffs.iter()) {
-                gate_coefs[idx] = *coef;
-            }
-            let index = CS::MainGate::index_for_constant_term();
-            let mut minus_flag = if let Boolean::Constant(value) = flag_0 {
-                value
-            } else {
-                panic!("Flag should be constant");
-            };
-            minus_flag.negate();
-            gate_coefs[index] = minus_flag;
-    
-            let mg = CS::MainGate::default();
-            cs.new_gate_in_batch(&mg, &gate_coefs, &vars, &[])?;
-            cs.end_gates_batch_for_step()?;
+        let dummy = CS::get_dummy_variable();
+        let range_of_linear_terms = CS::MainGate::range_of_linear_terms();
 
 
-     
+        let scalar_alloc = Num::alloc(cs, Some(key))?;
+        // expr = 4*n + 2*flag_high + flag_low
+        let mut expr_val = None;
+        if let Some(scalar_alloc) = scalar_alloc.get_value() {
+            let mut val = scalar_alloc;
+            val.double();
+            val.double();
+            let mut flag = flag_high.get_value_in_field::<E>().grab()?;
+            flag.double();
+            val.add_assign(&flag);
+            val.add_assign(&flag_low.get_value_in_field::<E>().grab()?);
+            expr_val = Some(val);
         }
+        let expr = Num::alloc(cs, expr_val)?;
+        let res = table.query(&[key])?;
 
-        todo!()
+        let chunk_low_0 = AllocatedNum::alloc(cs, || Ok(res[0]))?;
+        let chunk_low_1 =  AllocatedNum::alloc(cs, || Ok(res[1]))?;
+        let vars = [
+            expr.get_variable().get_variable(), chunk_low_0.get_variable(), chunk_low_1.get_variable(), scalar_alloc.get_variable().get_variable()
+        ];
+        let coeffs = [E::Fr::one(),  E::Fr::zero(), E::Fr::zero(), minus_two.clone()];
+        cs.begin_gates_batch_for_step()?;
+        cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
+        
+        let gate_term = MainGateTerm::new();
+        let (_, mut gate_coefs) = CS::MainGate::format_term(gate_term, dummy)?;
+        for (idx, coef) in range_of_linear_terms.clone().zip(coeffs.iter()) {
+            gate_coefs[idx] = *coef;
+        }
+        let index = CS::MainGate::index_for_constant_term();
+
+        // let mut minus_flag = if let Boolean::Constant(value) = flag_low {
+        //     value
+        // } else {
+        //     panic!("Flag should be constant");
+        // };
+
+        let mut minus_flag = flag_high.get_value_in_field::<E>().grab()?; 
+        let mut val = minus_flag;
+        val.double();
+        val.add_assign(&flag_low.get_value_in_field::<E>().grab()?);
+        minus_flag = val;
+
+
+        minus_flag.negate();
+        gate_coefs[index] = minus_flag;
+
+        let mg = CS::MainGate::default();
+        cs.new_gate_in_batch(&mg, &gate_coefs, &vars, &[])?;
+        cs.end_gates_batch_for_step()?;
+
+
+
+        Ok([chunk_low_0, chunk_low_1])
     }
 
 

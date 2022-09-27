@@ -25,11 +25,8 @@ use super::AffinePoint;
 // A table for storing a AffinePoint from a generator.
 // Create a table of the view:
 // _________________________________________________
-// |  scalar || flag | limb_low_x_0 | limb_low_x_1 |
-// |  scalar || flag | limb_high_x_0| limb_high_x_1|
-// |    .   .   .   .   .   .   .   .   .   .   .  |
-// _________________________________________________
-// __________________________________________________
+// |  scalar || flag | limb_low_x_0  | limb_low_x_1 |
+// |  scalar || flag | limb_high_x_0 | limb_high_x_1|
 // |  scalar || flag | limb_low_y_0  | limb_low_y_1 |           
 // |  scalar || flag | limb_high_y_0 | limb_high_y_1|
 // |    .   .   .   .   .   .   .   .   .   .    .  |

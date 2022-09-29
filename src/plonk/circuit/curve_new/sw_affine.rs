@@ -78,20 +78,6 @@ where <G as GenericCurveAffine>::Base: PrimeField
     pub is_prime_order_curve: bool,
     pub point_by_scalar_mul_strategy: PointByScalarMulStrategy,
 
-    // this generator is used for scalar multiplication
-    // Sage script to find generator for quadratic extension (taking BN256 curve as an example):
-    // q = 21888242871839275222246405745257275088696311157297823662689037894645226208583
-    // Fq = GF(q)
-    // R.<x> = Fq[] 
-    // Fq2 = Fq.extension(x^2+1,'u')
-    // Fr = 21888242871839275222246405745257275088548364400416034343698204186575808495617
-    // B = 3
-    // print Fq2.cardinality() == q^2
-    // curve = EllipticCurve(Fq2, [0,3])
-    // point = curve.random_point()
-    // for j in xrange(0, 256):
-    //     print point
-    //     point = 2 * point
 
     fp2_generator_x_c0: G::Base,
     fp2_generator_x_c1: G::Base,
@@ -1041,6 +1027,35 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as Gen
 impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand, T: Extension2Params<G::Base>> AffinePoint<'a, E, G, T> 
 where <G as GenericCurveAffine>::Base: PrimeField 
 {
+    #[track_caller]
+    pub fn mul_by_scalar_completely_without_skew<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
+    ) -> Result<Self, SynthesisError> {
+        if let Some(value) = scalar.get_field_value() {
+            assert!(!value.is_zero(), "can not multiply by zero in the current approach");
+        }
+        if scalar.is_constant() {
+            unimplemented!();
+        }
+        
+        let scalar_decomposition = scalar.decompose_into_binary_representation(cs, None)?;
+        let num_of_doubles = scalar_decomposition.len();
+        let mut acc = AffinePoint::constant(G::one(), &self.circuit_params);
+       
+        for bit in scalar_decomposition.into_iter().rev() {
+            acc = AffinePoint::double(&acc, cs)?;
+            let acc_plus_point = acc.add_unequal_unchecked(cs, &self)?;
+            acc = AffinePoint::conditionally_select(cs, &bit, &acc_plus_point, &acc)?;
+        }
+
+        let as_scalar_repr = biguint_to_repr::<G::Scalar>(BigUint::from(1u64) << num_of_doubles);
+        let scaled_offset_wit = G::one().mul(as_scalar_repr).into_affine();
+        let mut scaled_offset = AffinePoint::constant(scaled_offset_wit, &self.circuit_params);
+        let result = acc.sub_unequal_unchecked(cs, &mut scaled_offset)?; 
+
+        Ok(result)
+    }
+    
     #[track_caller]
     pub fn mul_by_scalar_old_style<CS: ConstraintSystem<E>>(
         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
@@ -2211,5 +2226,23 @@ mod test {
     //     assert!(valid);
     // }
 }
+
+
+// if x = [x_0, x_1, ..., x_n] = /sum x_i 2^i - binary representation of x: x_i /in {0, 1}
+// then x = [y_-1, y_0, y_1, ..., y_n] - skewed naf representation: where y_i /in {0, 1}
+// x = -y_-1 + /sum_{i >= 1} (1 - 2* y_i) 2^i
+// algorithm for construction of skewed representation: 
+// for -1 <= y < n: y_i = ~x_{i+1} = 1 - x_{i+1} and y_n = 0 (always)
+// indeed:
+// y = -y_-1 + /sum (1 - 2* y_i) 2^i = x_0 - 1 + /sum (2* x_{i+1} - 1) 2^i +2^n = 
+// = x - 1 - \sum_{i=0}^{n-1} 2^i + 2^n = x - 1 - (2^n - 1) + 2^n = x
+
+// if x is simultaneously split into chunks: x = [x_ch_0, x_ch_1, ..., x_ch_k] of length l
+// then we split y = [y_-1, y_0, y_1, ..., y_n] into chunks of l bits length 
+// and we would have the following relations between corresponding chunks of x and y:
+// y_ch_0 = x_ch_0 - 2^l
+// for every intermidiate chunk (every chunk between least significant and most sigificant chunks):
+// y_ch_i = x_ch_i - 2^l + 1
+// y_ch_l = x_ch_k + 1
 
 

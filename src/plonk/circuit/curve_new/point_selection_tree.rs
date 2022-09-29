@@ -22,9 +22,11 @@ use crate::bellman::plonk::commitments::transparent::utils::log2_floor;
 use plonk::circuit::boolean::Boolean;
 use plonk::circuit::bigint_new::*;
 use plonk::circuit::allocated_num::Num;
+use plonk::circuit::linear_combination::LinearCombination;
 
 use itertools::Itertools;
 use std::collections::HashMap;
+use std::convert::TryInto;
 
 // The purpose of selection table is the following: 
 // given n points P1, P2, .., Pn (in Affine or Projective coordinates),
@@ -332,17 +334,68 @@ impl<E: Engine, T: TreeSelectable<E>> SelectorTree<E, T> {
     }
 }
 
+
+const RATE: usize = 2;
+const WIDTH: usize = 3;
+
+fn round_function_absorb<E: Engine, CS: ConstraintSystem<E>, P: HashParams<E, RATE, WIDTH>>(
+    cs: &mut CS, state: &mut [Num<E>; WIDTH], input: &[Num<E>], hash_params: &P
+) -> Result<(), SynthesisError> 
+{
+    assert_eq!(input.len(), RATE);
+    
+    let mut state_lcs = vec![];
+    for (s, inp) in state.iter().zip(input.iter())  {
+        let mut lc = LinearCombination::from(*s);
+        lc.add_assign_number_with_coeff(&inp, E::Fr::one());
+        state_lcs.push(lc);
+    }
+
+    for s in state[input.len()..].iter() {
+        let lc = LinearCombination::from(*s);
+        state_lcs.push(lc);
+    }
+
+    let mut state_lcs = state_lcs.try_into().expect("state width should match");
+    
+    use crate::plonk::circuit::curve_new::ram_via_hashes::circuit::sponge::circuit_generic_round_function;
+    circuit_generic_round_function(cs, &mut state_lcs, hash_params)?;
+
+    for (a, b) in state.iter_mut().zip(state_lcs.iter()) {
+        *a = b.clone().into_num(cs)?;
+    }
+
+    Ok(())
+}
+
+fn round_function_squeeze<E: Engine>(state: &[Num<E>; WIDTH]) -> (Num<E>, Num<E>) {
+    (state[0].clone(), state[1].clone())
+}
+
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum MemoryEnforcementStrategy {
+    Waksman,
+    HashSets,
+}
    
-pub(crate) struct WaksmanMemory<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+pub(crate) struct Memory<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
 where <G as GenericCurveAffine>::Base: PrimeField
 {
     queries: Vec<(Num<E>, AffinePoint<'a, E, G, T>)>,
     witness_map: HashMap<u64, Option<G>>,
     address_width: usize,
     validity_is_enforced: bool,
+    permutation_enforcement_strategy: MemoryEnforcementStrategy,
+
+    permutation: IntegerPermutation,
+    unsorted_packed_elems_0: Vec<Num<E>>,
+    unsorted_packed_elems_1: Vec<Num<E>>,
+    sorted_packed_elems_0: Vec<Num<E>>,
+    sorted_packed_elems_1: Vec<Num<E>>,
 }
 
-impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> Drop for WaksmanMemory<'a, E, G, T> 
+impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> Drop for Memory<'a, E, G, T> 
 where <G as GenericCurveAffine>::Base: PrimeField
 {
     fn drop(&mut self) {
@@ -350,15 +403,22 @@ where <G as GenericCurveAffine>::Base: PrimeField
     }
 }
 
-impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> WaksmanMemory<'a, E, G, T>
+impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> Memory<'a, E, G, T>
 where <G as GenericCurveAffine>::Base: PrimeField
 {
-    pub fn new(address_width: usize) -> Self {
+    pub fn new(address_width: usize, permutation_enforcement_strategy: MemoryEnforcementStrategy) -> Self {
         Self {
             queries: vec![],
             witness_map: HashMap::new(),
             address_width,
             validity_is_enforced: false,
+            permutation_enforcement_strategy,
+
+            permutation: IntegerPermutation::new(1),
+            unsorted_packed_elems_0: vec![],
+            unsorted_packed_elems_1: vec![],
+            sorted_packed_elems_0: vec![],
+            sorted_packed_elems_1: vec![],
         }
     }
 
@@ -397,12 +457,36 @@ where <G as GenericCurveAffine>::Base: PrimeField
         IntegerPermutation::new_from_permutation(integer_permutation)
     }
 
-    pub fn enforce_ram_correctness<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
+    fn enforce_correctness_of_sorted_packed_queries<CS>(&mut self, cs: &mut CS)-> Result<(), SynthesisError>
+    where CS: ConstraintSystem<E>
+    {
+        let limit = Num::Constant(u64_to_ff((1u64 << self.address_width) - 1));
+        let mut counter = Num::zero();
+        let iter = self.sorted_packed_elems_0.iter().zip(self.sorted_packed_elems_1.iter()).identify_first_last();
+        let mut el_0_prev = Num::zero();
+        let mut el_1_prev = Num::zero();
+    
+        for (is_first, _is_last, (el_0_cur, el_1_cur)) in iter {
+            if !is_first {
+                let is_equal_0 = Num::equals(cs, &el_0_prev, &el_0_cur)?;
+                let is_equal_1 = Num::equals(cs, &el_1_prev, &el_1_cur)?;
+                let both_are_equal = Boolean::and(cs, &is_equal_0, &is_equal_1)?;
+                counter = counter.conditionally_increment(cs, &both_are_equal.not())?;
+            }
+           
+            el_0_prev = *el_0_cur;
+            el_1_prev = *el_1_cur;
+        }
+        counter.enforce_equal(cs, &limit)
+    }
+
+    pub fn enforce_ram_correctness<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> 
+    {
         self.validity_is_enforced = true;
         let size = self.queries.len();
 
         let permutation = self.calculate_permutation();
-        let switches = order_into_switches_set(cs, &permutation)?;
+        
         let mut unsorted_packed_elems_0 = Vec::with_capacity(size);
         let mut unsorted_packed_elems_1 = Vec::with_capacity(size);
         let mut sorted_packed_elems_0 = Vec::with_capacity(size);
@@ -420,31 +504,69 @@ where <G as GenericCurveAffine>::Base: PrimeField
             sorted_packed_elems_1.push(value_1);
         }
 
-        prove_permutation_of_nums_using_switches_witness(
-            cs, &unsorted_packed_elems_0, &sorted_packed_elems_0, &switches
-        )?;
-        prove_permutation_of_nums_using_switches_witness(
-            cs, &unsorted_packed_elems_1, &sorted_packed_elems_1, &switches
-        )?;
-       
-        let limit = Num::Constant(u64_to_ff((1u64 << self.address_width) - 1));
-        let mut counter = Num::zero();
-        let iter = sorted_packed_elems_0.iter().zip(sorted_packed_elems_1.iter()).identify_first_last();
-        let mut el_0_prev = Num::zero();
-        let mut el_1_prev = Num::zero();
+        self.permutation = permutation;
+        self.unsorted_packed_elems_0 = unsorted_packed_elems_0;
+        self.unsorted_packed_elems_1 = unsorted_packed_elems_1;
+        self.sorted_packed_elems_0 = sorted_packed_elems_0;
+        self.sorted_packed_elems_1 = sorted_packed_elems_1;
+
+        self.enforce_correctness_of_permutation(cs)?;
+        self.enforce_correctness_of_sorted_packed_queries(cs)
+    }
+
     
-        for (is_first, _is_last, (el_0_cur, el_1_cur)) in iter {
-            if !is_first {
-                let is_equal_0 = Num::equals(cs, &el_0_prev, &el_0_cur)?;
-                let is_equal_1 = Num::equals(cs, &el_1_prev, &el_1_cur)?;
-                let both_are_equal = Boolean::and(cs, &is_equal_0, &is_equal_1)?;
-                counter = counter.conditionally_increment(cs, &both_are_equal.not())?;
+
+    fn enforce_correctness_of_permutation<CS>(&mut self, cs: &mut CS) -> Result<(), SynthesisError>
+    where CS: ConstraintSystem<E>
+    {
+        match self.permutation_enforcement_strategy {
+            MemoryEnforcementStrategy::Waksman => {
+                let switches = order_into_switches_set(cs, &self.permutation)?;
+                prove_permutation_of_nums_using_switches_witness(
+                    cs, &self.unsorted_packed_elems_0, &self.sorted_packed_elems_0, &switches
+                )?;
+                prove_permutation_of_nums_using_switches_witness(
+                    cs, &self.unsorted_packed_elems_1, &self.sorted_packed_elems_1, &switches
+                )
+            },
+            MemoryEnforcementStrategy::HashSets => {
+                let hash_params = RescuePrimeParams::<E, RATE, WIDTH>::new_with_width4_custom_gate();
+                let mut state = [Num::<E>::zero(); WIDTH];
+
+                let iter = self.unsorted_packed_elems_0.iter().zip(self.unsorted_packed_elems_1.iter()).chain(
+                    self.sorted_packed_elems_0.iter().zip(self.sorted_packed_elems_1.iter())
+                );
+                for (x, y) in iter {
+                    let input = [x.clone(), y.clone()];
+                    round_function_absorb(cs, &mut state, &input, &hash_params)?;
+                };
+                let (challenge_a, challenge_b) = round_function_squeeze(&state);
+
+                // (Polynomials are of the form X + c0 * Y + c1)
+                // we substitute X and Y with challenge a and b correspondingly
+                let mut lhs = Num::Constant(E::Fr::one());
+                let mut rhs = Num::Constant(E::Fr::one());
+                
+                let outer_iter = std::iter::once(
+                    (&self.unsorted_packed_elems_0, &self.unsorted_packed_elems_1, &mut lhs)
+                ).chain(std::iter::once(
+                    (&self.sorted_packed_elems_0, &self.sorted_packed_elems_1, &mut rhs)
+                ));
+                for (column_0, column_1, out) in outer_iter {
+                    let inner_iter = column_0.iter().zip(column_1.iter());
+                    for (c0, c1) in inner_iter {
+                        let mut lc = LinearCombination::zero(); 
+                        lc.add_assign_number_with_coeff(&challenge_a.clone(), E::Fr::one());
+                        lc.add_assign_number_with_coeff(&c1, E::Fr::one());
+                        let c0_mul_challenge = c0.mul(cs, &challenge_b)?;
+                        lc.add_assign_number_with_coeff(&c0_mul_challenge, E::Fr::one());
+                        let multiplier = lc.into_num(cs)?;
+                        *out = Num::mul(out, cs, &multiplier)?;
+                    }
+                } 
+                lhs.enforce_equal(cs, &rhs)
             }
-           
-            el_0_prev = *el_0_cur;
-            el_1_prev = *el_1_cur;
-        }
-        counter.enforce_equal(cs, &limit)
+        }    
     }
 }
  

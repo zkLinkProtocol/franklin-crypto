@@ -20,6 +20,9 @@ extern crate blake2;
 extern crate serde;
 extern crate num_derive;
 extern crate indexmap;
+extern crate smallvec;
+extern crate addchain;
+extern crate num_iter;
 
 use bellman::pairing;
 use bellman::pairing::ff;

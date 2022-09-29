@@ -926,6 +926,13 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let v = scalar.get_variable();
 
         let entries = decompose_allocated_num_into_skewed_table(cs, &v, bit_limit)?;
+
+        let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log_proj::<E>(
+            &crate::constants::MULTIEXP_DST[..], 
+            1
+        )[0];
+        let generator= Self::constant(offset_generator, params);
+
         let entries_without_last = &entries[0..(entries.len() - 1)];
         let d = (bit_limit.unwrap()-1)/window; 
         let d_last_block = bit_limit.unwrap()-1 - d*window;

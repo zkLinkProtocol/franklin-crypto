@@ -843,10 +843,11 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     }
 
     // negates if true
-    // TODO: we could create optimized conditional negation by p +/ sign_bit * x
+    #[deprecated]
     #[track_caller]
-    pub fn conditionally_negate_unotimized<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
-    where CS: ConstraintSystem<E>
+    pub fn conditionally_negate_unoptimized<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, flag: &Boolean
+    ) -> Result<Self, SynthesisError>  
     {
         if flag.is_constant() {
             if flag.get_value().unwrap() { return self.negate(cs) } else { return Ok(self.clone()) }
@@ -885,7 +886,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             alc.add_assign_product_of_terms_with_coeff(&flag_term, &limb.term, minus_two.clone());
             alc.add_assign_term(&limb.term);
             let (res, num_of_gates) = alc.into_num_ext(cs)?;
-            assert_eq!(num_of_gates, 1);
+            assert!(num_of_gates <= 1);
 
             let new_max_value = cnst;
             let limb = Limb::<E>::new(Term::from_num(res), new_max_value);
@@ -900,7 +901,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         alc.add_assign_product_of_terms_with_coeff(&flag_term, &self.base_field_limb, minus_two.clone());
         alc.add_assign_term(&self.base_field_limb);
         let (res, num_of_gates) = alc.into_num_ext(cs)?;
-        assert_eq!(num_of_gates, 1);
+        assert!(num_of_gates <= 1);
         let new_field_limb = Term::from_num(res);
 
         let new_value = match (self.get_field_value(), flag.get_value()) {
@@ -1019,46 +1020,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     // helper function used in sub, mul_with_chain and div_with_chain functions:
     // instead of substracting x we compute the least possible multiple of represented_field_modulus = k,
-    // such that k - x is nonzero
-    // the function returns k - x and chunk division of k - x
-    #[track_caller]
-    fn subtraction_helper_buggy(
-        max_val: BigUint, limbs_max_vals: Vec<BigUint>, params: &RnsParameters<E, F>
-    ) -> (BigUint, Vec<BigUint>) {
-        let mut multiples_to_add_at_least = params.represented_field_modulus.clone();
-        while multiples_to_add_at_least < max_val {
-            multiples_to_add_at_least += params.represented_field_modulus.clone();
-        }
-
-        let mut const_constituent_chunks = Vec::with_capacity(params.num_binary_limbs);
-        let mut tmp = multiples_to_add_at_least.clone();
-
-        for (_is_first, is_last, limb) in limbs_max_vals.into_iter().identify_first_last() {
-            if !is_last { 
-                let bitlen = std::cmp::max(limb.bits(), params.binary_limb_width as u64);
-                let modulus = BigUint::one() << bitlen;
-                let rem = tmp.clone() % modulus.clone();
-                if rem >= limb {
-                    const_constituent_chunks.push(rem);
-                    tmp >>= bitlen;
-                    tmp <<= bitlen as usize - params.binary_limb_width;
-                } else {
-                    let chunk = rem + modulus;
-                    const_constituent_chunks.push(chunk);
-                    tmp >>= bitlen;
-                    tmp <<= bitlen as usize - params.binary_limb_width;
-                    tmp -= 1u64 << (bitlen as usize - params.binary_limb_width);
-                }
-            } else { 
-                const_constituent_chunks.push(tmp.clone());
-            };
-        }
-
-        (multiples_to_add_at_least, const_constituent_chunks)
-    }
-
-    // helper function used in sub, mul_with_chain and div_with_chain functions:
-    // instead of substracting x we compute the least possible multiple of represented_field_modulus = k,
     // such that k - x is nonnegative
     // the function returns k and chunk division of k
     #[track_caller]
@@ -1067,7 +1028,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     ) -> (BigUint, Vec<BigUint>) {
         let modulus = params.represented_field_modulus.clone();
         let rem = max_val.clone() % modulus.clone();
-        let to_add = if rem.is_zero() { max_val.clone() } else { max_val.clone() + modulus - rem };
+        let to_add = if rem.is_zero() { BigUint::zero() } else { modulus - rem };
         let multiples_to_add_at_least = max_val + to_add.clone();
 
         let bits_per_limb = params.binary_limb_width;
@@ -1440,79 +1401,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let equals = Boolean::and(cs, &out_0, &out_1)?;
         Ok(equals)
     }
-
-    // #[track_caller]
-    // pub fn linear_combination<CS>(cs: &mut CS, chain: FieldElementsChain<'a, E, F>) -> Result<Self, SynthesisError> 
-    // where CS: ConstraintSystem<E>
-    // {
-    //     // // debug: look at all elements of chain, find which are buggy
-    //     // // moreover sometimes actual value is smaller that maximal value
-    //     // for elem in chain.elems_to_add.iter().chain(chain.elems_to_sub.iter()) {
-    //     //     println!("val input max: {}", elem.get_maximal_possible_stored_value());
-    //     //     println!("val input actual: {}", elem.get_raw_value().unwrap());
-    //     // }
-
-    //     let params = chain.elems_to_add.get(0).unwrap_or(
-    //         chain.elems_to_sub.get(0).expect("chain should not be empty")
-    //     ).representation_params;
-    //     // deal with negative elements and use the trick we have explained at the start of this fucntion
-    //     let (const_delta_value, const_delta_chunks) = {
-    //         let mut limbs_max_vals = vec![BigUint::zero(); params.num_binary_limbs];
-    //         let mut max_val = BigUint::zero();
-    //         for r in chain.elems_to_sub.iter() {
-    //             max_val += r.get_maximal_possible_stored_value();
-    //             for (r_limb, out_limb) in r.binary_limbs.iter().zip(limbs_max_vals.iter_mut()) {
-    //                 *out_limb += r_limb.max_value();
-    //             }
-    //         }
-    //         Self::subtraction_helper(max_val, limbs_max_vals, params)
-    //     };
-    //     let const_limbs : Vec<_> = const_delta_chunks.into_iter().map(|x| {
-    //         Limb::<E>::constant_from_biguint(x)
-    //     }).collect();
-
-    //     let mut binary_limbs = Vec::<Limb<E>>::with_capacity(params.num_binary_limbs);
-    //     for i in 0..params.num_binary_limbs {
-    //         let mut lc = AmplifiedLinearCombination::zero();
-    //         lc.add_assign_term(&const_limbs[i].term);
-    //         let mut max_value = const_limbs[i].max_value(); 
-
-    //         for elem in chain.elems_to_add.iter() {
-    //             lc.add_assign_term(&elem.binary_limbs[i].term);
-    //             max_value += elem.binary_limbs[i].max_value();
-    //         }
-    //         for elem in chain.elems_to_sub.iter() {
-    //             lc.sub_assign_term(&elem.binary_limbs[i].term);
-    //         }
-
-    //         let term = Term::<E>::from_num(lc.into_num(cs)?);
-          
-    //         let limb = Limb::<E>::new(term, max_value);
-    //         binary_limbs.push(limb);
-    //     }
-
-    //     let residue_to_add = const_delta_value % &params.native_field_modulus;
-    //     let constant_as_fe = biguint_to_fe::<E::Fr>(residue_to_add.clone());
-    //     let mut lc = LinearCombination::zero();
-    //     lc.add_assign_constant(constant_as_fe);
-    //     for elem in chain.elems_to_add.iter() {
-    //         lc.add_assign_term(&elem.base_field_limb)
-    //     }
-    //     for elem in chain.elems_to_sub.iter() {
-    //         lc.sub_assign_term(&elem.base_field_limb)
-    //     }
-    //     let base_field_term = Term::<E>::from_num(lc.into_num(cs)?);
-      
-    //     let new = Self {
-    //         binary_limbs,
-    //         base_field_limb: base_field_term,
-    //         representation_params: params,
-    //         value: chain.get_field_value(),
-    //         reduction_status: ReductionStatus::Unreduced
-    //     };
-
-    //     Ok(new)
-    // }
 
     #[track_caller]
     pub fn constraint_fma<CS: ConstraintSystem<E>>(

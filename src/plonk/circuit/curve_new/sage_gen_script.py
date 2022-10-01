@@ -1,5 +1,6 @@
 from enum import Enum
 from functools import reduce 
+import random
 
 
 class Curve(Enum):
@@ -35,7 +36,7 @@ class Params:
             raise ValueError("Unreachable")
             
                      
-mode = Curve.BN256
+mode = Curve.BLS12
 print mode
 params = Params(mode)
 
@@ -62,70 +63,77 @@ if params.is_prime_order_curve:
     cofactor = 2*params.Fq + 2 - num_of_points
     num_of_points_ext = params.Fr * cofactor
     factors = list(factor(cofactor))
-    
-    offset_0_order = factors[0][0]
-    offset_1_order = factors[-1][0]
-    assert offset_0_order == 3
-    assert offset_1_order != params.Fr
-    assert factors[0][1] == 1
-    assert factors[-1][1] == 1
-    
-    cofactor_0 = reduce(lambda acc, x : acc * x[0] * x[1], factors[1:], 1)
-    cofactor_0 *= params.Fr
-    cofactor_1 = reduce(lambda acc, x : acc * x[0] * x[1], factors[:-1], 1)
-    cofactor_1 *= params.Fr
-    
     point_at_infty = ext_curve(0, 1, 0)
-    Q1 = point_at_infty
-    Q2 = point_at_infty
     
-    while Q1 == point_at_infty:
-        P = ext_curve.random_point()
-        Q1 = cofactor_0 * P
-    assert offset_0_order * Q1 == point_at_infty
-    
-    while Q2 == point_at_infty:
-        P = ext_curve.random_point()
-        Q2 = cofactor_1 * P
-    assert offset_1_order * Q2 == point_at_infty
+    # First we are going to find all points of order 3, we are using:
+    # https://math.stackexchange.com/questions/3607389/find-all-points-order-3-on-an-elliptic-curve
+    # In our case a = 0 and hence the equation is reduced to: x*(x^3+4b)=0 
+    assert params.curve_a_coef == 0
+    assert factors[0][0] == 3
+    R.<z>=PolynomialRing(base_field_ext)
+    roots = (z*(z^3+4*params.curve_b_coef)).roots(multiplicities=False)
+    x = roots[0]
+    y = sqrt(x^3 + params.curve_b_coef)
+    Q1 = ext_curve(x, y)
+    assert Q1 != point_at_infty
+    assert 3 * Q1 == point_at_infty
     
     print "point on E(F_q^2) of order 3 is: ", Q1
+    
+    # Now we are going to find offset generator of large order
+    last = len(factors) - 1
+    offset_2_order = factors[-1][0]
+    assert offset_2_order != params.Fr
+    cofactor_2 = reduce(
+        lambda acc, (i,x) : acc * x[0]^x[1] if i != last else acc * x[0]^(x[1] - 1), enumerate(factors), 1
+    )
+    cofactor_2 *= params.Fr
+ 
+    Q2 = point_at_infty    
+    while Q2 == point_at_infty:
+        P = ext_curve.random_point()
+        Q2 = cofactor_2 * P
+    assert offset_2_order * Q2 == point_at_infty
+    
     print "point on E(F_q^2) of large order coprime to Fr=|E(F_q)| is: ", Q2
+
 else:
     factors = list(factor(num_of_points))
-    print factors
     assert factors[0][0] == 3
-    assert factors[0][1] == 1
     assert factors[-1][0] == params.Fr
-    assert factors[-1][1] == 1
     assert len(factors) > 2 
-    factors = factors[:-1]
-    
-    offset_0_order = factors[0][0]
-    offset_1_order = factors[-1][0] * factors[-1][1]
-    
-    cofactor_0 = reduce(lambda acc, x : acc * x[0] * x[1], factors[1:], 1)
-    cofactor_0 *= params.Fr
-    cofactor_1 = reduce(lambda acc, x : acc * x[0] * x[1], factors[:-1], 1)
-    cofactor_1 *= params.Fr
-    
     point_at_infty = base_curve(0, 1, 0)
-    Q1 = point_at_infty
-    Q2 = point_at_infty
     
-    while Q1 == point_at_infty:
-        P = base_curve.random_point()
-        Q1 = cofactor_0 * P
-    assert offset_0_order * Q1 == point_at_infty
-    
-    while Q2 == point_at_infty:
-        P = base_curve.random_point()
-        Q2 = cofactor_1 * P
-    assert offset_1_order * Q2 == point_at_infty
+    # First we are going to find all points of order 3, we are using:
+    # https://math.stackexchange.com/questions/3607389/find-all-points-order-3-on-an-elliptic-curve
+    # In our case a = 0 and hence the equation is reduced to: x*(x^3+4b)=0 
+    assert params.curve_a_coef == 0
+    R.<z>=PolynomialRing(base_field)
+    roots = (z*(z^3+4*params.curve_b_coef)).roots(multiplicities=False)
+    x = roots[0]
+    y = sqrt(x^3 + params.curve_b_coef)
+    Q1 = base_curve(x, y)
+    assert Q1 != point_at_infty
+    assert 3 * Q1 == point_at_infty
     
     print "point on E(F_q) of order 3 is: ", Q1
-    print "point on E(F_q) of large order coprime to Fr is: ", Q2
     
+    # Now we are going to find offset generator of large order
+    to_skip = len(factors) - 2
+    offset_2_order = factors[-2][0]
+    cofactor_2 = reduce(
+        lambda acc, (i,x) : acc * x[0]^x[1] if i != to_skip else acc, enumerate(factors), 1
+    )
+    
+    Q2 = point_at_infty
+    while Q2 == point_at_infty:
+        P = base_curve.random_point()
+        Q2 = cofactor_2 * P
+    assert offset_2_order * Q2 == point_at_infty
+    
+    print "point on E(F_q) of large order coprime to Fr is: ", Q2
+
+
 # From now we are going to calculate endomorphism parameters : Phi = \lambda P(x, y) = (\beta x, y)
 # For the existense of this particular enodmorphism Phi the following conditions should be fullfilled:
 # Fq ≡ 1 (mod 3) be a prime, and the equation of the curve is E: y^2 = x^3 + b (a = 0)
@@ -170,24 +178,66 @@ while True:
     x1 = x
     y2 = y1
     y1 = y
+    
     if r < bound:
         a1 = r 
         b1 = -y1
-        r_l = x2 * params.Fq + y2 * int(Lambda)
+        r_l = x2 * params.Fr + y2 * int(Lambda)
         t_l = y2
         q = int(v/u)
         r_l2 = v - q*u 
         x_l2 = x2 - q*x1
         y_l2 = y2 - q*y1
+        
         if r_l^2 + t_l^2 <= r_l2^2 + y_l2^2:
-            a2 = r_l,
-            b2 = -t_l
+            a2 = a1
+            b2 = b1
+            a1 = r_l
+            b1 = -t_l
         else:
             a2 = r_l2
             b2 = -y_l2
         break
+
+#         a2 = r_l2
+#         b2 = -y_l2
+#         break
         
+    
 print "a1: ", a1
 print "a2: ", a2
 print "minus_b1: ", -b1
 print "b2: ", b2
+
+
+print "Fr char bitlen: ", params.Fr.nbits()
+# according to https://www.iacr.org/archive/crypto2001/21390189.pdf, lemma2:
+# vector u = (k1, k2), has norm at most max(||v1||, ||v2||), where 
+# v1 = (a1, b1), v2 = (a2, b2)
+v_1_norm_squared = a1^2 + b1^2
+v_2_norm_squared = a2^2 + b2^2
+max_norm_squared = max(v_1_norm_squared, v_2_norm_squared)
+limit = int((max_norm_squared.nbits() + 1) / 2)
+print "k1, k2 max bitlen: ", limit
+
+
+def get_endomorphism_scalar_decomposition(k):
+    c1 = round(b2 * k / params.Fr)
+    c2 = round (-b1 * k/ params.Fr)
+    k1 = k - c1 * a1 - c2 * a2
+    k2 = -c1 * b1 - c2 * b2
+    if k1.nbits() > limit:
+        k1 = params.Fr - k1 
+    if k2.nbits() > limit:
+        k2 = params.Fr - k2
+    assert k1.nbits() <= limit
+    assert k2.nbits() <= limit
+    return (k1, k2)
+
+
+random.seed()
+NUM_OF_TESTS = 100
+for _ in xrange(0, NUM_OF_TESTS):
+    k = random.randint(0, params.Fr)
+    get_endomorphism_scalar_decomposition(k)
+print "FINISH"

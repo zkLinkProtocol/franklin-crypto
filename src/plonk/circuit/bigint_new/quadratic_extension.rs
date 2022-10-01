@@ -8,24 +8,34 @@ use super::super::curve_new::secp256k1::fq::Fq as SecpFq;
 
 
 pub trait Extension2Params<F: PrimeField>: Clone {
-    fn non_residue() -> F;
+    // by default non-residue is -1
+    fn non_residue() -> F {
+        let mut res = F::one();
+        res.negate();
+        res
+    }
     // if non_residue is equal to -1 than multiplication formulas can are simplified
     fn do_mul_by_negation() -> bool {
         let mut tmp = Self::non_residue();
         tmp.add_assign(&F::one());
         tmp.is_zero() 
     }
+
+    // default impl is consistent only with non-residue == -1
+    fn is_default_impl() -> bool { true }
 }
 
 #[derive(Clone)]
 pub struct Bn256Extension2Params {}
-impl Extension2Params<Bn256Fq> for Bn256Extension2Params {
-    fn non_residue() -> Bn256Fq {
-        let mut res = Bn256Fq::one();
-        res.negate();
-        res
-    }
-}
+impl Extension2Params<Bn256Fq> for Bn256Extension2Params {}
+
+#[derive(Clone)]
+pub struct BLS12Extension2Params {}
+impl Extension2Params<Bls12Fq> for BLS12Extension2Params {}
+
+#[derive(Clone)]
+pub struct Secp256K1Extension2Params {}
+impl Extension2Params<SecpFq> for Secp256K1Extension2Params {}
 
 
 #[derive(Clone)]
@@ -263,11 +273,14 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         // 2) v1 = a1 * b1
         // 3) c0 = v0 + \beta * v1 = v0 - v1
         // 4) c1 = (a0 + a1) * (b0 + b1) - v0 - v1
+        
+        // we assume that non_residue = -1
+        assert!(T::is_default_impl());
+
         let params = first.c0.representation_params;
         let v0 = first.c0.mul(cs, &second.c0)?;
         let v1 = first.c1.mul(cs, &second.c1)?;
        
-        // TODO: this only works for \beta = -1 (we test only BN curve for now)
         let mut subchain = chain.get_coordinate_subchain(0);
         subchain.add_pos_term(&v0);
         subchain.add_neg_term(&v1);
@@ -281,54 +294,22 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         FieldElement::constraint_fma(cs, &a, &b, subchain)
     }
 
-    // pub fn mul_with_chain<CS: ConstraintSystem<E>>(
-    //     cs: &mut CS, first: &Self, second: &Self, chain: Fp2Chain<'a, E, F, T>
-    // ) -> Result<Self, SynthesisError> {
-    //      // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.16
-    //     // for a = a0 + u * a1 and b = b0 + u * b1 compute a * b = c0 + u * c1 [\beta = u^2]
-    //     // 1) v0 = a0 * b0
-    //     // 2) v1 = a1 * b1
-    //     // 3) c0 = v0 + \beta * v1 = v0 - v1
-    //     // 4) c1 = (a0 + a1) * (b0 + b1) - v0 - v1
-    //     // in our case c0 = c0_prev + subchain 
-    //     let params = first.c0.representation_params;
-    //     let v0 = first.c0.mul(cs, &second.c0)?;
-    //     let v1 = first.c1.mul(cs, &second.c1)?;
-       
-    //     // TODO: this only works for \beta = -1 (we test only BN curve for now)
-    //     let mut subchain = chain.get_coordinate_subchain(0);
-    //     subchain.add_pos_term(&v0);
-    //     subchain.add_neg_term(&v1);
-    //     let c0 = FieldElement::mul_with_chain(
-    //         cs, &FieldElement::zero(params), &FieldElement::zero(params), subchain
-    //     )?;
-
-    //     let a = first.c0.add(cs, &first.c1)?;
-    //     let b = second.c0.add(cs, &second.c1)?;
-    //     let mut subchain = chain.get_coordinate_subchain(1);
-    //     subchain.add_neg_term(&v0);
-    //     subchain.add_neg_term(&v1);
-    //     let c1 = FieldElement::mul_with_chain(cs, &a, &b, subchain)?;
-        
-    //     Ok(Self::from_coordinates(c0, c1))
-    // }
-
     pub fn mul_with_chain<CS: ConstraintSystem<E>>(
         cs: &mut CS, first: &Self, second: &Self, chain: Fp2Chain<'a, E, F, T>
     ) -> Result<Self, SynthesisError> {
-         // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.16
+        // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.16
         // for a = a0 + u * a1 and b = b0 + u * b1 compute a * b = c0 + u * c1 [\beta = u^2]
         // 1) v0 = a0 * b0
         // 2) v1 = a1 * b1
-        // 3) c0 = v0 + \beta * v1 = v0 - v1
+        // 3) c0 = v0 + \beta * v1 = v0 - v1 = a0 * b0 - v1
         // 4) c1 = (a0 + a1) * (b0 + b1) - v0 - v1
-        // in our case c0 = c0_prev + subchain 
-        //let v0 = c0 + v1 - chain, c1 = -c0 - v1 + chain
+        // NB: v0 = c0 + v1 - chain0, c1 = a * b - v0 - v1 + chain1 = a * b - c0 - 2 * v1 + chain0 + chain1
+
+        // we assume that non_residue = -1
+        assert!(T::is_default_impl());
+        
         let v1 = first.c1.mul(cs, &second.c1)?;
-       
-        // TODO: this only works for \beta = -1 (we test only BN curve for now)
         let mut subchain = chain.get_coordinate_subchain(0);
-        //subchain.add_pos_term(&v0);
         subchain.add_neg_term(&v1);
         let c0 = FieldElement::mul_with_chain(cs, &first.c0, &second.c0, subchain)?;
 
@@ -348,53 +329,6 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         Ok(Self::from_coordinates(c0, c1))
     }
  
-    // pub fn mul_with_chain<CS: ConstraintSystem<E>>(
-    //     cs: &mut CS, a: &Self, b: &Self, mut chain: Fp2Chain<'a, E, F, T>
-    // ) -> Result<Self, SynthesisError>  
-    // {
-    //     if a.c1.get_field_value().unwrap().is_zero() || b.c1.get_field_value().unwrap().is_zero() {
-    //         println!("hit zero");
-    //     }
-
-    //     let params = a.c0.representation_params;
-    //     // (a0 + u * a1) * (b0 + u * b1) = (a0 * b0 + \beta a1 * b1) + u * (a1 * b0 + a0 * b1)]
-    //     let (mul_c0_wit, mul_c1_wit) = match (a.get_value(), b.get_value()) {
-    //         (Some((a0, a1)), Some((b0, b1))) => {
-    //             let beta = T::non_residue();
-    //             let mut c0 = a0;
-    //             c0.mul_assign(&b0);
-    //             let mut tmp = a1;
-    //             tmp.mul_assign(&b1);
-    //             tmp.mul_assign(&beta);
-    //             c0.add_assign(&tmp); 
-
-    //             let mut c1 = a1;
-    //             c1.mul_assign(&b0);
-    //             let mut tmp = a0;
-    //             tmp.mul_assign(&b1);
-    //             c1.add_assign(&tmp);
-                
-    //             (Some(c0), Some(c1))
-    //         },
-    //         _ => (None, None),
-    //     };
-    //     let (chain_c0_wit, chain_c1_wit) = chain.get_field_value();
-    //     let c0_wit = mul_c0_wit.add(&chain_c0_wit);
-    //     let c1_wit = mul_c1_wit.add(&chain_c1_wit);
-    //     let all_constants = a.is_constant() && b.is_constant() && chain.is_constant();
-
-    //     if all_constants {
-    //         let r = Self::constant(c0_wit.unwrap(), c1_wit.unwrap(), params);
-    //         Ok(r)
-    //     }
-    //     else {
-    //         let r = Self::alloc(cs, c0_wit, c1_wit, params)?;
-    //         chain.add_neg_term(&r);
-    //         Self::constraint_fma(cs, &a, &b, chain)?;
-    //         Ok(r)
-    //     }
-    // }
-
     pub fn square_with_chain<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, chain: Fp2Chain<'a, E, F, T>
     ) -> Result<Self, SynthesisError> {
@@ -402,6 +336,10 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         // input: a = a0 + u * a1; output: a^2
         // 1) c1 = 2 * a0 * a1
         // 2) c0 = (a0 - a1)(a0 + a1)
+        
+        // we assume that non_residue = -1
+        assert!(T::is_default_impl());
+
         let tmp = self.c0.double(cs)?;
         let subchain = chain.get_coordinate_subchain(1);
         let c1 = FieldElement::mul_with_chain(cs, &tmp, &self.c1, subchain)?;
@@ -423,6 +361,9 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
     pub fn div_with_chain<CS>(cs: &mut CS, chain: Fp2Chain<'a, E, F, T>, den: &Self) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
+        // we assume that non_residue = -1
+        assert!(T::is_default_impl());
+        
         let params = &den.c0.representation_params;
         // we do chain/den = result mod p, where we assume that den != 0
         let (c0, c1) = den.get_value().unwrap_or((F::one(), F::zero()));

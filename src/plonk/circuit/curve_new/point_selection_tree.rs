@@ -170,19 +170,13 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
                 // at least we enforce that no new constraints will appear this way
                 let gate_count_start = cs.get_current_step_number();
 
-                let mut tmp = AffinePointExt::<E, G, T>::constant(x_c0, x_c1, y_c0, y_c1, rns_params);
-                let mut is_point_at_infty = true;
-                let mut acc = AffinePointExt::uninitialized(rns_params); 
-                for bit in BitIterator::new(scalar) {
-                    if bit == true {
-                        if is_point_at_infty {
-                            acc = tmp.clone();
-                        } else {
-                            acc = acc.add_unequal_unchecked(cs, &tmp)?;
-                        }            
-                        is_point_at_infty = false;
-                    };
-                    tmp = tmp.double(cs)?;
+                let to_add = AffinePointExt::<E, G, T>::constant(x_c0, x_c1, y_c0, y_c1, rns_params);
+                let mut acc = to_add.clone();
+                for bit in BitIterator::new(scalar).skip_while(|x| !x).skip(1) {
+                    acc = acc.double(cs)?;
+                    if bit {
+                        acc = acc.add_unequal_unchecked(cs, &to_add)?;
+                    }
                 }
                 let res = acc.negate(cs)?;
 
@@ -273,9 +267,9 @@ impl<E: Engine, T: TreeSelectable<E>> SelectorTree<E, T> {
         let mut initial_acc_idx = 0;
 
         for (_is_first, is_last, elem) in entries[1..].iter_mut().identify_first_last() {
-            if is_last {
-                initial_acc_idx = workpad.len();
-            }
+            // if is_last {
+            //     initial_acc_idx = workpad.len();
+            // }
             let mut new_working_pad = Vec::<T>::with_capacity(workpad.len() << 1);
             for acc in workpad.iter_mut() {
                 new_working_pad.push(T::add(cs, acc, elem)?);
@@ -294,7 +288,7 @@ impl<E: Engine, T: TreeSelectable<E>> SelectorTree<E, T> {
     }
 
     pub fn select<CS: ConstraintSystem<E>>(&self, cs: &mut CS, bits: &[Boolean]) -> Result<T, SynthesisError> {
-        assert_eq!(bits.len(), self.entries.len() * 2);
+        assert_eq!(bits.len(), self.entries.len());
         let mut selector_subtree = self.precompute.clone(); 
         
         for (k0_bit, k1_bit) in bits.iter().rev().tuple_windows() {
@@ -310,7 +304,7 @@ impl<E: Engine, T: TreeSelectable<E>> SelectorTree<E, T> {
         assert_eq!(selector_subtree.len(), 1);
         let last_flag = bits[0];
         let mut selected = selector_subtree.pop().unwrap();
-        T::conditionally_negate(cs, &last_flag, &mut selected)
+        T::conditionally_negate(cs, &last_flag.not(), &mut selected)
     }
 
     pub fn select_last<CS: ConstraintSystem<E>>(&self, cs: &mut CS, bits: &[Boolean]) -> Result<T, SynthesisError>
@@ -325,7 +319,8 @@ impl<E: Engine, T: TreeSelectable<E>> SelectorTree<E, T> {
         let mut a = self.select(cs, &bits)?;
         let mut c = self.get_initial_accumulator();
         let mut tmp = T::sub(cs, &mut a, &mut c)?;
-        T::halving(cs, &mut tmp)
+        let res = T::halving(cs, &mut tmp)?;
+        Ok(res)
     }
 
     pub fn get_initial_accumulator(&self) -> T {

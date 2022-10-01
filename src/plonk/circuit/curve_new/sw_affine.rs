@@ -607,7 +607,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
     {
         match (self.get_value(), other.get_value()) {
             (Some(first), Some(second)) => {
-                assert!(first != second, "points are actually equal");
+                assert!(first.x() != second.x, "can't add points with the same x cooridnate");
             },
             _ => {}
         }
@@ -1245,10 +1245,10 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
         let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
         let point_minus_point_endo = point.sub_unequal_unchecked(cs, &mut point_endo)?;
-        let point_plus_point_endo = point.add_unequal_unchecked(cs, &point_endo)?;
+        let mut point_plus_point_endo = point.add_unequal_unchecked(cs, &point_endo)?;
        
-        let offset_generator = AffinePoint::constant(G::one(), params);
-        let mut acc = offset_generator.add_unequal_unchecked(cs, &point_plus_point_endo)?;
+        let mut offset_generator = AffinePoint::constant(G::one(), params);
+        let mut acc = offset_generator.add_unequal(cs, &mut point_plus_point_endo)?;
         let num_of_doubles = k1_decomposition[1..].len();
         let iter = k1_decomposition[1..].into_iter().zip(k2_decomposition[1..].into_iter()).rev().enumerate();
 
@@ -1277,7 +1277,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
             )?;
             let selected_y = tmp_y.conditionally_negate(cs, &k1_bit.not())?;
             let mut tmp = unsafe { AffinePoint::from_xy_unchecked(selected_x, selected_y, params) };
-            acc = acc.double_and_add_unchecked(cs, &mut tmp)?;
+            acc = acc.double_and_add(cs, &mut tmp)?;
         }
 
         // we subtract either O, or P, or Q or P + Q
@@ -2091,10 +2091,7 @@ where <G as GenericCurveAffine>::Base: PrimeField {
         }
 
         Ok(acc)
-    }
-
-
-    
+    }    
 }
 
 
@@ -2458,19 +2455,19 @@ mod test {
             println!("num of gates for affine multiexp var1: {}", naive_mul_end - naive_mul_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            let naive_mul_start = cs.get_current_step_number();
-            let mut result = AffinePoint::safe_multiexp_affine2(cs, &scalars, &points)?;
-            let naive_mul_end = cs.get_current_step_number();
-            println!("num of gates for affine multiexp var2: {}", naive_mul_end - naive_mul_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
-
             // let naive_mul_start = cs.get_current_step_number();
-            // let result = AffinePoint::safe_multiexp_projective(cs, &scalars, &points)?;
-            // let mut result = unsafe { result.convert_to_affine(cs)? };
+            // let mut result = AffinePoint::safe_multiexp_affine2(cs, &scalars, &points)?;
             // let naive_mul_end = cs.get_current_step_number();
-            // println!("num of gates for proj multiexp: {}", naive_mul_end - naive_mul_start);
+            // println!("num of gates for affine multiexp var2: {}", naive_mul_end - naive_mul_start);
             // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+
+
+            let naive_mul_start = cs.get_current_step_number();
+            let result = AffinePoint::safe_multiexp_projective(cs, &scalars, &points)?;
+            let mut result = unsafe { result.convert_to_affine(cs)? };
+            let naive_mul_end = cs.get_current_step_number();
+            println!("num of gates for proj multiexp: {}", naive_mul_end - naive_mul_start);
+            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
             Ok(())
         }

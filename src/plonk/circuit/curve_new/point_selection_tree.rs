@@ -261,27 +261,40 @@ pub(crate) struct SelectorTree<E: Engine, T: TreeSelectable<E>> {
 
 impl<E: Engine, T: TreeSelectable<E>> SelectorTree<E, T> {
     pub fn new<CS: ConstraintSystem<E>>(cs: &mut CS, entries: &[T]) -> Result<Self, SynthesisError> {
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        enum Sign {
+            Plus,
+            Minus
+        }
+
         // using Selector tree makes sense only if there are more than 1 element
         let mut entries = entries.to_vec();
-        let mut workpad : Vec<T> = vec![entries.get(0).expect("Entries must be nonempty").clone()];
-        let mut initial_acc_idx = 0;
+        let mut workpad : Vec<(Sign, T)> = vec![(Sign::Plus, entries.get(0).expect("Entries must be nonempty").clone())];
 
-        for (_is_first, is_last, elem) in entries[1..].iter_mut().identify_first_last() {
-            // if is_last {
-            //     initial_acc_idx = workpad.len();
-            // }
-            let mut new_working_pad = Vec::<T>::with_capacity(workpad.len() << 1);
-            for acc in workpad.iter_mut() {
-                new_working_pad.push(T::add(cs, acc, elem)?);
-                new_working_pad.push(T::sub(cs, acc, elem)?);
+        for (_is_first, _is_last, elem) in entries[1..].iter_mut().identify_first_last() {
+            let mut new_working_pad = Vec::<(Sign, T)>::with_capacity(workpad.len() << 1);
+            for (sign, acc) in workpad.iter_mut() {
+                match sign {
+                    Sign::Plus => {
+                        new_working_pad.push((Sign::Minus, T::sub(cs, acc, elem)?));
+                        new_working_pad.push((Sign::Plus, T::add(cs, acc, elem)?));   
+                    },
+                    Sign::Minus => {
+                        new_working_pad.push((Sign::Plus, T::add(cs, acc, elem)?));   
+                        new_working_pad.push((Sign::Minus, T::sub(cs, acc, elem)?));
+                    },
+                };
             }
             workpad = new_working_pad
         }
         assert_eq!(workpad.len(), 1 << (entries.len() - 1));
+        
+        let initial_acc_idx = workpad.len() - 1;
+        let precompute = workpad.drain(..).map(|(_sign, pt)| pt).collect();
 
         Ok(SelectorTree::<E, T> {
             entries, 
-            precompute: workpad,
+            precompute,
             initial_acc_idx,
             _marker: std::marker::PhantomData::<E>
         })
@@ -563,5 +576,110 @@ where <G as GenericCurveAffine>::Base: PrimeField
             }
         }    
     }
+}
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::bellman::pairing::bn256::{Fq, Bn256, Fr, G1, G1Affine};
+    use crate::bellman::pairing::bls12_381::Bls12;
+    use plonk::circuit::Width4WithCustomGates;
+    use bellman::plonk::better_better_cs::gates::{selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext, self};
+    use rand::{XorShiftRng, SeedableRng, Rng};
+    use bellman::plonk::better_better_cs::cs::*;
+    use plonk::circuit::boolean::AllocatedBit;
+    use itertools::Itertools;
+
+    struct TestSelectorTreeCircuit<E:Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+    where <G as GenericCurveAffine>::Base: PrimeField
+    {
+        circuit_params: CurveCircuitParameters<E, G, T>,
+        num_of_points: usize
+    }
+    
+    impl<E: Engine, G: GenericCurveAffine + rand::Rand, T> Circuit<E> for TestSelectorTreeCircuit<E, G, T> 
+    where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
+    {
+        type MainGate = SelectorOptimizedWidth4MainGateWithDNext;
+        fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
+            Ok(
+                vec![ SelectorOptimizedWidth4MainGateWithDNext::default().into_internal() ]
+            )
+        }
+    
+        fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+            let mut rng = rand::thread_rng();
+            let mut points = Vec::with_capacity(self.num_of_points);
+            let mut scalars = Vec::with_capacity(self.num_of_points);
+
+            for _ in 0..self.num_of_points {
+                let scalar_wit : G::Scalar = rng.gen();
+                let point_wit : G = rng.gen();
+    
+                let point = AffinePoint::alloc(cs, Some(point_wit), &self.circuit_params)?;
+                let scalar = FieldElement::alloc(cs, Some(scalar_wit), &self.circuit_params.scalar_field_rns_params)?;
+    
+                points.push(point);
+                scalars.push(scalar);
+            }
+
+            let selector_tree = SelectorTree::new(cs, &points)?;
+            let in_circuit_false = Boolean::Is(AllocatedBit::alloc(cs, Some(false))?);
+            let in_circuit_true = Boolean::Is(AllocatedBit::alloc(cs, Some(true))?);
+            let iter = (0..self.num_of_points).map(
+                |_| std::iter::once(in_circuit_false).chain(std::iter::once(in_circuit_true))
+            ).multi_cartesian_product();
+
+            for bits in iter {
+                let mut acc = points[0].conditionally_negate(cs, &bits[0].not())?;
+                for (point, bit) in points.iter().zip(bits.iter()).skip(1) {
+                    let mut to_add = point.conditionally_negate(cs, &bit.not())?;
+                    acc = acc.add_unequal(cs, &mut to_add)?;
+                }
+                let mut chosen_from_selector_tree = selector_tree.select(cs, &bits[..])?;
+                AffinePoint::enforce_equal(cs, &mut acc, &mut chosen_from_selector_tree)?;
+
+                if bits.iter().all(|x| x.get_value().unwrap()) {
+                    let mut sum_all = selector_tree.get_initial_accumulator();
+                    AffinePoint::enforce_equal(cs, &mut acc, &mut sum_all)?;
+                }
+
+                // check what should be done on the last iterator
+                let mut iter = bits.iter().enumerate().skip_while(|(_i, x)| x.get_value().unwrap()).peekable();
+                if iter.peek().is_some() {
+                    let (i, bit) = iter.next().unwrap();
+                    assert_eq!(bit.get_value().unwrap(), false);
+                    let mut acc = points[i].negate(cs)?;
+                    for (idx, bit) in iter {
+                        if !bit.get_value().unwrap() {
+                            acc = acc.sub_unequal(cs, &mut points[idx])?;
+                        }
+                    }
+                    let mut last_selection = selector_tree.select_last(cs, &bits)?;
+                    AffinePoint::enforce_equal(cs, &mut acc, &mut last_selection)?;
+                } 
+            }
+           
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_tree_selector_for_bn256() {
+        const LIMB_SIZE: usize = 80;
+        const NUM_OF_POINTS: usize = 3;
+
+        let mut cs = TrivialAssembly::<
+            Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
+        >::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let circuit_params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
+
+        let circuit = TestSelectorTreeCircuit { circuit_params, num_of_points: NUM_OF_POINTS };
+        circuit.synthesize(&mut cs).expect("must work");
+        cs.finalize();
+        assert!(cs.is_satisfied()); 
+    }    
 }
  

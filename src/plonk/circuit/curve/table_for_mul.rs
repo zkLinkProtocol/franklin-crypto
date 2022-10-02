@@ -33,7 +33,7 @@ use super::AffinePoint;
 // __________________________________________________
 #[derive(Clone)]
 pub struct ScalarPointTable<E: Engine>{
-    table_entries: [Vec<E::Fr>; 3],
+    pub table_entries: [Vec<E::Fr>; 3],
     table_lookup_map: std::collections::HashMap<E::Fr, (E::Fr, E::Fr)>,
     table_len: usize, 
     name: &'static str,
@@ -63,12 +63,10 @@ impl<E: Engine> ScalarPointTable<E>{
 
             // this scalar_num calculate for the constant by which we will multiply the point
             let (_, scalar_num) = vec_of_bit(i, window);
-            println!("{:?}", scalar_num);
             // sigh of scalar
             let a = i64::abs(scalar_num);
             let diff = scalar_num - a;
             let unsign_nuber = i64::abs(scalar_num);
-            println!("unsign_nuber{:?}", unsign_nuber);
             // 00 || scalar
             let scalar_x_low = E::Fr::from_str(&format!("{}", (i*4))).unwrap(); 
             // 01 || scalar
@@ -88,7 +86,7 @@ impl<E: Engine> ScalarPointTable<E>{
             let scalar = G::Scalar::from_str(&format!("{}", unsign_nuber)).unwrap();
             // n*G
             let mut point = offset_generator.mul(scalar);
-            if diff == 0{
+            if diff != 0{
                 point.negate();
             }
             let generator = AffinePoint::constant(point.into_affine(), params);
@@ -174,6 +172,7 @@ impl<E: Engine> LookupTableInternal<E> for ScalarPointTable<E> {
         if let Some(entry) = self.table_lookup_map.get(&keys[0]) {
             return entry == &(values[0], values[1]);
         }
+
         false
     }
 
@@ -187,6 +186,9 @@ impl<E: Engine> LookupTableInternal<E> for ScalarPointTable<E> {
         Err(SynthesisError::Unsatisfiable)
     }
 }
+
+
+
 mod test {
     use super::*;
 
@@ -199,11 +201,14 @@ mod test {
         let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
         let name : &'static str = "table for affine point";
 
-        let four = Fr::from_str("5").unwrap();
+        let four = Fr::from_str("9").unwrap();
         println!("{:?}", four);
 
 
         let table = ScalarPointTable::<Bn256>::new::<Fq, G1Affine>(2, name, &params);
+
+        dbg!(&table.table_entries);
+
         let column = table.get_table_values_for_polys();
         println!("{:?}", column);
         let res = table.query(&[four]).unwrap();

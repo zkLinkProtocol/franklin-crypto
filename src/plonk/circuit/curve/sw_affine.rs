@@ -74,7 +74,7 @@ pub fn sign_i64(i64: i64)-> Boolean{
 /// NoTe: depends on the width of the window specified in the input
 /// because the program will fill the constant with zeros to convert to skew
 pub fn vec_of_bit(number: usize, window: usize) -> (Vec<Option<bool>>, i64){
-    assert!( window!= 1);
+    // assert!(window != 1);
     let bits_str: &str = &format!("{number:b}");
     let char3: Vec<char> = bits_str.chars().collect::<Vec<_>>();
 
@@ -903,7 +903,13 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         Ok((new, (this, other)))
     }
     #[track_caller]
-    pub fn mul_by_fixed_point<CS: ConstraintSystem<E>>(cs: &mut CS, window: usize, params: &'a RnsParameters<E, G::Base>, scalar: &Num<E>, bit_limit: Option<usize>)-> Result<Self, SynthesisError> {
+    pub fn mul_by_fixed_point<CS: ConstraintSystem<E>>(
+        cs: &mut CS,
+        window: usize,
+        params: &'a RnsParameters<E, G::Base>,
+        scalar: &Num<E>,
+        bit_limit: Option<usize>
+    )-> Result<Self, SynthesisError> {
 
         let columns3 = vec![
             PolyIdentifier::VariablesPolynomial(0), 
@@ -928,8 +934,16 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
 
         let entries = decompose_allocated_num_into_skewed_table(cs, &v, bit_limit)?;
 
-        let offset_generator = G::one();
-        let generator= Self::constant(offset_generator, params);
+
+        let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log_generic_proj::<G::Projective>(
+            &crate::constants::MULTIEXP_DST[..], 
+            1
+        )[0];
+
+        let generator = Self::constant(offset_generator, params);
+
+        // let offset_generator = G::one();
+        // let generator= Self::constant(offset_generator, params);
 
         let entries_without_first_and_last = &entries[1..(entries.len() - 1)];
         let d = (bit_limit.unwrap()-1)/window; 
@@ -942,7 +956,6 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         for i in 0..d{
             let scalar = chunks[i].clone();
             let key = vec_boolean_to_usize(scalar);
-            println!("{:?}", key);
 
             let flag_low_f = Boolean::Constant(false);
             let flag_low_t = Boolean::Constant(true);
@@ -950,17 +963,17 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
             let flag_high_f = Boolean::Constant(false);
             let flag_high_t = Boolean::Constant(true);
 
-            let key_low_x = E::Fr::from_str(&format!("{}", (key*4))).unwrap();
-            println!("{:?}", key_low_x);
-            let key_high_x = E::Fr::from_str(&format!("{}", (key*4+1))).unwrap();
+            // let key_low_x = E::Fr::from_str(&format!("{}", (key*4))).unwrap();
+            // let key_high_x = E::Fr::from_str(&format!("{}", (key*4+1))).unwrap();
     
-            let key_low_y = E::Fr::from_str(&format!("{}", (key*4+2))).unwrap();
-            let key_high_y = E::Fr::from_str(&format!("{}", (key*4+3))).unwrap();
+            // let key_low_y = E::Fr::from_str(&format!("{}", (key*4+2))).unwrap();
+            // let key_high_y = E::Fr::from_str(&format!("{}", (key*4+3))).unwrap();
+            let key = E::Fr::from_str(&format!("{}", (key))).unwrap();
 
-            let low_limbs_x = Self::take_point_from_table(cs, key_low_x, &flag_high_f, &flag_low_f, &affine_point_coord_table)?;
-            let high_limbs_x = Self::take_point_from_table(cs, key_high_x, &flag_high_f, &flag_low_t, &affine_point_coord_table)?;
-            let low_limbs_y = Self::take_point_from_table(cs, key_low_y, &flag_high_t, &flag_low_f, &affine_point_coord_table)?;
-            let high_limbs_y = Self::take_point_from_table(cs, key_high_y, &flag_high_t, &flag_low_t, &affine_point_coord_table)?;
+            let low_limbs_x = Self::take_point_from_table(cs, key, &flag_high_f, &flag_low_f, &affine_point_coord_table)?;
+            let high_limbs_x = Self::take_point_from_table(cs, key, &flag_high_f, &flag_low_t, &affine_point_coord_table)?;
+            let low_limbs_y = Self::take_point_from_table(cs, key, &flag_high_t, &flag_low_f, &affine_point_coord_table)?;
+            let high_limbs_y = Self::take_point_from_table(cs, key, &flag_high_t, &flag_low_t, &affine_point_coord_table)?;
 
 
             //                              Attention, I wrote this code late at night, so there may be errors
@@ -1025,17 +1038,17 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let flag_high_f = Boolean::Constant(false);
         let flag_high_t = Boolean::Constant(true);
 
-        let key_low_x = E::Fr::from_str(&format!("{}", (key*4))).unwrap();
-        println!("{:?}", key_low_x);
-        let key_high_x = E::Fr::from_str(&format!("{}", (key*4+1))).unwrap();
+        // let key_low_x = E::Fr::from_str(&format!("{}", (key*4))).unwrap();
+        // let key_high_x = E::Fr::from_str(&format!("{}", (key*4+1))).unwrap();
 
-        let key_low_y = E::Fr::from_str(&format!("{}", (key*4+2))).unwrap();
-        let key_high_y = E::Fr::from_str(&format!("{}", (key*4+3))).unwrap();
+        // let key_low_y = E::Fr::from_str(&format!("{}", (key*4+2))).unwrap();
+        // let key_high_y = E::Fr::from_str(&format!("{}", (key*4+3))).unwrap();
+        let key = E::Fr::from_str(&format!("{}", (key))).unwrap();
 
-        let low_limbs_x = Self::take_point_from_table(cs, key_low_x, &flag_high_f, &flag_low_f, &affine_point_coord_table_last)?;
-        let high_limbs_x = Self::take_point_from_table(cs, key_high_x, &flag_high_f, &flag_low_t, &affine_point_coord_table_last)?;
-        let low_limbs_y = Self::take_point_from_table(cs, key_low_y, &flag_high_t, &flag_low_f, &affine_point_coord_table_last)?;
-        let high_limbs_y = Self::take_point_from_table(cs, key_high_y, &flag_high_t, &flag_low_t, &affine_point_coord_table_last)?;
+        let low_limbs_x = Self::take_point_from_table(cs, key, &flag_high_f, &flag_low_f, &affine_point_coord_table_last)?;
+        let high_limbs_x = Self::take_point_from_table(cs, key, &flag_high_f, &flag_low_t, &affine_point_coord_table_last)?;
+        let low_limbs_y = Self::take_point_from_table(cs, key, &flag_high_t, &flag_low_f, &affine_point_coord_table_last)?;
+        let high_limbs_y = Self::take_point_from_table(cs, key, &flag_high_t, &flag_low_t, &affine_point_coord_table_last)?;
 
 
         //                              Attention, I wrote this code late at night, so there may be errors
@@ -1069,11 +1082,8 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
             y: y,
             value: g_value
         };
-
         let (acc, _)  = pre_point.clone().double_and_add(cs, point)?;
         num_doubles += 1;
-
-
 
 
 
@@ -1146,9 +1156,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         }
 
         let expr = Num::alloc(cs, expr_val)?;
-        dbg!(2);
-        let column = table.get_table_values_for_polys();
-        let res = table.query(&[key])?;
+        let res = table.query(&[expr_val.unwrap()])?;
 
         let chunk_low_0 = AllocatedNum::alloc(cs, || Ok(res[0]))?;
         let chunk_low_1 =  AllocatedNum::alloc(cs, || Ok(res[1]))?;
@@ -4159,7 +4167,7 @@ mod test {
 
             let endo_parameters = super::super::endomorphism::bn254_endomorphism_parameters();
 
-            let (result, a) = a.mul_split_scalar(&mut cs, &b, endo_parameters.clone(), 2).unwrap();
+            let (result, a) = a.mul_split_scalar(&mut cs, &b, endo_parameters.clone(), 1).unwrap();
 
             let result_recalculated = a_f.mul(b_f.into_repr()).into_affine();
 
@@ -4205,7 +4213,7 @@ mod test {
             if i == 0 {
                 crate::plonk::circuit::counter::reset_counter();
                 let base = cs.n();
-                let _ = a.mul_split_scalar(&mut cs, &b, endo_parameters, 2).unwrap();
+                let _ = a.mul_split_scalar(&mut cs, &b, endo_parameters, 1).unwrap();
                 println!("single multiplication taken {} gates", cs.n() - base);
                 println!(
                     "Affine spent {} gates in equality checks",
@@ -4397,11 +4405,8 @@ mod test {
 
         let a = AffinePoint::alloc(&mut cs, Some(a_f), &params).unwrap();
         let naive_mul_end = cs.get_current_step_number();
-        println!("{:?}", naive_mul_end);
         let (y_odd, _) = AffinePoint::point_compression(a.clone(), &mut cs).unwrap();
         let naive_mul_end = cs.get_current_step_number();
-        dbg!(y_odd);
-        println!("{:?}", naive_mul_end);
         let y_cord = a.y.clone();
         let limbs = y_cord.clone().into_limbs();
         let num_bits = y_cord.representation_params.binary_limbs_bit_widths[0];
@@ -4411,7 +4416,6 @@ mod test {
 
         let vec_boolean = a.into_bits_le(&mut cs, Some(8)).unwrap();
         let y_odd_check = vec_boolean[0];
-        println!("{:?}",  y_odd_check);
         assert!(cs.is_satisfied());
 
         assert_eq!(y_odd.get_variable().unwrap().get_value().unwrap(), y_odd_check.get_variable().unwrap().get_value().unwrap());
@@ -4439,10 +4443,11 @@ mod test {
 
         let b = Num::Variable(b);
 
-        dbg!(1);
+        let mul_begin = cs.get_current_step_number();
         let point: AffinePoint<Bn256, G1Affine> = AffinePoint::mul_by_fixed_point(&mut cs, 2, &params, &b, Some(254)).unwrap();
-  
-        println!("{:?}", point);
+        let mul_end = cs.get_current_step_number();
+        println!("mul_begin{:?}", mul_begin);
+        println!("mul_end{:?}", mul_end);
     }
 
    

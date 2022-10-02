@@ -942,6 +942,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         for i in 0..d{
             let scalar = chunks[i].clone();
             let key = vec_boolean_to_usize(scalar);
+            println!("{:?}", key);
 
             let flag_low_f = Boolean::Constant(false);
             let flag_low_t = Boolean::Constant(true);
@@ -950,6 +951,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
             let flag_high_t = Boolean::Constant(true);
 
             let key_low_x = E::Fr::from_str(&format!("{}", (key*4))).unwrap();
+            println!("{:?}", key_low_x);
             let key_high_x = E::Fr::from_str(&format!("{}", (key*4+1))).unwrap();
     
             let key_low_y = E::Fr::from_str(&format!("{}", (key*4+2))).unwrap();
@@ -1024,6 +1026,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let flag_high_t = Boolean::Constant(true);
 
         let key_low_x = E::Fr::from_str(&format!("{}", (key*4))).unwrap();
+        println!("{:?}", key_low_x);
         let key_high_x = E::Fr::from_str(&format!("{}", (key*4+1))).unwrap();
 
         let key_low_y = E::Fr::from_str(&format!("{}", (key*4+2))).unwrap();
@@ -1144,6 +1147,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
 
         let expr = Num::alloc(cs, expr_val)?;
         dbg!(2);
+        let column = table.get_table_values_for_polys();
         let res = table.query(&[key])?;
 
         let chunk_low_0 = AllocatedNum::alloc(cs, || Ok(res[0]))?;
@@ -4415,7 +4419,7 @@ mod test {
 
     #[test]
     fn test_vec_boolean_to_nuber(){
-        let vec_boolean = [Boolean::Constant(true), Boolean::Constant(true), Boolean::Constant(true)];
+        let vec_boolean = [Boolean::Constant(false), Boolean::Constant(false), Boolean::Constant(false)];
         let number = vec_boolean_to_usize(vec_boolean.to_vec());
         println!("{}", number);
 

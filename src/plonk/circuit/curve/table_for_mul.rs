@@ -63,10 +63,12 @@ impl<E: Engine> ScalarPointTable<E>{
 
             // this scalar_num calculate for the constant by which we will multiply the point
             let (_, scalar_num) = vec_of_bit(i, window);
+            println!("{:?}", scalar_num);
             // sigh of scalar
             let a = i64::abs(scalar_num);
             let diff = scalar_num - a;
             let unsign_nuber = i64::abs(scalar_num);
+            println!("unsign_nuber{:?}", unsign_nuber);
             // 00 || scalar
             let scalar_x_low = E::Fr::from_str(&format!("{}", (i*4))).unwrap(); 
             // 01 || scalar
@@ -99,8 +101,8 @@ impl<E: Engine> ScalarPointTable<E>{
             column1.push(limbs_x[2].get_value().unwrap());
             column2.push(limbs_x[3].get_value().unwrap());
 
-            map.insert(scalar_y_low, (limbs_x[0].get_value().unwrap(), limbs_x[1].get_value().unwrap()));
-            map.insert(scalar_y_low, (limbs_x[2].get_value().unwrap(), limbs_x[3].get_value().unwrap()));
+            map.insert(scalar_x_low, (limbs_x[0].get_value().unwrap(), limbs_x[1].get_value().unwrap()));
+            map.insert(scalar_x_high, (limbs_x[2].get_value().unwrap(), limbs_x[3].get_value().unwrap()));
 
 
 
@@ -113,7 +115,7 @@ impl<E: Engine> ScalarPointTable<E>{
             column2.push(limbs_y[3].get_value().unwrap());
 
             map.insert(scalar_y_low, (limbs_y[0].get_value().unwrap(), limbs_y[1].get_value().unwrap()));
-            map.insert(scalar_y_low, (limbs_y[2].get_value().unwrap(), limbs_y[3].get_value().unwrap()));
+            map.insert(scalar_y_high, (limbs_y[2].get_value().unwrap(), limbs_y[3].get_value().unwrap()));
 
 
         }
@@ -184,4 +186,29 @@ impl<E: Engine> LookupTableInternal<E> for ScalarPointTable<E> {
 
         Err(SynthesisError::Unsatisfiable)
     }
+}
+mod test {
+    use super::*;
+
+    use crate::plonk::circuit::*;
+    use crate::bellman::pairing::bn256::{Fq, Bn256, Fr, G1Affine};
+
+    #[test]
+    fn test_table_for_point(){
+
+        let params = RnsParameters::<Bn256, Fq>::new_for_field(68, 110, 4);
+        let name : &'static str = "table for affine point";
+
+        let four = Fr::from_str("5").unwrap();
+        println!("{:?}", four);
+
+
+        let table = ScalarPointTable::<Bn256>::new::<Fq, G1Affine>(2, name, &params);
+        let column = table.get_table_values_for_polys();
+        println!("{:?}", column);
+        let res = table.query(&[four]).unwrap();
+        println!("{:?}", res);
+
+    }
+
 }

@@ -42,7 +42,7 @@ pub struct ScalarPointTable<E: Engine>{
 
 impl<E: Engine> ScalarPointTable<E>{
     pub fn new<'a, F: PrimeField, G: GenericCurveAffine<Base = F>>(window: usize, name: &'static str, params: &'a RnsParameters<E, F>) -> Self{
-        // the size of the field will be the number of points 2^w * 4;
+        // the size of the table will be the number of points 2^w * 4;
         // we multiply by 4 because one coordinate will occupy 2 cells (a row in the table), 
         // and we need to write down two coordinates x and y
         let bit_window = (2 as u64).pow(window as u32) as usize;
@@ -68,13 +68,13 @@ impl<E: Engine> ScalarPointTable<E>{
             let a = i64::abs(scalar_num);
             let diff = scalar_num - a;
             let unsign_nuber = i64::abs(scalar_num);
-            // 00 || scalar
+            // scalar || 00 
             let scalar_x_low = E::Fr::from_str(&format!("{}", (i*4))).unwrap(); 
-            // 01 || scalar
+            // scalar || 01  
             let scalar_x_high = E::Fr::from_str(&format!("{}", (i*4+1))).unwrap();
-            // 10 || scalar
+            // scalar || 10 
             let scalar_y_low = E::Fr::from_str(&format!("{}", (i*4+2))).unwrap(); 
-            // 11 || scalar
+            // scalar || 11 
             let scalar_y_high = E::Fr::from_str(&format!("{}", (i*4+3))).unwrap();
 
             column0.push(scalar_x_low);
@@ -382,7 +382,8 @@ impl<E: Engine> LookupTableInternal<E> for ScalarPointEndoTable<E> {
     fn box_clone(&self) -> Box<dyn LookupTableInternal<E>> {
         Box::from(self.clone())
     }
-    fn column_is_trivial(&self, _column_num: usize) -> bool {
+    fn column_is_trivial(&self, column_num: usize) -> bool {
+        assert!(column_num < 3);
         false
     }
 

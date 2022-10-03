@@ -55,7 +55,7 @@ use plonk::circuit::curve::point_ram::*;
 
 use plonk::circuit::bigint_new::BITWISE_LOGICAL_OPS_TABLE_NAME;
 use plonk::circuit::hashes_with_tables::get_or_create_table;
-use plonk::circuit::curve::table_for_mul::ScalarPointTable;
+use plonk::circuit::curve::table_for_mul::*;
 use std::sync::Arc;
 
 /// Returns a boolean of the sign of the number
@@ -1326,6 +1326,133 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
 
         Ok((result, this))
     }
+}
+
+impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
+    
+    #[track_caller]
+    pub fn mul_by_fixed_point_with_endo<CS: ConstraintSystem<E>>(
+        cs: &mut CS,
+        window: usize,
+        params: &'a RnsParameters<E, E::Fq>,
+        scalar: &Num<E>,
+        bit_limit: Option<usize>, 
+        endomorphism_params: EndomorphismParameters<E>
+    )-> Result<Self, SynthesisError> {
+
+        let columns3 = vec![
+            PolyIdentifier::VariablesPolynomial(0), 
+            PolyIdentifier::VariablesPolynomial(1), 
+            PolyIdentifier::VariablesPolynomial(2)
+        ];
+        let name : &'static str = "table for affine point with endomorphism";
+        let affine_point_coord_table = get_or_create_table(
+            cs,
+            name,
+            || {
+                LookupTableApplication::new(
+                    name,
+                    ScalarPointEndoTable::<E>::new(window, name, params, endomorphism_params),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        ).unwrap();
+        let v = scalar.get_variable();
+
+        let entries = decompose_allocated_num_into_skewed_table(cs, &v, bit_limit)?;
+
+
+        let offset_generator = crate::constants::make_random_points_with_unknown_discrete_log_generic_proj::<E::G1>(
+            &crate::constants::MULTIEXP_DST[..], 
+            1
+        )[0];
+
+        let generator = Self::constant(offset_generator, params);
+
+        let entries_without_first_and_last = &entries[1..(entries.len() - 1)];
+        let d = (bit_limit.unwrap()-1)/window; 
+        let d_last_block = bit_limit.unwrap()-1 - d*window;
+        // Break the scalar into chunks the size of the window width
+        let chunks: Vec<Vec<Boolean>> = entries_without_first_and_last.chunks(window).map(|s| s.into()).collect();
+
+        let mut num_doubles = 0;
+        let mut pre_point = generator.clone();
+        for i in 0..d{
+            let scalar = chunks[i].clone();
+            let point = AffinePoint::take_affine_point(cs, scalar, &affine_point_coord_table, params)?;
+            let (acc, _)  = pre_point.clone().double_and_add(cs, point)?;
+            num_doubles += 1;
+            pre_point = acc;
+
+        }
+
+        let name : &'static str = "table for latest scalar";
+        let affine_point_coord_table_last = get_or_create_table(
+            cs,
+            name,
+            || {
+                LookupTableApplication::new(
+                    name,
+                    ScalarPointTable::new::<_, E::G1Affine>(d_last_block, name, params),
+                    columns3.clone(),
+                    None,
+                    true
+                )
+            } 
+        ).unwrap();
+
+        let scalar = chunks.last().unwrap();
+        let point = AffinePoint::take_affine_point(cs, scalar.clone(), &affine_point_coord_table_last, params)?;
+        let (acc, _)  = pre_point.clone().double_and_add(cs, point)?;
+        num_doubles += 1;
+
+
+
+        let (with_skew, _ ) = acc.clone().sub_unequal(cs, generator.clone())?;
+
+        let last_entry = entries.last().unwrap();
+
+        let with_skew_value = with_skew.get_value();
+        let with_skew_x = with_skew.x;
+        let with_skew_y = with_skew.y;
+
+        let acc_value = acc.get_value();
+        let acc_x = acc.x;
+        let acc_y = acc.y;
+
+        let final_value = match (with_skew_value, acc_value, last_entry.get_value()) {
+            (Some(s_value), Some(a_value), Some(b)) => {
+                if b {
+                    Some(s_value)
+                } else {
+                    Some(a_value)
+                }
+            },
+            _ => None
+        };
+
+        let (final_acc_x, _) = FieldElement::select(cs, last_entry, with_skew_x, acc_x)?;
+        let (final_acc_y, _) = FieldElement::select(cs, last_entry, with_skew_y, acc_y)?;
+
+        let shift = BigUint::from(1u64) << num_doubles;
+        let as_scalar_repr = biguint_to_repr::<E::Fr>(shift);
+        let offset_value = offset_generator.mul(as_scalar_repr).into_affine();
+        let offset = Self::constant(offset_value, params);
+
+        let result = Self {
+            x: final_acc_x,
+            y: final_acc_y,
+            value: final_value
+        };
+
+        let (result, _) = result.sub_unequal(cs, offset)?;
+
+        Ok(result)
+
+    }
+    
 }
 
 impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {

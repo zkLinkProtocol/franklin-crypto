@@ -336,9 +336,6 @@ impl<E: Engine> ScalarPointEndoTable<E>{
                 map.insert((scalar_y_high_0, scalar2), limbs_y[2].get_value().unwrap());
                 map.insert((scalar_y_high_1, scalar2), limbs_y[3].get_value().unwrap());
     
-    
-    
-
             }
         }
 
@@ -351,6 +348,65 @@ impl<E: Engine> ScalarPointEndoTable<E>{
 
     }
 }
+
+impl<E: Engine> std::fmt::Debug for ScalarPointEndoTable<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScalarPointEndoTable").finish()
+    }
+}
+impl<E: Engine> LookupTableInternal<E> for ScalarPointEndoTable<E> {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn table_size(&self) -> usize {
+        self.table_len
+    }
+    fn num_keys(&self) -> usize {
+        1
+    }
+    fn num_values(&self) -> usize {
+        2
+    }
+    fn allows_combining(&self) -> bool {
+        true
+    }
+    fn get_table_values_for_polys(&self) -> Vec<Vec<E::Fr>> {
+        vec![self.table_entries[0].clone(), self.table_entries[1].clone(), self.table_entries[2].clone()]
+    }
+    fn table_id(&self) -> E::Fr {
+        table_id_from_string(self.name)
+    }
+    fn sort(&self, _values: &[E::Fr], _column: usize) -> Result<Vec<E::Fr>, SynthesisError> {
+        unimplemented!()
+    }
+    fn box_clone(&self) -> Box<dyn LookupTableInternal<E>> {
+        Box::from(self.clone())
+    }
+    fn column_is_trivial(&self, _column_num: usize) -> bool {
+        false
+    }
+
+    fn is_valid_entry(&self, keys: &[E::Fr], values: &[E::Fr]) -> bool {
+        assert!(keys.len() == self.num_keys());
+        assert!(values.len() == self.num_values());
+
+        if let Some(entry) = self.table_lookup_map.get(&(keys[0], keys[1])) {
+            return entry == &(values[0]);
+        }
+        false
+    }
+
+    fn query(&self, keys: &[E::Fr]) -> Result<Vec<E::Fr>, SynthesisError> {
+        assert!(keys.len() == self.num_keys());
+
+        if let Some(entry) = self.table_lookup_map.get(&(keys[0], keys[1])) {
+            return Ok(vec![*entry])
+        }
+
+        Err(SynthesisError::Unsatisfiable)
+    }
+}
+
 
 
 

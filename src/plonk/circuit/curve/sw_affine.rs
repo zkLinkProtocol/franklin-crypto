@@ -1039,11 +1039,6 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let flag_high_f = Boolean::Constant(false);
         let flag_high_t = Boolean::Constant(true);
 
-        // let key_low_x = E::Fr::from_str(&format!("{}", (key*4))).unwrap();
-        // let key_high_x = E::Fr::from_str(&format!("{}", (key*4+1))).unwrap();
-
-        // let key_low_y = E::Fr::from_str(&format!("{}", (key*4+2))).unwrap();
-        // let key_high_y = E::Fr::from_str(&format!("{}", (key*4+3))).unwrap();
         let key = E::Fr::from_str(&format!("{}", (key))).unwrap();
 
         let low_limbs_x = Self::take_point_from_table(cs, key, &flag_high_f, &flag_low_f, &affine_point_coord_table_last)?;

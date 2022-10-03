@@ -18,6 +18,7 @@ use crate::bellman::pairing::ff::{
 use bellman::bn256::Fr;
 use bellman::GenericCurveProjective;
 use plonk::circuit::bigint::FieldElement;
+use plonk::circuit::curve::endomorphism::EndomorphismParameters;
 
 use itertools::Itertools;
 
@@ -161,7 +162,7 @@ impl<E: Engine> LookupTableInternal<E> for ScalarPointTable<E> {
     fn box_clone(&self) -> Box<dyn LookupTableInternal<E>> {
         Box::from(self.clone())
     }
-    fn column_is_trivial(&self, column_num: usize) -> bool {
+    fn column_is_trivial(&self, _column_num: usize) -> bool {
         false
     }
 
@@ -184,6 +185,170 @@ impl<E: Engine> LookupTableInternal<E> for ScalarPointTable<E> {
         }
 
         Err(SynthesisError::Unsatisfiable)
+    }
+}
+
+// A table for storing a AffinePoint from a generator with using endomorphism.
+// Create a table of the view:
+// Point: k*P = k1*P + k2*Q where Q = lambda*P
+// ________________________________________________
+// |  scalar_1 || flag | scalar_2 | limb_low_x_0  |
+// |  scalar_1 || flag | scalar_2 | limb_low_x_1  |
+// |  scalar_1 || flag | scalar_2 | limb_high_x_0 |
+// |  scalar_1 || flag | scalar_2 | limb_high_x_1 |
+// |  scalar_1 || flag | scalar_2 | limb_low_y_0  |
+// |  scalar_1 || flag | scalar_2 | limb_low_y_1  |
+// |  scalar_1 || flag | scalar_2 | limb_high_y_0 |
+// |  scalar_1 || flag | scalar_2 | limb_high_y_1 |
+// |    .   .   .   .   .   .   .   .   .   .     |
+// _______________________________________________
+#[derive(Clone)]
+pub struct ScalarPointEndoTable<E: Engine>{
+    pub table_entries: [Vec<E::Fr>; 3],
+    table_lookup_map: std::collections::HashMap<(E::Fr, E::Fr), E::Fr>,
+    table_len: usize, 
+    name: &'static str,
+}
+
+impl<E: Engine> ScalarPointEndoTable<E>{
+    pub fn new<'a>(
+        window: usize, 
+        name: &'static str, 
+        params: &'a RnsParameters<E, E::Fq>, 
+        endomorphism_params: EndomorphismParameters<E>
+    ) -> Self {
+        // the size of the table will be the number of points 2^w * 8;          
+        // 4 cell for x cords, 4 cell for y cords,
+        let bit_window = (2 as u64).pow(window as u32) as usize;
+        let table_len = (bit_window * bit_window * 8) as usize;
+        // column0 and column1 is our key {scalar_1 || flag, scalar_2 }
+        let mut column0 = Vec::with_capacity(table_len);
+        let mut column1 = Vec::with_capacity(table_len);
+        let mut column2 = Vec::with_capacity(table_len);
+        let mut map = std::collections::HashMap::with_capacity(table_len);
+
+        
+        let offset_generator = E::G1Affine::one();
+
+        for i in 0..bit_window{
+            // for the key we calculate a constant in the binary representation. 
+            // However, we will count the scalar for the point in the skew representation
+            // Example: 0 1 01 11 100       if  window-3 000, 001, 011  --- bin rep
+            // Example: number3 –– 011 ------ 1  skew 111 -7       
+
+            // this scalar_num calculate for the constant by which we will multiply the point
+            let (_, scalar_num_1) = vec_of_bit(i, window);
+            // sigh of scalar
+            let a = i64::abs(scalar_num_1);
+            let diff = scalar_num_1 - a;
+            let unsign_nuber = i64::abs(scalar_num_1);
+            // scalar || 000
+            let scalar_x_low_0 = E::Fr::from_str(&format!("{}", (i*8))).unwrap(); 
+            // scalar || 001
+            let scalar_x_low_1= E::Fr::from_str(&format!("{}", (i*8+1))).unwrap(); 
+            // scalar || 010
+            let scalar_x_high_0 = E::Fr::from_str(&format!("{}", (i*8+2))).unwrap();
+            // scalar || 011
+            let scalar_x_high_1 = E::Fr::from_str(&format!("{}", (i*8+3))).unwrap();
+            // scalar || 100 
+            let scalar_y_low_0 = E::Fr::from_str(&format!("{}", (i*8+4))).unwrap(); 
+            // scalar || 101
+            let scalar_y_low_1 = E::Fr::from_str(&format!("{}", (i*8+5))).unwrap();
+            // scalar || 110 
+            let scalar_y_high_0 = E::Fr::from_str(&format!("{}", (i*8+6))).unwrap();
+            // scalar || 111
+            let scalar_y_high_1 = E::Fr::from_str(&format!("{}", (i*8+7))).unwrap();
+
+            for j in 0..bit_window{
+
+                let (_, scalar_num_2) = vec_of_bit(j, window);
+                // sigh of scalar
+                let a = i64::abs(scalar_num_2);
+                let diff_2 = scalar_num_2 - a;
+                let unsign_nuber_2 = i64::abs(scalar_num_2);
+
+                let scalar2 = E::Fr::from_str(&format!("{}", j)).unwrap(); 
+
+                column0.push(scalar_x_low_0);
+                column0.push(scalar_x_low_1);
+                column0.push(scalar_x_high_0);
+                column0.push(scalar_x_high_1);
+    
+                column0.push(scalar_y_low_0);
+                column0.push(scalar_y_low_1);
+                column0.push(scalar_y_high_0);
+                column0.push(scalar_y_high_1);
+
+                column1.push(scalar2);
+                column1.push(scalar2);
+                column1.push(scalar2);
+                column1.push(scalar2);
+                column1.push(scalar2);
+                column1.push(scalar2);
+                column1.push(scalar2);
+                column1.push(scalar2);
+
+                let scalar_for_p = <E::G1Affine as GenericCurveAffine>::Scalar::from_str(&format!("{}", unsign_nuber)).unwrap();
+                let scalar_for_q = <E::G1Affine as GenericCurveAffine>::Scalar::from_str(&format!("{}", unsign_nuber_2)).unwrap();
+                // k*P = k1*P + k2*Q where Q = lambda*P
+
+                let mut point_pk1 = offset_generator.mul(scalar_for_p);
+                if diff != 0{
+                    point_pk1.negate();
+                }
+
+                let point_q = endomorphism_params.apply_to_g1_point(offset_generator);
+
+                let mut point_qk2 = point_q.mul(scalar_for_q);
+                if diff_2 != 0{
+                    point_qk2.negate();
+                }
+
+                point_pk1.add_assign(&point_qk2);
+                let final_point = point_pk1;
+
+                let generator = AffinePoint::constant(final_point.into_affine(), params);
+
+                let limbs_x = FieldElement::into_limbs(generator.x.clone());
+                // low_limb
+                column2.push(limbs_x[0].get_value().unwrap());
+                column2.push(limbs_x[1].get_value().unwrap());
+                // high_limb
+                column2.push(limbs_x[2].get_value().unwrap());
+                column2.push(limbs_x[3].get_value().unwrap());
+    
+                map.insert((scalar_x_low_0, scalar2), limbs_x[0].get_value().unwrap());
+                map.insert((scalar_x_low_1, scalar2), limbs_x[1].get_value().unwrap());
+                map.insert((scalar_x_high_0, scalar2), limbs_x[2].get_value().unwrap());
+                map.insert((scalar_x_high_1, scalar2), limbs_x[3].get_value().unwrap());
+    
+    
+                let limbs_y = FieldElement::into_limbs(generator.y.clone());
+                // low_limb
+                column2.push(limbs_y[0].get_value().unwrap());
+                column2.push(limbs_y[1].get_value().unwrap());
+                // high_limb
+                column2.push(limbs_y[2].get_value().unwrap());
+                column2.push(limbs_y[3].get_value().unwrap());
+    
+                map.insert((scalar_y_low_0, scalar2), limbs_y[0].get_value().unwrap());
+                map.insert((scalar_y_low_1, scalar2), limbs_y[1].get_value().unwrap());
+                map.insert((scalar_y_high_0, scalar2), limbs_y[2].get_value().unwrap());
+                map.insert((scalar_y_high_1, scalar2), limbs_y[3].get_value().unwrap());
+    
+    
+    
+
+            }
+        }
+
+        Self { 
+            table_entries: [column0, column1, column2],
+            table_lookup_map: map, 
+            table_len,
+            name
+        }
+
     }
 }
 

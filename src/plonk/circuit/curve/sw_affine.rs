@@ -226,6 +226,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         let num_bits = y.representation_params.binary_limbs_bit_widths[0];
         // decomposition by field
         let rcd = constraint_bit_length_ext(cs,  &y_limbs[0].num.get_variable(), num_bits)?;
+
         let a = rcd.get_vars()[0];
 
         let y_odd_witness = Self::make_witness_y_odd(a.value);
@@ -4444,7 +4445,7 @@ mod test {
         let b = Num::Variable(b);
 
         let mul_begin = cs.get_current_step_number();
-        let point: AffinePoint<Bn256, G1Affine> = AffinePoint::mul_by_fixed_point(&mut cs, 2, &params, &b, Some(254)).unwrap();
+        let point: AffinePoint<Bn256, G1Affine> = AffinePoint::mul_by_fixed_point(&mut cs, 32, &params, &b, Some(254)).unwrap();
         let mul_end = cs.get_current_step_number();
         println!("mul_begin{:?}", mul_begin);
         println!("mul_end{:?}", mul_end);

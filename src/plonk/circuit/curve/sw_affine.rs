@@ -322,7 +322,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     ) -> Result<(Self, (Self, Self)), SynthesisError> {
         match (self.get_value(), other.get_value()) {
             (Some(first), Some(second)) => {
-                assert!(first != second, "points are actually equal");
+                assert!(first != second, "points are actually equal with value {}", first);
             },
             _ => {}
         }
@@ -353,7 +353,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     ) -> Result<(Self, (Self, Self)), SynthesisError> {
         match (self.get_value(), other.get_value()) {
             (Some(first), Some(second)) => {
-                assert!(first != second, "points are actually equal");
+                assert!(first != second, "points are actually equal with value {}", first);
             },
             _ => {}
         }
@@ -436,7 +436,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
     ) -> Result<(Self, (Self, Self)), SynthesisError> {
         match (self.get_value(), other.get_value()) {
             (Some(first), Some(second)) => {
-                assert!(first != second, "points are actually equal");
+                assert!(first != second, "points are actually equal with value {}", first);
             },
             _ => {}
         }

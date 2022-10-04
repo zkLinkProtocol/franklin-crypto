@@ -362,10 +362,10 @@ impl<E: Engine> LookupTableInternal<E> for ScalarPointEndoTable<E> {
         self.table_len
     }
     fn num_keys(&self) -> usize {
-        1
+        2
     }
     fn num_values(&self) -> usize {
-        2
+        1
     }
     fn allows_combining(&self) -> bool {
         true

@@ -69,6 +69,38 @@ pub fn sign_i64(i64: i64)-> Boolean{
         Boolean::Constant(true)
     }
 }
+pub fn vec_bool_for_skew(number: usize, window: usize) -> (Vec<Option<bool>>, i64){
+    let bits_str: &str = &format!("{number:b}");
+    let char3: Vec<char> = bits_str.chars().collect::<Vec<_>>();
+
+    let zero_count = window - bits_str.len();
+    let mut vec_bool = vec![Some(false); zero_count];
+
+    for i in char3.iter(){
+        let bool = match i {
+            '0' => false, 
+            '1' => true,
+            _ => panic!()
+        };
+        vec_bool.push(Some(bool));
+        
+    };
+
+    let mut constanta: i64 = 0;
+    for i in 0..vec_bool.len(){
+        constanta *= 2;
+        let high_bit = vec_bool[i].unwrap();
+        let high_contribution = if high_bit {
+            1
+        } else{
+            -1
+        };
+
+        constanta += high_contribution ;
+    }
+
+    (vec_bool, constanta)
+}
 /// Convert the number into skew form without the last element
 /// Example: 7 -> 111 -> -1-1-1 -> -7
 /// NoTe: depends on the width of the window specified in the input
@@ -1100,9 +1132,9 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         // scalar || 000
         let low_limbs_x_0 = Self::take_limb_of_point_from_endotable(cs, key_1, key_2, &flag_f, &flag_f, &flag_f, &table)?;
         // scalar || 001
-        let low_limbs_x_1 = Self::take_limb_of_point_from_endotable(cs, key_2, key_2, &flag_f, &flag_f, &flag_t, &table)?;
+        let low_limbs_x_1 = Self::take_limb_of_point_from_endotable(cs, key_1, key_2, &flag_f, &flag_f, &flag_t, &table)?;
         // scalar || 010
-        let high_limbs_x_0 = Self::take_limb_of_point_from_endotable(cs, key_2, key_2, &flag_f, &flag_t, &flag_f, &table)?;
+        let high_limbs_x_0 = Self::take_limb_of_point_from_endotable(cs, key_1, key_2, &flag_f, &flag_t, &flag_f, &table)?;
         // scalar || 011
         let high_limbs_x_1 = Self::take_limb_of_point_from_endotable(cs, key_1, key_2, &flag_f, &flag_t, &flag_t, &table)?;
         // scalar || 100 
@@ -1220,7 +1252,8 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
         flag_1: &Boolean, 
         flag_2: &Boolean,
         flag_3: &Boolean, 
-        table: &Arc<LookupTableApplication<E>>)-> Result<AllocatedNum<E>, SynthesisError>{
+        table: &Arc<LookupTableApplication<E>>
+    ) -> Result<AllocatedNum<E>, SynthesisError>{
         let mut two = E::Fr::one();
         two.double();
         let mut minus_one = E::Fr::one();
@@ -1244,7 +1277,7 @@ impl<'a, E: Engine, G: GenericCurveAffine> AffinePoint<'a, E, G> where <G as Gen
             flag.double();
             flag.double();
             val.add_assign(&flag);
-            let mut flag_2 = flag_1.get_value_in_field::<E>().grab()?;
+            let mut flag_2 = flag_2.get_value_in_field::<E>().grab()?;
             flag_2.double();
             val.add_assign(&flag_2);
             val.add_assign(&flag_3.get_value_in_field::<E>().grab()?);
@@ -1661,7 +1694,6 @@ impl<'a, E: Engine> AffinePoint<'a, E, E::G1Affine> {
         };
 
         let mut bits_boolean = Vec::with_capacity(bits.len());
-        println!("{:?}", bits);
         for b in bits {
             let a = Boolean::from(AllocatedBit::alloc(
                 cs,
@@ -2786,7 +2818,6 @@ pub fn decompose_allocated_num_into_skewed_table<E: Engine, CS: ConstraintSystem
     bit_limit: Option<usize>
 ) -> Result<Vec<Boolean>, SynthesisError> {
     let bit_values = compute_skewed_naf_table(&num.get_value(), bit_limit);
-    println!("bit_values{:?}", bit_values);
     let mut bits = Vec::with_capacity(bit_values.len());
     for b in bit_values {
         let a = Boolean::from(AllocatedBit::alloc(
@@ -4738,7 +4769,7 @@ mod test {
         let b = Num::Variable(b);
 
         let mul_begin = cs.get_current_step_number();
-        let point: AffinePoint<Bn256, G1Affine> = AffinePoint::mul_by_fixed_point(&mut cs, 8, &params, &b, Some(254)).unwrap();
+        let point: AffinePoint<Bn256, G1Affine> = AffinePoint::mul_by_fixed_point(&mut cs, 2, &params, &b, Some(254)).unwrap();
         let mul_end = cs.get_current_step_number();
         println!("mul_begin{:?}", mul_begin);
         println!("mul_end{:?}", mul_end);
@@ -4760,7 +4791,16 @@ mod test {
 
         let endo_parameters = super::super::endomorphism::bn254_endomorphism_parameters();
         let mul_begin = cs.get_current_step_number();
-        let point: AffinePoint<Bn256, G1Affine> = AffinePoint::mul_by_fixed_point_with_endo(&mut cs, 2, &params, &b, Some(256), endo_parameters).unwrap();
+
+        let point: AffinePoint<Bn256, G1Affine> = AffinePoint::mul_by_fixed_point_with_endo(
+            &mut cs, 
+            2,
+            &params, 
+            &b, 
+            Some(254), 
+            endo_parameters
+        ).unwrap();
+
         let mul_end = cs.get_current_step_number();
         println!("mul_begin{:?}", mul_begin);
         println!("mul_end{:?}", mul_end);
@@ -4772,8 +4812,12 @@ mod test {
         TrivialAssembly::<Bn256, Width4WithCustomGates, Width4MainGateWithDNext>::new();
         let scalar = Fr::from_str("3").unwrap();
         let b = AllocatedNum::alloc(&mut cs, || Ok(scalar)).unwrap();
-        let result = AffinePoint::decompose_into_binary_for_skew(&mut cs, &b, Some(6)).unwrap();
-        println!("{:?}", result);
+        let mul_begin = cs.get_current_step_number();
+        let result = AffinePoint::decompose_into_binary_for_skew(&mut cs, &b, Some(254)).unwrap();
+        let mul_end = cs.get_current_step_number();
+        println!("mul_begin{:?}", mul_begin);
+        println!("mul_end{:?}", mul_end);
+
     }
 
    

@@ -19,6 +19,7 @@ use bellman::bn256::Fr;
 use bellman::GenericCurveProjective;
 use plonk::circuit::bigint::FieldElement;
 use plonk::circuit::curve::endomorphism::EndomorphismParameters;
+use plonk::circuit::curve::vec_bool_for_skew;
 
 use itertools::Itertools;
 
@@ -237,7 +238,7 @@ impl<E: Engine> ScalarPointEndoTable<E>{
             // Example: number3 –– 011 ------ 1  skew 111 -7       
 
             // this scalar_num calculate for the constant by which we will multiply the point
-            let (_, scalar_num_1) = vec_of_bit(i, window);
+            let (_, scalar_num_1) = vec_bool_for_skew(i, window);
             // sigh of scalar
             let a = i64::abs(scalar_num_1);
             let diff = scalar_num_1 - a;
@@ -261,7 +262,7 @@ impl<E: Engine> ScalarPointEndoTable<E>{
 
             for j in 0..bit_window{
 
-                let (_, scalar_num_2) = vec_of_bit(j, window);
+                let (_, scalar_num_2) = vec_bool_for_skew(j, window);
                 // sigh of scalar
                 let a = i64::abs(scalar_num_2);
                 let diff_2 = scalar_num_2 - a;

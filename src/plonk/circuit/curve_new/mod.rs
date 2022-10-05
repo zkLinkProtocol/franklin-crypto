@@ -12,3 +12,6 @@ pub use self::point_selection_tree::*;
 
 pub mod ram_via_hashes;
 pub use self::ram_via_hashes::*;
+
+pub mod table;
+pub use self::table::*;

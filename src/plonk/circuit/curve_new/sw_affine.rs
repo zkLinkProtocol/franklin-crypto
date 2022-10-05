@@ -2179,6 +2179,208 @@ where <G as GenericCurveAffine>::Base: PrimeField
         };
         Ok(new)
     }
+
+    // #[track_caller]
+    // pub fn mul_generator_by_scalar<CS: ConstraintSystem<E>>(
+    //     cs: &mut CS, scalar: &FieldElement<'a, E, G::Scalar>,
+    //     params: &'a CurveCircuitParameters<'a, E, G, T>,
+    // )-> Result<Self, SynthesisError> {
+    //     let scalar_rns_params = &params.scalar_field_rns_params;
+    //     let base_rns_params = &params.base_field_rns_params;
+
+    //     let columns3 = vec![
+    //         PolyIdentifier::VariablesPolynomial(0), 
+    //         PolyIdentifier::VariablesPolynomial(1), 
+    //         PolyIdentifier::VariablesPolynomial(2)
+    //     ];
+    //     let name : &'static str = "table for scalar multiplication of generator";
+    //     let gen_mul_table = get_or_create_table(
+    //         cs,
+    //         name,
+    //         || {
+    //             LookupTableApplication::new(
+    //                 name,
+    //                 GeneratorScalarMulTable::<E>::new(window, name, params),
+    //                 columns3.clone(),
+    //                 None,
+    //                 true
+    //             )
+    //         } 
+    //     ).expect("should create table");
+
+    //     let limit = params.get_endomorphism_bitlen_limit();
+    //     let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
+    //         Some(x) => {
+    //             let dcmp = params.calculate_decomposition(x);
+    //             (Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus))
+    //         },
+    //         None => (None, None, None, None)
+    //     };
+    //     let mut k1_abs = FieldElement::alloc_for_known_bitwidth(cs, k1_abs_wit, limit, scalar_rns_params, true)?;
+    //     let mut k2_abs = FieldElement::alloc_for_known_bitwidth(cs, k2_abs_wit, limit, scalar_rns_params, true)?;
+    //     let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
+    //     let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
+
+    //     // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
+    //     let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
+    //     let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
+    //     let mut chain = FieldElementsChain::new();
+    //     chain.add_pos_term(&k1).add_neg_term(&scalar);
+    //     let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
+    //     FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
+
+    //     let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
+    //     let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
+
+    //     let generator = AffinePoint::constant(G::one(), params);
+    //     let point = generator.conditionally_negate(cs, &k1_is_negative_flag)?;
+    //     let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+
+    //     let constraints_counter_start = cs.get_current_step_number(); 
+    //     let x_endo = point.get_x().mul(cs, &beta)?;
+    //     let constraints_counter_end = cs.get_current_step_number();
+    //     assert_eq!(constraints_counter_end - constraints_counter_start, 0); 
+        
+    //     let y_endo = generator.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
+    //     let point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
+        
+    //     let initial_acc = selector_tree.get_initial_accumulator();
+       
+    //     let offset_generator = AffinePointExt::constant(
+    //         params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
+    //         params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
+    //         &params.base_field_rns_params
+    //     );
+    //     let mut acc = offset_generator.add_unequal_unchecked(
+    //         cs, &AffinePointExt::from(initial_acc)
+    //     )?;
+    //     let num_of_doubles = k1_decomposition[1..].len();
+    //     let iter = k1_decomposition.into_iter().zip(k2_decomposition.into_iter()).rev().identify_first_last();
+
+    //     let naive_mul_start = cs.get_current_step_number();
+    //     for (_is_first, is_last, (k1_bit, k2_bit)) in iter {
+    //         let flags = [k1_bit, k2_bit];
+    //         if !is_last {
+    //             let tmp = selector_tree.select(cs, &flags[..])?;
+    //             let mut tmp = AffinePointExt::from(tmp);
+                    
+    //             acc = acc.double_and_add_unchecked(cs, &mut tmp)?;
+    //         }
+    //         else {
+    //             let naive_mul_end = cs.get_current_step_number();
+    //             println!("gates fpr main cycle: {}", naive_mul_end - naive_mul_start);
+    //             let tmp = selector_tree.select_last(cs, &flags[..])?;
+    //             let mut tmp = AffinePointExt::from(tmp);
+    //             acc = acc.add_unequal_unchecked(cs, &mut tmp)?;
+    //         }
+    //     }
+       
+    //     let mut scaled_offset = offset_generator;
+    //     for _ in 0..num_of_doubles {
+    //         scaled_offset = scaled_offset.double(cs)?;
+    //     }
+    //     acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?; 
+
+    //     let final_x = acc.get_x().c0;
+    //     let final_y = acc.get_y().c0;
+    //     let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
+    //         G::from_xy_checked(x, y).expect("should be on the curve")
+    //     }); 
+
+    //    let result = AffinePoint { 
+    //         x: final_x, 
+    //         y: final_y, 
+    //         value: final_value, 
+    //         is_in_subgroup: self.is_in_subgroup, 
+    //         circuit_params: self.circuit_params 
+    //     };
+    //     Ok(result)
+
+    //     let entries_1_without_first_and_last = &entries_1[1..(entries_1.len() - 1)];
+    //     let entries_2_without_first_and_last = &entries_2[1..(entries_2.len() - 1)];
+    //     let d = (bit_limit.unwrap()-1)/window; 
+    //     let d_last_block = bit_limit.unwrap()-1 - d*window;
+    //     // Break the scalar into chunks the size of the window width
+    //     let chunks_1: Vec<Vec<Boolean>> = entries_1_without_first_and_last.chunks(window).map(|s| s.into()).collect();
+    //     let chunks_2: Vec<Vec<Boolean>> = entries_2_without_first_and_last.chunks(window).map(|s| s.into()).collect();
+
+    //     let mut num_doubles = 0;
+    //     let mut pre_point = generator.clone();
+    //     for i in 0..d{
+    //         let scalar_for_flags = chunks_1[i].clone();
+    //         let scalar_2 = chunks_2[i].clone();
+    //         let point = AffinePoint::take_affine_point_with_endo(cs, scalar_for_flags, scalar_2, &affine_point_coord_table, params)?;
+    //         let (acc, _)  = pre_point.clone().double_and_add(cs, point)?;
+    //         num_doubles += 1;
+    //         pre_point = acc;
+
+    //     }
+    //     let name : &'static str = "table for latest scalar with endo";
+    //     let affine_point_coord_table_last = get_or_create_table(
+    //         cs,
+    //         name,
+    //         || {
+    //             LookupTableApplication::new(
+    //                 name,
+    //                 ScalarPointEndoTable::<E>::new(d_last_block, name, params, endomorphism_params),
+    //                 columns3.clone(),
+    //                 None,
+    //                 true
+    //             )
+    //         } 
+    //     ).unwrap();
+
+    //     let scalar_for_flags = chunks_1.last().unwrap();
+    //     let scalar_2 = chunks_2.last().unwrap();
+    //     let point = AffinePoint::take_affine_point_with_endo(cs, scalar_for_flags.clone(), scalar_2.clone(), &affine_point_coord_table_last, params)?;
+    //     let (acc, _)  = pre_point.clone().double_and_add(cs, point)?;
+    //     num_doubles += 1;
+
+
+
+    //     let (with_skew, _ ) = acc.clone().sub_unequal(cs, generator.clone())?;
+    //     let last_entry_1 = entries_1.last().unwrap();
+    //     let last_entry_2 = entries_2.last().unwrap();
+
+    //     let with_skew_value = with_skew.get_value();
+    //     let with_skew_x = with_skew.x;
+    //     let with_skew_y = with_skew.y;
+
+    //     let acc_value = acc.get_value();
+    //     let acc_x = acc.x;
+    //     let acc_y = acc.y;
+    //     let last_entry = last_entry_1.get_value().unwrap() && last_entry_2.get_value().unwrap();
+    //     let final_value = match (with_skew_value, acc_value, last_entry) {
+    //         (Some(s_value), Some(a_value), b) => {
+    //             if b {
+    //                 Some(s_value)
+    //             } else {
+    //                 Some(a_value)
+    //             }
+    //         }
+    //         _ => None,
+    //     };
+
+    //     let last_entry = Boolean::and(cs, last_entry_1, last_entry_2)?;
+    //     let (final_acc_x, _) = FieldElement::select(cs, &last_entry, with_skew_x, acc_x)?;
+    //     let (final_acc_y, _) = FieldElement::select(cs, &last_entry, with_skew_y, acc_y)?;
+
+    //     let shift = BigUint::from(1u64) << num_doubles;
+    //     let as_scalar_repr = biguint_to_repr::<E::Fr>(shift);
+    //     let offset_value = offset_generator.mul(as_scalar_repr).into_affine();
+    //     let offset = Self::constant(offset_value, params);
+
+    //     let result = Self {
+    //         x: final_acc_x,
+    //         y: final_acc_y,
+    //         value: final_value,
+    //     };
+
+    //     let (result, _) = result.sub_unequal(cs, offset)?;
+
+    //     Ok(result)
+
+    // }
 }
 
 
@@ -2812,11 +3014,11 @@ mod test {
             println!("num of gates for affine multiexp var1: {}", naive_mul_end - naive_mul_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            // let naive_mul_start = cs.get_current_step_number();
-            // let mut result = AffinePoint::safe_multiexp_affine2(cs, &scalars, &points)?;
-            // let naive_mul_end = cs.get_current_step_number();
-            // println!("num of gates for affine multiexp var2: {}", naive_mul_end - naive_mul_start);
-            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            let naive_mul_start = cs.get_current_step_number();
+            let mut result = AffinePoint::safe_multiexp_affine2(cs, &scalars, &points)?;
+            let naive_mul_end = cs.get_current_step_number();
+            println!("num of gates for affine multiexp var2: {}", naive_mul_end - naive_mul_start);
+            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
             let naive_mul_start = cs.get_current_step_number();
             let mut result = AffinePoint::safe_multiexp_affine3(cs, &scalars, &points)?;
@@ -2825,12 +3027,12 @@ mod test {
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
 
-            // let naive_mul_start = cs.get_current_step_number();
-            // let result = AffinePoint::safe_multiexp_projective(cs, &scalars, &points)?;
-            // let mut result = unsafe { result.convert_to_affine(cs)? };
-            // let naive_mul_end = cs.get_current_step_number();
-            // println!("num of gates for proj multiexp: {}", naive_mul_end - naive_mul_start);
-            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            let naive_mul_start = cs.get_current_step_number();
+            let result = AffinePoint::safe_multiexp_projective(cs, &scalars, &points)?;
+            let mut result = unsafe { result.convert_to_affine(cs)? };
+            let naive_mul_end = cs.get_current_step_number();
+            println!("num of gates for proj multiexp: {}", naive_mul_end - naive_mul_start);
+            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
             Ok(())
         }
@@ -2839,7 +3041,7 @@ mod test {
     #[test]
     fn test_multiexp_scalar_multiplication_for_bn256() {
         const LIMB_SIZE: usize = 80;
-        const NUM_OF_POINTS: usize = 3;
+        const NUM_OF_POINTS: usize = 2;
 
         let mut cs = TrivialAssembly::<
             Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext

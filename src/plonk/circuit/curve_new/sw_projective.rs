@@ -280,7 +280,8 @@ where <G as GenericCurveAffine>::Base: PrimeField
         )?;
         let x_for_safe_z = self.x.div(cs, &safe_z)?;
         let y_for_safe_z = self.y.div(cs, &safe_z)?;
-        let x = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.x, &x_for_safe_z)?;
+        //let x = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.x, &x_for_safe_z)?;
+        let x = x_for_safe_z;
         let y = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.y, &y_for_safe_z)?;
 
         let value = match (is_point_at_infty.get_value(), self.get_value(), AffinePoint::get_value(&default)) {
@@ -493,6 +494,39 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let z1 = self.z.clone();
         let x2 = other.x.clone();
         let y2 = other.y.clone();
+
+        // we start by computing Z3:
+        // Z3 = y1 * y2 + b3 * z1; (and hence computed t1)
+        // t4 ← y2 · z1 + y1
+        // X3 ← b3 * z1  − t4 * y3 
+        // Y3 ← x2 · z1 + x1
+        // 21. Y3 ← Y3 · t0
+        // 17. Y3 ← b3 · Y3
+        // 22. t1 ← t1 · Z3 
+        // 23. Y3 ← t1 + Y3  
+
+        // t0 = x1 * x2
+        // t1 = y1 * y2
+        // t3 = (x2 + y2)(x1+y1) - x1 * x2 + y1 * y2
+
+        
+        
+
+        // t0 = 3 * t0
+        // t2 ← - and here b3 is constant 
+
+        // Z3 ← t1 + t2
+        // t1 ← t1 − t2 
+      
+        
+        // 19. t2 ← t3 · t1 
+        
+        
+        
+        // 24. t0 ← t0 · t3
+        // 25. Z3 ← Z3 · t4 
+        // 26. Z3 ← Z3 + t0
+
 
         // 1. t0 ← X1 · X2 
         let t0 =x1.mul(cs, &x2)?;

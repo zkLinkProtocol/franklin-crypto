@@ -23,6 +23,7 @@ use plonk::circuit::boolean::Boolean;
 use plonk::circuit::bigint_new::*;
 use plonk::circuit::allocated_num::Num;
 use plonk::circuit::linear_combination::LinearCombination;
+use plonk::circuit::hashes_with_tables::utils::{IdentifyFirstLast, u64_to_ff};
 
 use itertools::Itertools;
 use std::collections::HashMap;
@@ -251,6 +252,7 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
     }
 }
 
+
 #[derive(Clone, Debug)]
 pub(crate) struct SelectorTree<E: Engine, T: TreeSelectable<E>> {
     entries: Vec<T>, // raw elements P1, P2, ..., Pn
@@ -322,6 +324,8 @@ impl<E: Engine, T: TreeSelectable<E>> SelectorTree<E, T> {
 
     pub fn select_last<CS: ConstraintSystem<E>>(&self, cs: &mut CS, bits: &[Boolean]) -> Result<T, SynthesisError>
     {
+        // TODO: Not always correct - should mix additional generator
+        
         // on every iteration of the inner loop (except the last one) of the point by scalar mul algorithm
         // we want to retrieve the point which is dependent on bits as follows:
         // bits = [b_0, b_1, .., b_n] -> /sum (2* b_i - 1) P_i = A
@@ -339,6 +343,170 @@ impl<E: Engine, T: TreeSelectable<E>> SelectorTree<E, T> {
     pub fn get_initial_accumulator(&self) -> T {
         // initial accumulator value is equal to + P1 + P2 + ... + Pn
         self.precompute[self.initial_acc_idx].clone()
+    }
+}
+
+
+#[derive(Clone, Debug)]
+pub(crate) struct SelectorTree2<'a, E: Engine, G: GenericCurveAffine, T> 
+where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
+{
+    entries: Vec<AffinePoint<'a, E, G, T>>, // raw elements P1, P2, ..., Pn
+    precompute: Vec<AffinePoint<'a, E, G, T>>, // precomputed linear combinations +/ P1 +/ P2 +/- ... +/ Pn
+    initial_point_affine: AffinePoint<'a, E, G, T>,
+    initial_point_proj: ProjectivePoint<'a, E, G, T>,
+    iniitial_point_is_infty: Boolean,
+}
+
+impl<'a, E: Engine, G: GenericCurveAffine, T> SelectorTree2<'a, E, G, T> 
+where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
+{
+    fn get_initial(&self) -> (AffinePoint<'a, E, G, T>, Boolean, ProjectivePoint<'a, E, G, T>) {
+        (self.initial_point_affine.clone(), self.iniitial_point_is_infty, self.initial_point_proj.clone())
+    }
+    
+    pub fn new<CS: ConstraintSystem<E>>(
+        cs: &mut CS, entries: &[AffinePoint<'a, E, G, T>]
+    ) -> Result<Self, SynthesisError> {
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        enum Sign {
+            Plus,
+            Minus
+        }
+
+        let first_elem = entries.get(0).expect("Entries must be nonempty");
+        let params = first_elem.circuit_params;
+        let initial = ProjectivePoint::from(first_elem.clone());
+        
+        // using Selector tree makes sense only if there are more than 1 element
+        let mut entries = entries.to_vec();
+        let mut workpad : Vec<(Sign, ProjectivePoint<'a, E, G, T>)> = vec![(Sign::Plus, initial)];
+
+        for (_is_first, _is_last, elem) in entries[1..].iter_mut().identify_first_last() {
+            let mut new_working_pad = Vec::with_capacity(workpad.len() << 1);
+            for (sign, acc) in workpad.iter_mut() {
+                match sign {
+                    Sign::Plus => {
+                        new_working_pad.push((Sign::Minus, acc.sub_mixed(cs, elem)?));
+                        new_working_pad.push((Sign::Plus, acc.add_mixed(cs, elem)?));   
+                    },
+                    Sign::Minus => {
+                        new_working_pad.push((Sign::Plus, acc.add_mixed(cs, elem)?));   
+                        new_working_pad.push((Sign::Minus, acc.sub_mixed(cs, elem)?));
+                    },
+                };
+            }
+            workpad = new_working_pad
+        }
+        assert_eq!(workpad.len(), 1 << (entries.len() - 1));
+        
+        let point_uninitialized = AffinePoint::uninitialized(params);
+        let mut precompute = Vec::with_capacity(workpad.len());
+        let mut initial_point_affine = point_uninitialized.clone();
+        let mut iniitial_point_is_infty = Boolean::constant(false);
+        let mut initial_point_proj = ProjectivePoint::zero(params);
+        
+        for (_is_first, is_last, elem) in workpad.into_iter().identify_first_last() {
+            let (_sign, mut point_proj) = elem;
+            let (point_affine, is_infty) = point_proj.convert_to_affine_or_default(cs, &point_uninitialized)?;
+            
+            if is_last {
+                initial_point_affine = point_affine.clone();
+                iniitial_point_is_infty = is_infty;
+                initial_point_proj = point_proj;
+            }
+            precompute.push(point_affine);
+        }
+        Ok(SelectorTree2 {
+            entries, 
+            precompute,
+            initial_point_affine,
+            iniitial_point_is_infty,
+            initial_point_proj
+        })
+    }
+
+    fn select<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, bits: &[Boolean]
+    ) -> Result<(AffinePoint<'a, E, G, T>, Boolean), SynthesisError> {
+        assert_eq!(bits.len(), self.entries.len());
+        let mut selector_subtree = self.precompute.clone(); 
+        
+        for (k0_bit, k1_bit) in bits.iter().rev().tuple_windows() {
+            let mut new_selector_subtree = Vec::with_capacity(selector_subtree.len() >> 1);
+            let xor_flag = Boolean::xor(cs, &k0_bit, &k1_bit)?;
+            for (first, second) in selector_subtree.into_iter().tuples() {
+                let selected = AffinePoint::conditionally_select(cs, &xor_flag, &first, &second)?;
+                new_selector_subtree.push(selected);
+            }
+            selector_subtree = new_selector_subtree;
+        }
+
+        assert_eq!(selector_subtree.len(), 1);
+        let last_flag = bits[0];
+        let selected = selector_subtree.pop().unwrap();
+        
+        let is_point_at_infty = FieldElement::is_zero(&mut selected.get_y(), cs)?;
+        let candidate = AffinePoint::conditionally_negate(&selected, cs, &last_flag.not())?;
+
+        Ok((candidate, is_point_at_infty))
+    }
+   
+    pub fn double_and_add_selected<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>, bits: &[Boolean]
+    ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError> 
+    {
+        let (candidate, is_point_at_infty) = self.select(cs, bits)?;
+        let acc_modified = acc.double_and_add_unchecked(cs, &AffinePointExt::from(candidate))?;
+        AffinePointExt::conditionally_select(cs, &is_point_at_infty, &acc, &acc_modified)
+    }
+
+    pub fn add_initial_into_accumulator<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>
+    ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError> 
+    {
+        // initial accumulator value is equal to + P1 + P2 + ... + Pn
+        let (point, is_point_at_infty, _point_proj) = self.get_initial();
+        let acc_modified = acc.add_unequal_unchecked(cs, &AffinePointExt::from(point))?;
+        AffinePointExt::conditionally_select(cs, &is_point_at_infty, &acc, &acc_modified)
+    }
+
+    pub fn add_last_into_accumulator<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>, bits: &[Boolean]
+    ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError>
+    { 
+        // on every iteration of the inner loop (except the last one) of the point by scalar mul algorithm
+        // we want to retrieve the point which is dependent on bits as follows:
+        // bits = [b_0, b_1, .., b_n] -> /sum (2* b_i - 1) P_i = A
+        // on the last iteration we do however want to add the point \sum (b_i - 1) * P_i = B
+        // if we denote the starting value of accumulator = /sum P_i as C
+        // then it is obvious that the following relation always holds: A - C = 2 * B
+        // hence we reduced the computation to one subtraction and one doubling
+        
+        let (selected, is_selected_point_at_infty) = self.select(cs, &bits)?;
+        let params = selected.circuit_params;
+        let rns_params = &params.base_field_rns_params;
+
+        let proj_x = selected.get_x();
+        let proj_y = FieldElement::conditionally_select(
+            cs, &is_selected_point_at_infty, &FieldElement::one(rns_params), &selected.get_y()
+        )?;
+        let proj_z = FieldElement::conditionally_select(
+            cs, &is_selected_point_at_infty, &FieldElement::zero(rns_params), &FieldElement::one(rns_params)
+        )?;
+        let a = ProjectivePoint::from_coordinates_unchecked(
+            proj_x, proj_y, proj_z, selected.is_in_subgroup, params
+        );
+        
+        let (_, _, c) = self.get_initial();
+        let mut a_minus_c = a.sub(cs, &c)?;
+        let mut res_proj = ProjectivePoint::halving(cs, &mut a_minus_c)?;
+
+        let (res_affine, is_infty) = res_proj.convert_to_affine_or_default(
+            cs, &AffinePoint::uninitialized(params)
+        )?;
+        let acc_modified = acc.add_unequal_unchecked(cs, &AffinePointExt::from(res_affine))?;
+        AffinePointExt::conditionally_select(cs, &is_infty, &acc, &acc_modified)
     }
 }
 
@@ -631,7 +799,7 @@ mod test {
                 |_| std::iter::once(in_circuit_false).chain(std::iter::once(in_circuit_true))
             ).multi_cartesian_product();
 
-            for bits in iter {
+            for (is_first, _is_last, bits) in iter.identify_first_last() {
                 let mut acc = points[0].conditionally_negate(cs, &bits[0].not())?;
                 for (point, bit) in points.iter().zip(bits.iter()).skip(1) {
                     let mut to_add = point.conditionally_negate(cs, &bit.not())?;
@@ -646,19 +814,24 @@ mod test {
                 }
 
                 // check what should be done on the last iterator
-                let mut iter = bits.iter().enumerate().skip_while(|(_i, x)| x.get_value().unwrap()).peekable();
-                if iter.peek().is_some() {
-                    let (i, bit) = iter.next().unwrap();
-                    assert_eq!(bit.get_value().unwrap(), false);
-                    let mut acc = points[i].negate(cs)?;
-                    for (idx, bit) in iter {
-                        if !bit.get_value().unwrap() {
-                            acc = acc.sub_unequal(cs, &mut points[idx])?;
+                let mut is_infty = true;
+                let mut acc = AffinePoint::constant(G::one(), &self.circuit_params);
+                for (point, bit) in points.iter().zip(bits.iter()) {
+                    if !bit.get_value().unwrap() {
+                        if is_infty {
+                            is_infty = false;
+                            acc = point.negate(cs)?;
+                        }
+                        else {
+                            let mut tmp = point.clone();    
+                            acc = acc.sub_unequal(cs, &mut tmp)?;
                         }
                     }
-                    let mut last_selection = selector_tree.select_last(cs, &bits)?;
+                }
+                if !is_infty && !is_first {
+                    let mut last_selection = selector_tree.select_last(cs, &bits[..])?; 
                     AffinePoint::enforce_equal(cs, &mut acc, &mut last_selection)?;
-                } 
+                }
             }
            
             Ok(())

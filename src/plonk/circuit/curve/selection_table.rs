@@ -88,7 +88,7 @@ impl<E: Engine> TableSelectable<E> for Term<E> {
     }
 
     fn select<CS: ConstraintSystem<E>>(cs: &mut CS, flag: &Boolean, first: Self, second: Self) -> Result<Self, SynthesisError> {
-        let result = Term::<E>::select(cs, flag, &first, &second)?;
+        let result = Term::<E>::conditionally_select(cs, flag, &first, &second)?;
 
         Ok(result)
     }

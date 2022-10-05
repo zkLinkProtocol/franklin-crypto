@@ -796,25 +796,26 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         };
 
         // flag * a + (1-flag) * b = flag * (a-b) + b
-        let flag_as_term = Term::<E>::from_boolean(flag);
         let mut new_binary_limbs = vec![];
-
         for (l, r) in first.binary_limbs.iter().zip(second.binary_limbs.iter()) 
         {
-            let mut minus_b = r.term.clone();
-            minus_b.negate();
-            let a_minus_b = l.term.add(cs, &minus_b)?;
-            let n = Term::<E>::fma(cs, &flag_as_term, &a_minus_b, &r.term)?;
+            // let mut minus_b = r.term.clone();
+            // minus_b.negate();
+            // let a_minus_b = l.term.add(cs, &minus_b)?;
+            // let n = Term::<E>::fma(cs, &flag_as_term, &a_minus_b, &r.term)?;
+            let n = Term::<E>::conditionally_select(cs, &flag, &l.term, &r.term)?;
+            
             let new_max = std::cmp::max(l.max_value(), r.max_value());
             let new_limb = Limb::new(n, new_max);
-
             new_binary_limbs.push(new_limb);
         }
 
-        let mut minus_b = second.base_field_limb.clone();
-        minus_b.negate();
-        let a_minus_b = first.base_field_limb.add(cs, &minus_b)?;
-        let new_base_limb = Term::<E>::fma(cs, &flag_as_term, &a_minus_b, &second.base_field_limb)?;
+        // let mut minus_b = second.base_field_limb.clone();
+        // minus_b.negate();
+        // let a_minus_b = first.base_field_limb.add(cs, &minus_b)?;
+        let new_base_limb = Term::<E>::conditionally_select(
+            cs, &flag, &first.base_field_limb, &second.base_field_limb
+        )?;
 
         let new_value = if let Some(f) = flag.get_value() {
             if f { first.get_field_value() } else { second.get_field_value() }

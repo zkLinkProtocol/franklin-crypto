@@ -23,6 +23,7 @@ use crate::bellman::plonk::better_better_cs::cs::{
 use crate::plonk::circuit::Assignment;
 
 use super::allocated_num::*;
+use super::bigint_new::AmplifiedLinearCombination;
 use super::linear_combination::*;
 use super::boolean::Boolean;
 
@@ -721,11 +722,8 @@ impl<E: Engine> Term<E> {
     }
 
     // returns first if true and second if false
-    pub fn select<CS: ConstraintSystem<E>>(
-        cs: &mut CS,
-        flag: &Boolean,
-        first: &Self,
-        second: &Self
+    pub fn conditionally_select<CS: ConstraintSystem<E>>(
+        cs: &mut CS, flag: &Boolean, first: &Self, second: &Self
     ) -> Result<Self, SynthesisError> {
         match flag {
             Boolean::Constant(c) => {
@@ -738,16 +736,16 @@ impl<E: Engine> Term<E> {
             _ => {}
         }
 
-        let flag_as_term = Term::<E>::from_boolean(flag);
+        // flag * a + (1-flag)*b = flag * a + b - flag * b
 
-        // flag * a + (1-flag)*b = flag * (a-b) + b
+        let flag_as_term = Self::from_boolean(flag);
+        let mut alc = AmplifiedLinearCombination::zero();
+        alc.add_assign_product_of_terms(&flag_as_term, first);
+        alc.sub_assign_product_of_terms(&flag_as_term, second);
+        alc.add_assign_term(second);
+        let res = alc.into_num(cs)?;
 
-        let mut minus_b = second.clone();
-        minus_b.negate();
-        let a_minus_b = first.add(cs, &minus_b)?;
-
-        let new = Term::<E>::fma(cs, &flag_as_term, &a_minus_b, &second)?;
-
+        let new = Self::from_num(res);
         Ok(new)
     }
 

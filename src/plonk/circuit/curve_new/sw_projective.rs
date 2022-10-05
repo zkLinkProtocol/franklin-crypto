@@ -91,6 +91,23 @@ where <G as GenericCurveAffine>::Base: PrimeField
         self.z.clone()
     }
 
+    pub fn from_coordinates_unchecked(
+        x: FieldElement<'a, E, G::Base>, y: FieldElement<'a, E, G::Base>, z: FieldElement<'a, E, G::Base>,
+        is_in_subgroup: bool, circuit_params: &'a CurveCircuitParameters<E, G, T>
+    ) -> Self {
+        let value = match (x.get_field_value(), y.get_field_value(), z.get_field_value()) {
+            (Some(x), Some(y), Some(z)) => {
+                let x = unsafe { std::mem::transmute_copy::<_, <<G as bellman::GenericCurveAffine>::Projective as GenericCurveProjective>::Base>(&x) };
+                let y = unsafe { std::mem::transmute_copy::<_, <<G as bellman::GenericCurveAffine>::Projective as GenericCurveProjective>::Base>(&y) };
+                let z = unsafe { std::mem::transmute_copy::<_, <<G as bellman::GenericCurveAffine>::Projective as GenericCurveProjective>::Base>(&z) };
+                Some(G::Projective::from_xyz_unchecked(x, y, z))
+            },
+            _ => None,
+        };
+
+        Self { x, y, z, value, is_in_subgroup, circuit_params }
+    }
+
     #[track_caller]
     pub fn alloc<CS: ConstraintSystem<E>>(
         cs: &mut CS, value: Option<G::Projective>, params: &'a CurveCircuitParameters<E, G, T>
@@ -548,6 +565,142 @@ where <G as GenericCurveAffine>::Base: PrimeField
             circuit_params: self.circuit_params
         };
         Ok(new)
+    }
+
+    // #[track_caller]
+    // pub fn add_mixed<CS>(&self, cs: &mut CS, other: &AffinePoint<'a, E, G, T>) -> Result<Self, SynthesisError> 
+    // where CS: ConstraintSystem<E>
+    // {
+    //     // this formula is only valid for curve with zero j-ivariant
+    //     assert!(G::a_coeff().is_zero());
+        
+    //     let params = self.x.representation_params;
+    //     let curve_b = G::b_coeff();
+    //     let mut curve_b3 = curve_b;
+    //     curve_b3.double();
+    //     curve_b3.add_assign(&curve_b);  
+    //     let b3 = FieldElement::constant(curve_b3, params);
+
+    //     let x1 = self.x.clone();
+    //     let y1 = self.y.clone();
+    //     let z1 = self.z.clone();
+    //     let x2 = other.x.clone();
+    //     let y2 = other.y.clone();
+
+    //     // t0 = x1 * x2
+    //     // t1 = y1 * y2
+    //     // a = x2 + y2
+    //     // b = x1 + y1
+    //     // t3 = t3 - t4 = a * b - t0 - t1
+
+    //     // t4 ← y2 · z1 + y1
+    //     // Y3 ← x2 · z1 + x1  
+
+    //     // x3 ← t0 + t0
+    //     // t0 ← X3 + t0
+    //     // 14. t2 ← b3 · Z1  
+    //     // z3 ← t1 + b3 · Z1 
+
+    //     // 16. t1 ← t1 − t2 
+    //      let t1 = t1.sub(cs, &t2)?;
+    //      // 17. Y3 ← b3 · Y3 
+    //      let y3 = b3.mul(cs, &y3)?;
+    //      // 18. X3 ← t4 · Y3
+    //      let x3 = t4.mul(cs, &y3)?;
+    //      // 19. t2 ← t3 · t1 
+    //      let t2 = t3.mul(cs, &t1)?;
+    //      // 20. X3 ← t2 − X3 
+    //      let x3 = t2.sub(cs, &x3)?;
+    //      // 21. Y3 ← Y3 · t0
+    //      let y3 = y3.mul(cs, &t0)?;
+    //      // 22. t1 ← t1 · Z3 
+    //      let t1 = t1.mul(cs, &z3)?;
+    //      // 23. Y3 ← t1 + Y3 
+    //      let y3 = t1.add(cs, &y3)?;
+    //      // 24. t0 ← t0 · t3
+    //      let t0 = t0.mul(cs, &t3)?;
+    //      // 25. Z3 ← Z3 · t4 
+    //      let z3 = z3.mul(cs, &t4)?;
+    //      // 26. Z3 ← Z3 + t0
+
+    //     // 1. t0 ← X1 · X2 
+    //     let t0 =x1.mul(cs, &x2)?;
+    //     // 2. t1 ← Y1 · Y2 
+    //     let t1 = y1.mul(cs, &y2)?;
+    //     // 3. t3 ← X2 + Y2
+    //     let t3 = x2.add(cs, &y2)?;
+    //     // 4. t4 ← X1 + Y1 
+    //     let t4 = x1.add(cs, &y1)?;
+    //     // 5. t3 ← t3 · t4 
+    //     let t3 = t3.mul(cs, &t4)?;
+    //     // 6. t4 ← t0 + t1
+    //     let t4 = t0.add(cs, &t1)?;
+    //     // 7. t3 ← t3 − t4 
+    //     let t3 = t3.sub(cs, &t4)?;
+    //     // 8. t4 ← Y2 · Z1 
+    //     let t4 = y2.mul(cs, &z1)?;
+    //     // 9. t4 ← t4 + Y1
+    //     let t4 = t4.add(cs, &y1)?;
+    //     // 10. Y3 ← X2 · Z1 
+    //     let y3 = x2.mul(cs, &z1)?;
+    //     // 11. Y3 ← Y3 + X1 
+    //     let y3 = y3.add(cs, &x1)?;
+    //     // 12. X3 ← t0 + t0
+    //     let x3 = t0.double(cs)?;
+    //     // 13. t0 ← X3 + t0 
+    //     let t0 = x3.add(cs, &t0)?;
+    //     // 14. t2 ← b3 · Z1 
+    //     let t2 = b3.mul(cs, &z1)?;
+    //     // 15. Z3 ← t1 + t2
+    //     let z3 = t1.add(cs, &t2)?;
+    //     // 16. t1 ← t1 − t2 
+    //     let t1 = t1.sub(cs, &t2)?;
+    //     // 17. Y3 ← b3 · Y3 
+    //     let y3 = b3.mul(cs, &y3)?;
+    //     // 18. X3 ← t4 · Y3
+    //     let x3 = t4.mul(cs, &y3)?;
+    //     // 19. t2 ← t3 · t1 
+    //     let t2 = t3.mul(cs, &t1)?;
+    //     // 20. X3 ← t2 − X3 
+    //     let x3 = t2.sub(cs, &x3)?;
+    //     // 21. Y3 ← Y3 · t0
+    //     let y3 = y3.mul(cs, &t0)?;
+    //     // 22. t1 ← t1 · Z3 
+    //     let t1 = t1.mul(cs, &z3)?;
+    //     // 23. Y3 ← t1 + Y3 
+    //     let y3 = t1.add(cs, &y3)?;
+    //     // 24. t0 ← t0 · t3
+    //     let t0 = t0.mul(cs, &t3)?;
+    //     // 25. Z3 ← Z3 · t4 
+    //     let z3 = z3.mul(cs, &t4)?;
+    //     // 26. Z3 ← Z3 + t0
+    //     let z3 = z3.add(cs, &t0)?;
+
+    //     let new_value = match (self.value, other.get_value()) {
+    //         (Some(this), Some(other)) => {
+    //             let mut tmp = this;
+    //             tmp.add_assign_mixed(&other);
+    //             Some(tmp)
+    //         },
+    //         _ => None
+    //     };
+   
+    //     let new = Self {
+    //         x: x3,
+    //         y: y3,
+    //         z: z3,
+    //         value: new_value,
+    //         is_in_subgroup: self.is_in_subgroup && other.is_in_subgroup,
+    //         circuit_params: self.circuit_params
+    //     };
+    //     Ok(new)
+    // }
+
+    #[track_caller]
+    pub fn sub_mixed<CS>(&self, cs: &mut CS, other: &AffinePoint<'a, E, G, T>) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E> {
+        let other_negated = other.negate(cs)?;
+        self.add_mixed(cs, &other_negated)
     }
 
     pub fn conditionally_select<CS: ConstraintSystem<E>>(

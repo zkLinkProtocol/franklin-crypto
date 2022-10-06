@@ -281,6 +281,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let x_for_safe_z = self.x.div(cs, &safe_z)?;
         let y_for_safe_z = self.y.div(cs, &safe_z)?;
         //let x = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.x, &x_for_safe_z)?;
+        // TODO: I think we should call this method somehow different
         let x = x_for_safe_z;
         let y = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.y, &y_for_safe_z)?;
 
@@ -296,94 +297,88 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
     #[track_caller]
     pub fn add<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
-        // this formula is only valid for curve with zero j-ivariant
+        // this formula is only valid for curve of prime order with zero j-ivariant
+        let params = self.circuit_params;
         assert!(G::a_coeff().is_zero());
+        assert!(params.is_prime_order_curve);
 
-        let params = self.x.representation_params;
         let curve_b =  G::b_coeff();
         let mut curve_b3 = curve_b;
         curve_b3.double();
-        curve_b3.add_assign(&curve_b);  
-        let b3 = FieldElement::constant(curve_b3, params);
-        
-        let this_value = self.value;
-        let other_value = other.value;
+        curve_b3.add_assign(&curve_b); 
+
+        let one = G::base::one();
+        let mut three = one.clone();
+        three.double();
+        three.add_assign(&one)?;
+
         let x1 = self.x.clone();
         let y1 = self.y.clone();
         let z1 = self.z.clone();
+
         let x2 = other.x.clone();
         let y2 = other.y.clone();
         let z2 = other.z.clone();
 
-        // exception free addition in projective coordiantes
-        // 1. t0 ← X1 · X2 
-        let t0 = x1.mul(cs, &x2)?;
-        // 2. t1 ← Y1 · Y2 
-        let t1 = y1.mul(cs, &y2)?;
-        // 3. t2 ← Z1 · Z2
+        // t0 = x1 * x2
+        let t0 = x1.mul(cs, &x2)?; 
+        // t1 = y1 * y2 
+        let t1 = y1.mul(cs, &y2)?; 
+        // t2 = z1 * z2
         let t2 = z1.mul(cs, &z2)?;
-        // 4. t3 ← X1 + Y1 
-        let t3 = x1.add(cs, &y1)?;
-        // 5. t4 ← X2 + Y2 
-        let t4 = x2.add(cs, &y2)?;
-        // 6. t3 ← t3 · t4
-        let t3 = t3.mul(cs, &t4)?;
-        // 7. t4 ← t0 + t1 
-        let t4 = t0.add(cs, &t1)?;
-        // 8. t3 ← t3 − t4 
-        let t3 = t3.sub(cs, &t4)?;
-        // 9. t4 ← Y1 + Z1
+        // a1 = x1 + y1
+        let a1 = x1.add(cs, &y1)?;
+        // a2 = x2 + y2
+        let a2 = x2.add(cs, &y2)?;
+        // t3 = a1 * a2 - t0 - t1 
+        let mut chain = FieldElementsChain::new();
+        chain.add_neg_term(&t0).add_neg_term(&t1);
+        let t3 = FieldElement::mul_with_chain(cs, &a1, &a2, chain)?;
+        // t4 = y1 + z1
         let t4 = y1.add(cs, &z1)?;
-        // 10. X3 ← Y2 + Z2 
+        // x3 = y2 + z2 
         let x3 = y2.add(cs, &z2)?;
-        // 11. t4 ← t4 · X3 
-        let t4 = t4.mul(cs, &x3)?;
-        // 12. X3 ← t1 + t2
-        let x3 = t1.add(cs, &t2)?;
-        // 13. t4 ← t4 − X3 
-        let t4 = t4.sub(cs, &x3)?;
-        // 14. X3 ← X1 + Z1 
-        let x3 = x1.add(cs, &z1)?;
-        // 15. Y3 ← X2 + Z2
-        let y3 = x2.add(cs, &z2)?;
-        // 16. X3 ← X3 · Y3 
-        let x3 = x3.mul(cs, &y3)?;
-        // 17. Y3 ← t0 + t2 
-        let y3 = t0.add(cs, &t2)?;
-        // 18. Y3 ← X3 − Y3
-        let y3 = x3.sub(cs, &y3)?;
-        // 19. X3 ← t0 + t0 
-        let x3 = t0.double(cs)?;
-        // 20. t0 ← X3 + t0 
-        let t0 = x3.add(cs, &t0)?;
-        // 21. t2 ← b3 · t2
-        let t2 = b3.mul(cs, &t2)?;
-        // 22. Z3 ← t1 + t2 
-        let z3 = t1.add(cs, &t2)?;
-        // 23. t1 ← t1 − t2 
-        let t1 = t1.sub(cs, &t2)?;
-        // 24. Y3 ← b3 · Y3
-        let y3 = b3.mul(cs, &y3)?;
-        // 25. X3 ← t4 · Y3 
-        let x3 = t4.mul(cs, &y3)?;
-        // 26. t2 ← t3 · t1 
-        let t2 = t3.mul(cs, &t1)?;
-        // 27. X3 ← t2 − X3
-        let x3 = t2.sub(cs, &x3)?;
-        // 28. Y3 ← Y3 · t0 
-        let y3 = y3.mul(cs, &t0)?;
-        // 29. t1 ← t1 · Z3 
-        let t1 = t1.mul(cs, &z3)?;
-        // 30. Y3 ← t1 + Y3
-        let y3 = t1.add(cs, &y3)?;
-        // 31. t0 ← t0 · t3 
-        let t0 = t0.mul(cs, &t3)?;
-        // 32. Z3 ← Z3 · t4 
-        let z3 = z3.mul(cs, &t4)?;
-        // 33. Z3 ← Z3 + t0
-        let z3 = z3.add(cs, &t0)?;
+        // t4 = t4 * x3 - t1 - t2 
+        let mut chain = FieldElementsChain::new();
+        chain.add_neg_term(&t1).add_neg_term(&t2);
+        let t4 = FieldElement::mul_with_chain(cs, &t4, &x3, chain)?;
+        // a3 = x1 + z1
+        let a3 = x1.add(cs, &z1)?;
+        // a4 = x2 + z2
+        let a4 = x2.add(cs, &z2)?;
+        // y3 = a3 * a4 - t0 - t2
+        let mut chain = FieldElementsChain::new();
+        chain.add_neg_term(&t0).add_neg_term(&t2);
+        let y3 = FieldElement::mul_with_chain(cs, &a3, &a4, chain)?;
+        // t2 = b3 * z1 * z2
+        let b3_mul_z1 = z1.scale(&curve_b3);
+        let t2 = b3_mul_z1.mul(cs, &z2)?;
+        // z3 = t1 + t2
+        let z3 = t1.add(cs, &t2)?; 
+        // t1 = t1 - t2
+        let t1 = t1.sub(cs, &t2)?;  
+        // x3 = t4 * b3 * y3
+        let b3_mul_y3 = y3.scale(&curve_b3);
+        let x3 = b3_mul_y3.mul(cs, &t4)?;
+        // x3 = t3 * t1 - x3
+        let mut chain = FieldElementsChain::new();
+        chain.add_neg_term(&x3);
+        let x3 = FieldElement::mul_with_chain(cs, &t1, &t3, chain)?;
+        // y3 = (b3 * y3) * (3 * t0)
+        let t0_mul_3 = t0.scale(&three);
+        let y3 = b3_mul_y3.mul(cs, &t0_mul_3)?; 
+        // y3 = t1 * z3  + y3
+        let mut chain = FieldElementsChain::new();
+        chain.add_pos_term(&y3);
+        let x3 = FieldElement::mul_with_chain(cs, &t1, &z3, chain)?;
+        // z3 = z3 * t4
+        let z3 = z3.mul(cs, &t4)?; 
+        // z3 = (3 * t0) * t3 + z3 
+        let mut chain = FieldElementsChain::new();
+        chain.add_pos_term(&z3);
+        let z3 = FieldElement::mul_with_chain(cs, &t0_mul_3, &t3, chain)?;
 
-        let new_value = match (this_value, other_value) {
+        let new_value = match (self.get_value(), other.get_value()) {
             (Some(this), Some(other)) => {
                 let mut tmp = this;
                 tmp.add_assign(&other);
@@ -394,15 +389,15 @@ where <G as GenericCurveAffine>::Base: PrimeField
         };
    
         let new = Self {
-            x: x3,
-            y: y3,
-            z: z3,
+            x: x3, y: y3, z: z3,
             value: new_value,
-            is_in_subgroup: self.is_in_subgroup && other.is_in_subgroup,
+            is_in_subgroup: self.is_in_subgroup,
             circuit_params: self.circuit_params
         };
         Ok(new)
     }
+
+    
 
     #[track_caller]
     pub fn double<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {

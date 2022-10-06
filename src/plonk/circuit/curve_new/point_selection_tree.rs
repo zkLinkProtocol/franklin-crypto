@@ -508,6 +508,245 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
         let acc_modified = acc.add_unequal_unchecked(cs, &AffinePointExt::from(res_affine))?;
         AffinePointExt::conditionally_select(cs, &is_infty, &acc, &acc_modified)
     }
+
+    pub fn add_last_into_accumulator_unoptimized<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>, bits: &[Boolean]
+    ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError>
+    {
+        let mut acc = acc.clone();
+        for (bit, point) in bits.iter().zip(self.entries.iter()) {
+            let is_point_at_infty = FieldElement::is_zero(&mut point.get_y(), cs)?;
+            let acc_modified = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(point.clone()))?;
+            let cond_flag = Boolean::or(cs, &is_point_at_infty, &bit)?;
+            acc = AffinePointExt::conditionally_select(cs, &cond_flag, &acc, &acc_modified)?;
+        }
+        Ok(acc) 
+    }
+}
+
+
+#[derive(Clone, Debug)]
+pub(crate) struct SelectorTree3<'a, E: Engine, G: GenericCurveAffine, T> 
+where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
+{
+    entries: Vec<AffinePoint<'a, E, G, T>>, // raw elements P1, P2, ..., Pn
+    precompute: Vec<AffinePoint<'a, E, G, T>>, // precomputed linear combinations +/ P1 +/ P2 +/- ... +/ Pn
+    initial_point_base: AffinePoint<'a, E, G, T>,
+    initial_point_ext: AffinePointExt<'a, E, G, T>,
+    iniitial_point_is_infty: Boolean,
+    adj_offset: AffinePointExt<'a, E, G, T>
+}
+
+impl<'a, E: Engine, G: GenericCurveAffine, T> SelectorTree3<'a, E, G, T> 
+where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
+{
+    fn get_initial(&self) -> (AffinePoint<'a, E, G, T>, Boolean, AffinePointExt<'a, E, G, T>) {
+        (self.initial_point_base.clone(), self.iniitial_point_is_infty, self.initial_point_ext.clone())
+    }
+    
+    pub fn new<CS: ConstraintSystem<E>>(
+        cs: &mut CS, entries: &[AffinePoint<'a, E, G, T>]
+    ) -> Result<Self, SynthesisError> {
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        enum Sign {
+            Plus,
+            Minus
+        }
+
+        let first_elem = entries.get(0).expect("Entries must be nonempty");
+        let params = first_elem.circuit_params;
+        let rns_params = &params.base_field_rns_params;
+        
+        let mut adj_offset = AffinePointExt::constant(
+            params.fp2_pt_ord3_x_c0, params.fp2_pt_ord3_x_c1, 
+            params.fp2_pt_ord3_y_c0, params.fp2_pt_ord3_y_c1,
+            &params.base_field_rns_params
+        );
+
+        let initial = adj_offset.add_unequal_unchecked(cs, &AffinePointExt::from(first_elem.clone()))?;
+        // using Selector tree makes sense only if there are more than 1 element
+        let mut entries = entries.to_vec();
+        let mut workpad : Vec<(Sign, AffinePointExt<'a, E, G, T>)> = vec![(Sign::Plus, initial)];
+
+        for (_is_first, _is_last, elem) in entries[1..].iter_mut().identify_first_last() {
+            let elem = AffinePointExt::from(elem.clone());
+            let mut new_working_pad = Vec::with_capacity(workpad.len() << 1);
+            for (sign, acc) in workpad.iter_mut() {
+                match sign {
+                    Sign::Plus => {
+                        new_working_pad.push((Sign::Minus, acc.sub_unequal_unchecked(cs, &elem)?));
+                        new_working_pad.push((Sign::Plus, acc.add_unequal_unchecked(cs, &elem)?));   
+                    },
+                    Sign::Minus => {
+                        new_working_pad.push((Sign::Plus, acc.add_unequal_unchecked(cs, &elem)?));   
+                        new_working_pad.push((Sign::Minus, acc.sub_unequal_unchecked(cs, &elem)?));
+                    },
+                };
+            }
+            workpad = new_working_pad
+        }
+        assert_eq!(workpad.len(), 1 << (entries.len() - 1));
+        
+        let point_uninitialized = AffinePoint::uninitialized(params);
+        let mut precompute = Vec::with_capacity(workpad.len());
+        let mut initial_point_base = point_uninitialized.clone();
+        let mut iniitial_point_is_infty = Boolean::constant(false);
+        let mut initial_point_ext = AffinePointExt::uninitialized(rns_params);
+        
+        for (_is_first, is_last, elem) in workpad.into_iter().identify_first_last() {
+            let (_sign, mut point_ext) = elem;
+            // point_ext is of the form: R + base_field
+            // hence it is zero if it is equal to R, 
+            // hence it is enough to compare x cooridnate
+            // as it is impossible that R + base_field;
+            let is_infty = Fp2::equals(cs, &mut point_ext.x, &mut adj_offset.x)?;
+
+            let mut point_ext_copy = point_ext.clone(); 
+            point_ext_copy.x.c0 = FieldElement::conditionally_select(
+                cs, &is_infty, &FieldElement::one(rns_params), &point_ext.x.c0
+            )?;
+            let res_ext = point_ext_copy.sub_unequal_unchecked(cs, &adj_offset)?;
+
+            let final_x = res_ext.get_x().c0.clone();
+            let final_y = FieldElement::conditionally_select(
+                cs, &is_infty, &FieldElement::zero(rns_params), &res_ext.get_y().c0
+            )?;
+            
+            // println!("final_x_c1: {}", res_ext.get_x().c1.get_field_value().unwrap());
+            // println!("final_y_c1: {}", res_ext.get_y().c1.get_field_value().unwrap());
+
+            let final_value = match (final_x.get_field_value(), final_y.get_field_value(), is_infty.get_value()) 
+            {
+                (_, _, Some(true)) => Some(G::zero()),
+                (Some(x), Some(y), Some(false)) => Some(G::from_xy_checked(x, y).expect("should be on the curve")),
+                _ => None,
+            }; 
+
+            let point_base = AffinePoint {
+                x : final_x,
+                y : final_y,
+                value: final_value,
+                is_in_subgroup: true,
+                circuit_params: params
+            };
+            
+            if is_last {
+                initial_point_base = point_base.clone();
+                initial_point_ext = point_ext;
+                iniitial_point_is_infty = is_infty
+            }
+            precompute.push(point_base);
+        }
+        Ok(SelectorTree3 {
+            entries, 
+            precompute,
+            initial_point_base,
+            initial_point_ext,
+            iniitial_point_is_infty,
+            adj_offset
+        })
+    }
+
+    fn select<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, bits: &[Boolean]
+    ) -> Result<(AffinePoint<'a, E, G, T>, Boolean), SynthesisError> {
+        assert_eq!(bits.len(), self.entries.len());
+        let mut selector_subtree = self.precompute.clone(); 
+        
+        for (k0_bit, k1_bit) in bits.iter().rev().tuple_windows() {
+            let mut new_selector_subtree = Vec::with_capacity(selector_subtree.len() >> 1);
+            let xor_flag = Boolean::xor(cs, &k0_bit, &k1_bit)?;
+            for (first, second) in selector_subtree.into_iter().tuples() {
+                let selected = AffinePoint::conditionally_select(cs, &xor_flag, &first, &second)?;
+                new_selector_subtree.push(selected);
+            }
+            selector_subtree = new_selector_subtree;
+        }
+
+        assert_eq!(selector_subtree.len(), 1);
+        let last_flag = bits[0];
+        let selected = selector_subtree.pop().unwrap();
+        
+        let is_point_at_infty = FieldElement::is_zero(&mut selected.get_y(), cs)?;
+        let candidate = AffinePoint::conditionally_negate(&selected, cs, &last_flag.not())?;
+
+        Ok((candidate, is_point_at_infty))
+    }
+   
+    pub fn double_and_add_selected<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>, bits: &[Boolean]
+    ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError> 
+    {
+        let (candidate, is_point_at_infty) = self.select(cs, bits)?;
+        let acc_modified = acc.double_and_add_unchecked(cs, &AffinePointExt::from(candidate))?;
+        AffinePointExt::conditionally_select(cs, &is_point_at_infty, &acc, &acc_modified)
+    }
+
+    pub fn add_initial_into_accumulator<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>
+    ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError> 
+    {
+        // initial accumulator value is equal to + P1 + P2 + ... + Pn
+        let (point, is_point_at_infty, _point_proj) = self.get_initial();
+        let acc_modified = acc.add_unequal_unchecked(cs, &AffinePointExt::from(point))?;
+        AffinePointExt::conditionally_select(cs, &is_point_at_infty, &acc, &acc_modified)
+    }
+
+    pub fn add_last_into_accumulator<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>, bits: &[Boolean]
+    ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError>
+    { 
+        // on every iteration of the inner loop (except the last one) of the point by scalar mul algorithm
+        // we want to retrieve the point which is dependent on bits as follows:
+        // bits = [b_0, b_1, .., b_n] -> /sum (2* b_i - 1) P_i = A
+        // on the last iteration we do however want to add the point \sum (b_i - 1) * P_i = B
+        // if we denote the starting value of accumulator = /sum P_i as C
+        // then it is obvious that the following relation always holds: A - C = 2 * B
+        // hence we reduced the computation to one subtraction and one doubling
+        
+        let (selected, is_selected_point_at_infty) = self.select(cs, &bits)?;
+        let params = selected.circuit_params;
+        let rns_params = &params.base_field_rns_params;
+
+        let (_, _, c) = self.get_initial();
+        let c_minus_a = c.sub_unequal_unchecked(cs, &AffinePointExt::from(selected))?;
+        let mut to_sub_ext = AffinePointExt::conditionally_select(
+            cs, &is_selected_point_at_infty, &c, &c_minus_a
+        )?;
+        // println!("before halving");
+        // to_sub_ext = AffinePointExt::halving(cs, &mut to_sub_ext)?;
+        // println!("after halving");
+
+        let is_infty = Fp2::equals(cs, &mut to_sub_ext.x, &mut self.adj_offset.x)?;
+        println!("is ifty: {}", is_infty.get_value().unwrap());
+        to_sub_ext.x.c0 = FieldElement::conditionally_select(
+            cs, &is_infty, &FieldElement::one(rns_params), &to_sub_ext.x.c0
+        )?;
+        let res_ext = to_sub_ext.sub_unequal_unchecked(cs, &self.adj_offset)?;
+
+        // println!("final_x_c1 end: {}", res_ext.get_x().c1.get_field_value().unwrap());
+        // println!("final_y_c1 end : {}", res_ext.get_y().c1.get_field_value().unwrap());
+
+        let final_x = res_ext.get_x().c0.clone();
+        let final_y = res_ext.get_y().c0.clone();
+        let final_value = match (final_x.get_field_value(), final_y.get_field_value(), is_infty.get_value()) 
+        {
+            (_, _, Some(true)) => Some(G::zero()),
+            (Some(x), Some(y), Some(false)) => Some(G::from_xy_checked(x, y).expect("should be on the curve")),
+            _ => None,
+        }; 
+
+        let point_base = AffinePoint {
+            x : final_x,
+            y : final_y,
+            value: final_value,
+            is_in_subgroup: true,
+            circuit_params: params
+        };
+
+        let acc_modified = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(point_base))?;
+        AffinePointExt::conditionally_select(cs, &is_infty, &acc, &acc_modified)
+    }
 }
 
 

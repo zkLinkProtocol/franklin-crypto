@@ -943,8 +943,8 @@ where <G as GenericCurveAffine>::Base: PrimeField
 #[derive(Clone, Debug)]
 pub struct AffinePointExt<'a, E: Engine,  G: GenericCurveAffine, T: Extension2Params<G::Base>> 
 where <G as GenericCurveAffine>::Base: PrimeField {
-    x: Fp2<'a, E, G::Base, T>,
-    y: Fp2<'a, E, G::Base, T>,
+    pub x: Fp2<'a, E, G::Base, T>,
+    pub y: Fp2<'a, E, G::Base, T>,
 }
 
 use std::convert::From;
@@ -1817,6 +1817,12 @@ where <G as GenericCurveAffine>::Base: PrimeField
             params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
             &params.base_field_rns_params
         );
+        // let offset_generator = AffinePointExt::constant(
+        //     params.fp2_pt_ord3_x_c0, params.fp2_pt_ord3_x_c1,
+        //     params.fp2_pt_ord3_y_c0, params.fp2_pt_ord3_y_c1,
+        //     &params.base_field_rns_params
+        // );
+        
         let mut acc = offset_generator.clone();
         for point_aux_data in points_aux_data.iter() {
             acc = acc.add_unequal_unchecked(
@@ -2135,6 +2141,118 @@ where <G as GenericCurveAffine>::Base: PrimeField
         }
 
         let selector_tree = SelectorTree2::new(cs, &points_unrolled)?;
+        let offset_generator = AffinePointExt::constant(
+            params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
+            params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
+            &params.base_field_rns_params
+        );
+        let mut acc = selector_tree.add_initial_into_accumulator(cs, &offset_generator)?;
+
+        for (_, is_last, bits) in Multizip(scalars_unrolled).identify_first_last() {
+            if !is_last {
+                acc = selector_tree.double_and_add_selected(cs, &acc, &bits)?;
+            }
+            else {
+                acc = selector_tree.add_last_into_accumulator(cs, &acc, &bits)?;
+            }
+        }
+
+        let gate_count_start = cs.get_current_step_number();
+        let num_of_doubles = limit - 1;
+        let mut scaled_offset = offset_generator;
+        for _ in 0..num_of_doubles {
+            scaled_offset = scaled_offset.double(cs)?;
+        }
+        let gate_count_end = cs.get_current_step_number();
+        assert_eq!(gate_count_end - gate_count_start, 0);
+        acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?;
+
+        let mut final_x = acc.get_x();
+        let mut final_y = acc.get_y();
+        let final_value = final_x.c0.get_field_value().zip(final_y.c0.get_field_value()).map(|(x, y)| {
+            G::from_xy_checked(x, y).expect("should be on the curve")
+        }); 
+        let mut zero = FieldElement::<E, G::Base>::zero(base_rns_params);
+        FieldElement::enforce_equal(cs, &mut final_x.c1, &mut zero)?;
+        FieldElement::enforce_equal(cs, &mut final_y.c1, &mut zero)?;
+
+        let new = Self {
+            x: final_x.c0,
+            y: final_y.c0,
+            value: final_value,
+            is_in_subgroup: true,
+            circuit_params: params
+        };
+        Ok(new)
+    }
+
+    pub fn safe_multiexp_affine4<CS: ConstraintSystem<E>>(
+        cs: &mut CS, scalars: &[FieldElement<'a, E, G::Scalar>], points: &[Self]
+    ) -> Result<AffinePoint<'a, E, G, T>, SynthesisError> {
+        assert_eq!(scalars.len(), points.len());
+        let params = points[0].circuit_params;
+        let scalar_rns_params = &params.scalar_field_rns_params;
+        let base_rns_params = &params.base_field_rns_params;
+        let limit = params.get_endomorphism_bitlen_limit();
+        
+        struct Multizip<T>(Vec<T>);
+        
+        impl<T> Iterator for Multizip<T>
+        where T: Iterator,
+        {
+            type Item = Vec<T::Item>;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                self.0.iter_mut().map(Iterator::next).collect()
+            }
+        }
+
+        let mut points_unrolled = Vec::with_capacity(points.len() << 1);
+        let mut scalars_unrolled = Vec::with_capacity(points.len() << 1);
+        for (scalar, point) in scalars.iter().zip(points.iter()) { 
+            let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
+                Some(x) => {
+                    let dcmp = params.calculate_decomposition(x);
+                    (
+                        Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), 
+                        Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus)
+                    )
+                },
+                None => (None, None, None, None)
+            };
+            let mut k1_abs = FieldElement::alloc_for_known_bitwidth(
+                cs, k1_abs_wit, limit, scalar_rns_params, true
+            )?;
+            let mut k2_abs = FieldElement::alloc_for_known_bitwidth(
+                cs, k2_abs_wit, limit, scalar_rns_params, true
+            )?;
+            let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
+            let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
+
+            // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
+            let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
+            let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
+            let mut chain = FieldElementsChain::new();
+            chain.add_pos_term(&k1).add_neg_term(&scalar);
+            let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
+            FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
+
+            let point_reg = point.conditionally_negate(cs, &k1_is_negative_flag)?;
+            let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+            let x_endo = point.get_x().mul(cs, &beta)?;
+            let y_endo = point.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
+            let point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
+
+            points_unrolled.push(point_reg);
+            points_unrolled.push(point_endo);
+
+            let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
+            let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
+            scalars_unrolled.push(k1_decomposition.into_iter().rev());
+            scalars_unrolled.push(k2_decomposition.into_iter().rev());
+        }
+
+        let mut selector_tree = SelectorTree3::new(cs, &points_unrolled)?;
         let offset_generator = AffinePointExt::constant(
             params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
             params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
@@ -3014,16 +3132,22 @@ mod test {
             println!("num of gates for affine multiexp var1: {}", naive_mul_end - naive_mul_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            let naive_mul_start = cs.get_current_step_number();
-            let mut result = AffinePoint::safe_multiexp_affine2(cs, &scalars, &points)?;
-            let naive_mul_end = cs.get_current_step_number();
-            println!("num of gates for affine multiexp var2: {}", naive_mul_end - naive_mul_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            // let naive_mul_start = cs.get_current_step_number();
+            // let mut result = AffinePoint::safe_multiexp_affine2(cs, &scalars, &points)?;
+            // let naive_mul_end = cs.get_current_step_number();
+            // println!("num of gates for affine multiexp var2: {}", naive_mul_end - naive_mul_start);
+            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
             let naive_mul_start = cs.get_current_step_number();
             let mut result = AffinePoint::safe_multiexp_affine3(cs, &scalars, &points)?;
             let naive_mul_end = cs.get_current_step_number();
             println!("num of gates for affine multiexp var3: {}", naive_mul_end - naive_mul_start);
+            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+
+            let naive_mul_start = cs.get_current_step_number();
+            let mut result = AffinePoint::safe_multiexp_affine4(cs, &scalars, &points)?;
+            let naive_mul_end = cs.get_current_step_number();
+            println!("num of gates for affine multiexp var4: {}", naive_mul_end - naive_mul_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
 
@@ -3041,7 +3165,7 @@ mod test {
     #[test]
     fn test_multiexp_scalar_multiplication_for_bn256() {
         const LIMB_SIZE: usize = 80;
-        const NUM_OF_POINTS: usize = 2;
+        const NUM_OF_POINTS: usize = 3;
 
         let mut cs = TrivialAssembly::<
             Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext

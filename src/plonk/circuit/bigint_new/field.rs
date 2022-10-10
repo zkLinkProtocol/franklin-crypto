@@ -1973,6 +1973,22 @@ mod test {
         a.normalize(&mut cs).unwrap();
         assert!(cs.is_satisfied());
     }   
+
+    #[test]
+    fn test_inversion() {
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let params = RnsParameters::<Bn256, Fq>::new_optimal(&mut cs, 80usize);
+        let mut rng = rand::thread_rng();
+        let a: Fq = rng.gen();
+
+        let a_fq = FieldElement::alloc_ext(&mut cs, Some(a), &params).unwrap().0;
+        let a_inv = a.inverse();
+        let  mut a_res = FieldElement::alloc_ext(&mut cs, a_inv, &params).unwrap().0;
+        let a_fq_inverse = a_fq.inverse(&mut cs).unwrap();
+        let g = FieldElement::equals(&mut cs, &mut a_fq_inverse.clone(), &mut a_res).unwrap();
+        println!("inverses over Fq is {} ", Boolean::get_value(&g).unwrap());
+    }
 }
 
 

@@ -92,23 +92,6 @@ where <G as GenericCurveAffine>::Base: PrimeField
         self.z.clone()
     }
 
-    pub fn from_coordinates_unchecked(
-        x: FieldElement<'a, E, G::Base>, y: FieldElement<'a, E, G::Base>, z: FieldElement<'a, E, G::Base>,
-        is_in_subgroup: bool, circuit_params: &'a CurveCircuitParameters<E, G, T>
-    ) -> Self {
-        let value = match (x.get_field_value(), y.get_field_value(), z.get_field_value()) {
-            (Some(x), Some(y), Some(z)) => {
-                let x = unsafe { std::mem::transmute_copy::<_, <<G as bellman::GenericCurveAffine>::Projective as GenericCurveProjective>::Base>(&x) };
-                let y = unsafe { std::mem::transmute_copy::<_, <<G as bellman::GenericCurveAffine>::Projective as GenericCurveProjective>::Base>(&y) };
-                let z = unsafe { std::mem::transmute_copy::<_, <<G as bellman::GenericCurveAffine>::Projective as GenericCurveProjective>::Base>(&z) };
-                Some(G::Projective::from_xyz_unchecked(x, y, z))
-            },
-            _ => None,
-        };
-
-        Self { x, y, z, value, is_in_subgroup, circuit_params }
-    }
-
     #[track_caller]
     pub fn alloc<CS: ConstraintSystem<E>>(
         cs: &mut CS, value: Option<G::Projective>, params: &'a CurveCircuitParameters<E, G, T>
@@ -116,10 +99,19 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let rns_params = &params.base_field_rns_params;
         let (x, y, z) = match value {
             Some(val) => {
+                // NB: G::Projective is representation in Jacobian coordinates
+                // we have to transform to homogenious projective by:
+                // (x, y, z) -> (x * z, y, z^3)
                 let (x, y, z) = G::Projective::into_xyz_unchecked(val);
-                let x = unsafe { std::mem::transmute_copy::<_, G::Base>(&x) };
+                let mut x = unsafe { std::mem::transmute_copy::<_, G::Base>(&x) };
                 let y = unsafe { std::mem::transmute_copy::<_, G::Base>(&y) };
-                let z = unsafe { std::mem::transmute_copy::<_, G::Base>(&z) };
+                let mut z = unsafe { std::mem::transmute_copy::<_, G::Base>(&z) };
+                
+                x.mul_assign(&z);
+                let tmp = z.clone();
+                z.mul_assign(&tmp);
+                z.mul_assign(&tmp);
+
                 (Some(x), Some(y), Some(z))
             },
             _ => (None, None, None)
@@ -141,9 +133,8 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
     #[track_caller]
     pub fn enforce_if_on_curve<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
-        let params = &self.x.representation_params;
-        let a = FieldElement::constant(G::a_coeff(), params);
-        let b = FieldElement::constant(G::b_coeff(), params);
+        let a: u64 = fe_to_biguint(&G::a_coeff()).to_u64().expect("G::a_ceoff should fit into u64");
+        let b: u64 = fe_to_biguint(&G::b_coeff()).to_u64().expect("G::a_ceoff should fit into u64");
 
         // Y^2 * Z = X^3 + a * X * Z^2 + b * Z^3
         let mut lhs = self.y.square(cs)?;
@@ -151,17 +142,16 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
         let x_squared = self.x.square(cs)?;
         let x_cubed = x_squared.mul(cs, &self.x)?;
-        let z_squared = self.x.square(cs)?;
-        let z_cubed = z_squared.mul(cs, &self.z)?;
+        let z_squared = self.z.square(cs)?;
+        let z_mul_b = self.z.scale(cs, b)?;
+        let mut rhs = z_squared.mul(cs, &z_mul_b)?;
 
-        let mut rhs = z_cubed.mul(cs, &b)?;
         rhs = rhs.add(cs, &x_cubed)?;
-        if !a.get_field_value().unwrap().is_zero() {
-            let mut tmp = z_squared.mul(cs, &self.x)?;
-            tmp = tmp.mul(cs, &a)?;
+        if a != 0 {
+            let x_mul_a = self.x.scale(cs, a)?;
+            let tmp = z_squared.mul(cs, &x_mul_a)?;
             rhs = rhs.add(cs, &tmp)?
         };
-
         FieldElement::enforce_equal(cs, &mut lhs, &mut rhs)
     }
 
@@ -175,10 +165,10 @@ where <G as GenericCurveAffine>::Base: PrimeField
         
         for (cand1, cand2) in [&left.x, &left.y, &left.z].iter().zip([&right.x, &right.y, &right.z].iter()) {
             if cand2.get_field_value().is_some() && !cand1.get_field_value().unwrap_or(G::Base::zero()).is_zero() {
-                let mut res = cand1.get_field_value().unwrap();
-                res.inverse();
-                res.mul_assign(&cand2.get_field_value().unwrap());
-                t_wit = Some(res);
+                let res = cand1.get_field_value().unwrap();
+                let mut res_inversed = res.inverse().unwrap();
+                res_inversed.mul_assign(&cand2.get_field_value().unwrap());
+                t_wit = Some(res_inversed);
                 break;
             };
         }
@@ -426,22 +416,28 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let t2 = b3_mul_z.mul(cs, &z)?;
         // y3 = t0 + t2
         let y3 = t0.add(cs, &t2)?;
-        // t4 = 4 * t0 - 3 * y3
+        // t1 = y * z 
+        let t1 = y.mul(cs, &z)?;
+        // z3 = 8 * t0 * t1
         let t0_mul_4 = t0.scale(cs, 4)?;
+        let t0_mul_8 = t0_mul_4.double(cs)?;
+        let z3 = t0_mul_8.mul(cs, &t1)?;
+        // t4 = 4 * t0 - 3 * y3
         let y3_mul_3 = y3.scale(cs, 3)?;
         let t4 = t0_mul_4.sub(cs, &y3_mul_3)?;
         // y3 = t4 * y3
         let y3 = t4.mul(cs, &y3)?;
-        // z3 = 8 * t0 * t2  + y3
-        let t0_mul_8 = t0_mul_4.double(cs)?;
+        // y3 = 8 * t0 * t2  + y3
         let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&y3);
-        let z3 = FieldElement::mul_with_chain(cs, &t0_mul_8, &t2, chain)?;
+        println!("HERE");
+        let y3 = FieldElement::mul_with_chain(cs, &t0_mul_8, &t2, chain)?;
         // t1 = x * y
         let t1 = x.mul(cs, &y)?; 
         // x3 = 2 * t4 * t1
         let t4_mul_2 = t4.double(cs)?;
         let x3 = t4_mul_2.mul(cs, &t1)?;
+        println!("THERE");
 
         let new_value = self.value.clone().map(|el| {
             let mut tmp = el;
@@ -583,43 +579,5 @@ where <G as GenericCurveAffine>::Base: PrimeField
 }
 
 
-#[cfg(test)]
-mod test {
-    use super::*;
-    use crate::bellman::pairing::bn256::{Fq, Bn256, Fr, G1Affine};
-    use plonk::circuit::Width4WithCustomGates;
-    use bellman::plonk::better_better_cs::gates::{selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext, self};
-    use rand::{XorShiftRng, SeedableRng, Rng};
-    use bellman::plonk::better_better_cs::cs::*;
-
-    #[test]
-    fn test_arithmetic_for_projective_bn256_curve() {
-        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
-        inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, 80usize, 80usize);
-        let mut rng = rand::thread_rng();
-
-        let a: G1Affine = rng.gen();
-        let mut b: G1Affine = rng.gen();
-        let mut tmp = a.into_projective();
-        b.negate();
-        tmp.add_assign_mixed(&b);
-        let result = tmp.into_affine();
-        b.negate();
-        
-        let a_affine = AffinePoint::alloc(&mut cs, Some(a), &params).unwrap();
-        let a_proj = ProjectivePoint::from(a_affine);
-        let b_affine = AffinePoint::alloc(&mut cs, Some(b), &params).unwrap();
-        let mut actual_result = AffinePoint::alloc(&mut cs, Some(result), &params).unwrap();
-        let naive_mul_start = cs.get_current_step_number();
-        let result = a_proj.sub_mixed(&mut cs, &b_affine).unwrap();
-        let naive_mul_end = cs.get_current_step_number();
-        println!("num of gates: {}", naive_mul_end - naive_mul_start);
-
-        let mut result = unsafe { result.convert_to_affine(&mut cs).unwrap() };
-        AffinePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
-        assert!(cs.is_satisfied()); 
-    }
-}
 
     

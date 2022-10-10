@@ -15,3 +15,5 @@ pub use self::ram_via_hashes::*;
 
 pub mod table;
 pub use self::table::*;
+
+pub mod tests;

@@ -3144,11 +3144,11 @@ mod test {
             println!("num of gates for affine multiexp var3: {}", naive_mul_end - naive_mul_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            let naive_mul_start = cs.get_current_step_number();
-            let mut result = AffinePoint::safe_multiexp_affine4(cs, &scalars, &points)?;
-            let naive_mul_end = cs.get_current_step_number();
-            println!("num of gates for affine multiexp var4: {}", naive_mul_end - naive_mul_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            // let naive_mul_start = cs.get_current_step_number();
+            // let mut result = AffinePoint::safe_multiexp_affine4(cs, &scalars, &points)?;
+            // let naive_mul_end = cs.get_current_step_number();
+            // println!("num of gates for affine multiexp var4: {}", naive_mul_end - naive_mul_start);
+            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
 
             let naive_mul_start = cs.get_current_step_number();

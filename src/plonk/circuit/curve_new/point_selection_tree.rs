@@ -356,6 +356,7 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
     initial_point_affine: AffinePoint<'a, E, G, T>,
     initial_point_proj: ProjectivePoint<'a, E, G, T>,
     iniitial_point_is_infty: Boolean,
+    adj_offset: AffinePointExt<'a, E, G, T>
 }
 
 impl<'a, E: Engine, G: GenericCurveAffine, T> SelectorTree2<'a, E, G, T> 
@@ -369,7 +370,7 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
         cs: &mut CS, entries: &[AffinePoint<'a, E, G, T>]
     ) -> Result<Self, SynthesisError> {
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-        enum Sign {
+        pub enum Sign {
             Plus,
             Minus
         }
@@ -405,6 +406,12 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
         let mut initial_point_affine = point_uninitialized.clone();
         let mut iniitial_point_is_infty = Boolean::constant(false);
         let mut initial_point_proj = ProjectivePoint::zero(params);
+
+        let mut adj_offset = AffinePointExt::constant(
+            params.fp2_pt_ord3_x_c0, params.fp2_pt_ord3_x_c1, 
+            params.fp2_pt_ord3_y_c0, params.fp2_pt_ord3_y_c1,
+            &params.base_field_rns_params
+        );
         
         for (_is_first, is_last, elem) in workpad.into_iter().identify_first_last() {
             let (_sign, mut point_proj) = elem;
@@ -422,7 +429,8 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
             precompute,
             initial_point_affine,
             iniitial_point_is_infty,
-            initial_point_proj
+            initial_point_proj,
+            adj_offset
         })
     }
 
@@ -457,6 +465,7 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
     ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError> 
     {
         let (candidate, is_point_at_infty) = self.select(cs, bits)?;
+        // It is sometimes buggy(
         let acc_modified = acc.double_and_add_unchecked(cs, &AffinePointExt::from(candidate))?;
         AffinePointExt::conditionally_select(cs, &is_point_at_infty, &acc, &acc_modified)
     }

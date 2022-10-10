@@ -300,6 +300,17 @@ pub struct FieldElement<'a, E: Engine, F: PrimeField>{
     reduction_status: ReductionStatus,
 }
 
+impl<'a, E: Engine, F: PrimeField> PartialEq for FieldElement<'a, E, F>{
+    fn eq(&self, other: &Self) -> bool {
+        assert!(Self::check_params_equivalence(self, other));
+        let are_equal = self.binary_limbs.iter().zip(other.binary_limbs.iter()).all(|(a, b)| {
+            a.term == b.term
+        });
+        are_equal && self.base_field_limb == other.base_field_limb
+    }
+}
+impl<'a, E: Engine, F: PrimeField> Eq for FieldElement<'a, E, F> {}
+
 impl<'a, E: Engine, F: PrimeField> std::fmt::Display for FieldElement<'a, E, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "FieldElement {{ ")?;
@@ -784,8 +795,9 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     }
 
     #[track_caller]
-    pub fn conditionally_select<CS>(cs: &mut CS, flag: &Boolean, first: &Self, second: &Self) -> Result<Self, SynthesisError> 
-    where CS: ConstraintSystem<E>
+    pub fn conditionally_select<CS: ConstraintSystem<E>>(
+        cs: &mut CS, flag: &Boolean, first: &Self, second: &Self
+    ) -> Result<Self, SynthesisError>  
     {
         assert!(Self::check_params_equivalence(first, second));
         match flag {
@@ -794,6 +806,9 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             },
             _ => {},
         };
+        if first == second {
+            return Ok(first.clone());
+        }
 
         // flag * a + (1-flag) * b = flag * (a-b) + b
         let mut new_binary_limbs = vec![];
@@ -864,6 +879,9 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         if flag.is_constant() {
             if flag.get_value().unwrap() { return self.negate(cs) } else { return Ok(self.clone()) }
         };
+        if self.is_constant() && self.get_field_value().unwrap().is_zero() {
+            return Ok(self.clone())
+        }
         
         let max_val = self.get_maximal_possible_stored_value();
         let params = self.representation_params;
@@ -1100,16 +1118,18 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         self.add_with_reduction(cs, other, !self.representation_params.allow_individual_limb_overflow)
     }
 
-    pub fn double_with_reduction<CS>(&self, cs: &mut CS, needs_reduction: bool) -> Result<Self, SynthesisError> 
-    where CS: ConstraintSystem<E> 
+    pub fn scale_with_reduction<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, factor: u64, needs_reduction: bool
+    ) -> Result<Self, SynthesisError>  
     {
         let params = self.representation_params;
-        let mut two = E::Fr::one();
-        two.double();
+        let factor_as_native_field_elem = u64_to_fe::<E::Fr>(factor);
+        let factor_as_represented_field_elem = u64_to_fe::<F>(factor);
 
         if self.is_constant() {
-            let tmp = self.get_field_value().add(&self.get_field_value());
-            let new = Self::constant(tmp.unwrap(), params);
+            let mut tmp = self.get_field_value().unwrap();
+            tmp.mul_assign(&factor_as_represented_field_elem);
+            let new = Self::constant(tmp, params);
             return Ok(new);
         }
 
@@ -1117,15 +1137,19 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         for l in self.binary_limbs.iter()
         {
             let mut new_term = l.term.clone();
-            new_term.scale(&two);
-            let new_max_value = l.max_value.clone() * BigUint::from(2u64);
+            new_term.scale(&factor_as_native_field_elem);
+            let new_max_value = l.max_value.clone() * fe_to_biguint(&factor_as_native_field_elem);
 
             let limb = Limb::<E>::new(new_term, new_max_value);
             new_binary_limbs.push(limb);
         }
         let mut new_base_limb = self.base_field_limb.clone();
-        new_base_limb.scale(&two);
-        let new_value = self.get_field_value().add(&self.get_field_value());
+        new_base_limb.scale(&factor_as_native_field_elem);
+        let new_value = self.get_field_value().map(|x| {
+            let mut tmp = x;
+            tmp.mul_assign(&factor_as_represented_field_elem);
+            tmp
+        });
 
         let mut new = Self {
             binary_limbs: new_binary_limbs,
@@ -1141,8 +1165,12 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok(new)
     }
 
+    pub fn scale<CS: ConstraintSystem<E>>(&self, cs: &mut CS, factor: u64) -> Result<Self, SynthesisError> {
+        self.scale_with_reduction(cs, factor, !self.representation_params.allow_individual_limb_overflow)       
+    }
+
     pub fn double<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        self.double_with_reduction(cs, !self.representation_params.allow_individual_limb_overflow)
+        self.scale(cs, 2u64)
     }
 
     pub fn sub_with_reduction<CS: ConstraintSystem<E>>(

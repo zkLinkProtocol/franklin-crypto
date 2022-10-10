@@ -47,6 +47,19 @@ impl<E: Engine> std::fmt::Display for Term<E> {
     }
 }
 
+impl<E: Engine> PartialEq for Term<E> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.is_constant(), other.is_constant()) {
+            (true, true) => self.get_constant_value() == other.get_constant_value(),
+            (false, false) => {
+                self.num == other.num && self.coeff == other.coeff && self.constant_term == other.constant_term
+            }
+            _ => false,
+        }
+    }
+}
+impl<E: Engine> Eq for Term<E> {}
+
 impl<E: Engine> Term<E> {
     pub fn enforce_equal<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<(), SynthesisError> {
         if self.is_constant() && other.is_constant() {
@@ -314,24 +327,36 @@ impl<E: Engine> Term<E> {
 
                 return Ok(Self::from_constant(v))
             },
-            (true, false) | (false, true) => {
-                let c = if this_is_constant {
-                    self.get_constant_value()
-                } else {
-                    other.get_constant_value()
-                };
+            // (true, false) | (false, true) => {
+            //     let c = if this_is_constant {
+            //         self.get_constant_value()
+            //     } else {
+            //         other.get_constant_value()
+            //     };
 
-                let mut non_constant = if this_is_constant {
-                    other.clone()
-                } else {
-                    self.clone()
-                };
+            //     let mut non_constant = if this_is_constant {
+            //         other.clone()
+            //     } else {
+            //         self.clone()
+            //     };
 
-                non_constant.add_constant(&c);
+            //     non_constant.add_constant(&c);
 
-                let num = non_constant.collapse_into_num(cs)?;
+            //     let num = non_constant.collapse_into_num(cs)?;
 
-                return Ok(Self::from_num(num));
+            //     return Ok(Self::from_num(num));
+            // },
+            (true, false) => {
+                let c = self.get_constant_value();
+                let mut res = other.clone();
+                res.add_constant(&c);
+                return Ok(res);
+            },
+            (false, true) => {
+                let c = other.get_constant_value();
+                let mut res = self.clone();
+                res.add_constant(&c);
+                return Ok(res);
             },
             (false, false) => {
                 let mut lc = LinearCombination::<E>::zero();
@@ -725,6 +750,10 @@ impl<E: Engine> Term<E> {
     pub fn conditionally_select<CS: ConstraintSystem<E>>(
         cs: &mut CS, flag: &Boolean, first: &Self, second: &Self
     ) -> Result<Self, SynthesisError> {
+        if first == second {
+            return Ok(first.clone())
+        }
+
         match flag {
             Boolean::Constant(c) => {
                 if *c {

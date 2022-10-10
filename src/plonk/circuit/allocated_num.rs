@@ -77,6 +77,17 @@ impl<E: Engine> Default for Num<E> {
     }
 }
 
+impl<E: Engine> PartialEq for Num<E> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Constant(fr1), Self::Constant(fr2)) => fr1 == fr2,
+            (Self::Variable(var1), Self::Variable(var2)) => var1 == var2,
+            _ => false,
+        }
+    }
+}
+impl<E: Engine> Eq for Num<E> {}
+
 impl<E: Engine> std::fmt::Display for Num<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Num {{ ")?;
@@ -958,6 +969,10 @@ impl<E: Engine> Num<E> {
         a: &Self,
         b: &Self
     ) -> Result<Self, SynthesisError> {
+        if a == b {
+            return Ok(a.clone())
+        }
+
         match (a, b) {
             (Num::Variable(ref a), Num::Variable(ref b)) => {
                 let num = AllocatedNum::conditionally_select(cs, a, b, condition_flag)?;
@@ -1243,8 +1258,16 @@ impl<E: Engine> Clone for AllocatedNum<E> {
         }
     }
 }
-
 impl<E: Engine> Copy for AllocatedNum<E> {}
+
+
+impl<E: Engine> PartialEq for AllocatedNum<E> {
+    fn eq(&self, other: &Self) -> bool {
+        self.variable == other.variable
+    }
+}
+impl<E: Engine> Eq for AllocatedNum<E> {}
+
 
 impl<E: Engine> AllocatedNum<E> {
     pub fn get_variable(&self) -> Variable {
@@ -2162,6 +2185,10 @@ impl<E: Engine> AllocatedNum<E> {
         b: &Self,
         condition: &Boolean
     ) -> Result<Self, SynthesisError> {
+        if a == b {
+            return Ok(a.clone())
+        }
+
         use bellman::plonk::better_better_cs::cs::GateInternal;
         use bellman::plonk::better_better_cs::gates::selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext;
 

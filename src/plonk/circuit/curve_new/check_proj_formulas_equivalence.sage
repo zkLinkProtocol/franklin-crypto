@@ -1,3 +1,5 @@
+# Reference: https://eprint.iacr.org/2015/1060.pdf
+
 x = var('x')
 y = var('y')
 z = var('z')
@@ -65,13 +67,13 @@ def check_mixed_add_formulas_equivalence():
 def check_double_formulas_equivalence():
     def optimized_impl(): 
         t0 = y * y 
-        t1 = y * z 
         t2 = b3 * z * z
-        y3 = t0 + t2         
-        z3 = 4 * t0 * t1
+        y3 = t0 + t2
+        t1 = y * z 
+        z3 = 8 * t0 * t1
         t4 = 4 * t0 - 3 * y3
         y3 = t4 * y3
-        z3 = 8 * t0 * t2  + y3
+        y3 = 8 * t0 * t2  + y3
         t1 = x * y 
         x3 = 2 * t4 * t1
         return (x3, y3, z3)
@@ -92,7 +94,7 @@ def check_double_formulas_equivalence():
         t2 = t1 + t2
         t0 = t0 - t2 
         y3 = t0 * y3 
-        z3 = x3 + y3
+        y3 = x3 + y3
         t1 = x * y 
         x3 = t0 * t1 
         x3 = x3 + x3
@@ -177,5 +179,3 @@ check_mixed_add_formulas_equivalence()
 check_double_formulas_equivalence()
 check_general_add_formulas_equivalence()
 print "done"
-
-        

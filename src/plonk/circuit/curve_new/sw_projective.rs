@@ -53,7 +53,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
     pub x: FieldElement<'a, E, G::Base>,
     pub y: FieldElement<'a, E, G::Base>,
     pub z: FieldElement<'a, E, G::Base>,
-    pub value: Option<G::Projective>,
+    pub value: Option<G>,
     pub is_in_subgroup: bool,
     pub circuit_params: &'a CurveCircuitParameters<E, G, T>
 }
@@ -69,7 +69,7 @@ where E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>, <G as Gene
         ProjectivePoint::<E, G, T> {
             x, y,
             z: FieldElement::one(&params),
-            value: value.map(|x| x.into_projective()),
+            value: value,
             is_in_subgroup,
             circuit_params
         }
@@ -92,43 +92,29 @@ where <G as GenericCurveAffine>::Base: PrimeField
         self.z.clone()
     }
 
-    #[track_caller]
-    pub fn alloc<CS: ConstraintSystem<E>>(
-        cs: &mut CS, value: Option<G::Projective>, params: &'a CurveCircuitParameters<E, G, T>
-    ) -> Result<Self, SynthesisError> {
-        let rns_params = &params.base_field_rns_params;
-        let (x, y, z) = match value {
-            Some(val) => {
-                // NB: G::Projective is representation in Jacobian coordinates
-                // we have to transform to homogenious projective by:
-                // (x, y, z) -> (x * z, y, z^3)
-                let (x, y, z) = G::Projective::into_xyz_unchecked(val);
-                let mut x = unsafe { std::mem::transmute_copy::<_, G::Base>(&x) };
-                let y = unsafe { std::mem::transmute_copy::<_, G::Base>(&y) };
-                let mut z = unsafe { std::mem::transmute_copy::<_, G::Base>(&z) };
-                
-                x.mul_assign(&z);
-                let tmp = z.clone();
-                z.mul_assign(&tmp);
-                z.mul_assign(&tmp);
-
-                (Some(x), Some(y), Some(z))
+    pub fn from_coordinates_unchecked(
+        x: FieldElement<'a, E, G::Base>, y: FieldElement<'a, E, G::Base>, z: FieldElement<'a, E, G::Base>,
+        is_in_subgroup: bool, circuit_params: &'a CurveCircuitParameters<E, G, T>
+    ) -> Self {
+        let value = match (x.get_field_value(), y.get_field_value(), z.get_field_value()) {
+            (Some(mut x), Some(mut y), Some(z)) => {
+                let res = if z.is_zero() { 
+                    G::zero()
+                } else {
+                    let z_inv = z.inverse().unwrap();
+                    x.mul_assign(&z_inv);
+                    x.mul_assign(&z_inv);
+                    y.mul_assign(&z_inv);
+                    y.mul_assign(&z_inv);
+                    y.mul_assign(&z_inv);
+                    G::from_xy_checked(x, y).expect("should be a valid point")
+                };
+                Some(res)
             },
-            _ => (None, None, None)
+            _ => None,
         };
-        let x = FieldElement::alloc(cs, x, &rns_params)?;
-        let y = FieldElement::alloc(cs, y, &rns_params)?;
-        let z = FieldElement::alloc(cs, z, &rns_params)?;
 
-        let mut point = ProjectivePoint {
-            x, y, z,
-            is_in_subgroup: true,
-            circuit_params: params,
-            value
-        };
-        point.enforce_if_on_curve(cs)?;
-
-        Ok(point)
+        Self { x, y, z, value, is_in_subgroup, circuit_params }
     }
 
     #[track_caller]
@@ -189,7 +175,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let x = FieldElement::zero(rns_params);
         let y = FieldElement::one(rns_params);
         let z = FieldElement::zero(rns_params);
-        let value = Some(G::Projective::zero());
+        let value = Some(G::zero());
 
         Self { x, y, z, value, is_in_subgroup: true, circuit_params: params }
     }
@@ -199,7 +185,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
     }
 
     pub fn get_value(&self) -> Option<G> {
-        self.value.map(|el| el.into_affine())
+        self.value.clone()
     }
 
     pub fn negate<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
@@ -365,13 +351,13 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
         let new_value = match (self.value, other.value) {
             (Some(this), Some(mut other)) => {
-                let mut tmp = this;
+                let mut tmp = this.into_projective();
                 if is_subtraction {
                     other.negate();
                 }
-                tmp.add_assign(&other);
+                tmp.add_assign_mixed(&other);
 
-                Some(tmp)
+                Some(tmp.into_affine())
             },
             _ => None
         };
@@ -440,9 +426,9 @@ where <G as GenericCurveAffine>::Base: PrimeField
         println!("THERE");
 
         let new_value = self.value.clone().map(|el| {
-            let mut tmp = el;
+            let mut tmp = el.into_projective();
             tmp.double();
-            tmp
+            tmp.into_affine()
         });
    
         let new = Self {
@@ -524,12 +510,12 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
         let new_value = match (self.value, other.get_value()) {
             (Some(this), Some(mut other)) => {
-                let mut tmp = this;
+                let mut tmp = this.into_projective();
                 if is_subtraction {
                     other.negate();
                 }
                 tmp.add_assign_mixed(&other);
-                Some(tmp)
+                Some(tmp.into_affine())
             },
             _ => None
         };

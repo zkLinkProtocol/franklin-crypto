@@ -2,7 +2,8 @@
 mod test {
     use crate::bellman::pairing::bn256;
     use crate::bellman::{Field, PrimeField, GenericCurveAffine, GenericCurveProjective};
-    use plonk::circuit::Width4WithCustomGates;
+    use crate::plonk::circuit::Width4WithCustomGates;
+    use crate::plonk::circuit::Engine;
     use bellman::plonk::better_better_cs::gates::{
         selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext, self
     };
@@ -29,44 +30,43 @@ mod test {
         >::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
         let params = generate_optimal_circuit_params_for_bn256::<bn256::Bn256, _>(&mut cs, 80usize, 80usize);
+        let rns_params = &params.base_field_rns_params;
         let mut rng = rand::thread_rng();
 
-        let mut a = bn256::G1::zero();
-        let mut b = bn256::G1::zero();
-        for out in std::iter::once(&mut a).chain(std::iter::once(&mut b)) { 
-            let affine_point: bn256::G1Affine = rng.gen();
-            let (mut x, mut y) = GenericCurveAffine::into_xy_unchecked(affine_point);
-            let z : bn256::Fq = rng.gen();
-            x.mul_assign(&z);
-            y.mul_assign(&z);
-            
-            let proj_point = bn256::G1::from_xyz_unchecked(x, y, z);
-            *out = proj_point;
-        }
-        let mut result = a.clone();
+        let a_affine: bn256::G1Affine = rng.gen();
+        let b_affine: bn256::G1Affine = rng.gen();
+        let mut result = a_affine.into_projective();
         result.double(); 
-        //result.add_assign(&b);
-        println!("a: {}", a);
-        println!("a doubled: {}", result);
+        result.add_assign_mixed(&b_affine);
+        let mut actual_result = ProjectivePoint::from(
+            AffinePoint::alloc(&mut cs, Some(result.into_affine()), &params).unwrap()
+        );
 
-        println!("AAA");
-        let a = ProjectivePoint::alloc(&mut cs, Some(a), &params).unwrap();
-        println!("AAAB");
-        // let mut b = ProjectivePoint::alloc(&mut cs, Some(b), &params).unwrap();
-        let mut actual_result = ProjectivePoint::alloc(&mut cs, Some(result), &params).unwrap();
-        println!("AAAC");
-        
+        let mut a = ProjectivePoint::zero(&params);
+        let mut b = ProjectivePoint::zero(&params);
+
+        let iter = std::iter::once((&a_affine, &mut a)).chain(std::iter::once((&b_affine, &mut b))); 
+        for (affine_point, out) in iter { 
+            let (mut x_wit, mut y_wit) = affine_point.into_xy_unchecked();
+            let z_wit : bn256::Fq = rng.gen();
+            x_wit.mul_assign(&z_wit);
+            y_wit.mul_assign(&z_wit);
+
+            let x = FieldElement::alloc(&mut cs, Some(x_wit), &rns_params).unwrap();
+            let y = FieldElement::alloc(&mut cs, Some(y_wit), &rns_params).unwrap();
+            let z = FieldElement::alloc(&mut cs, Some(z_wit), &rns_params).unwrap();
+
+            *out = ProjectivePoint {
+                x, y, z,
+                is_in_subgroup: true,
+                circuit_params: &params,
+                value: Some(affine_point.clone()),
+            };
+        }
+      
         let counter_start = cs.get_current_step_number();
         let mut result = ProjectivePoint::double(&a, &mut cs).unwrap(); 
-        println!("real x: {}", result.get_x().get_field_value().unwrap());
-        println!("real y: {}", result.get_y().get_field_value().unwrap());
-        println!("real z: {}", result.get_z().get_field_value().unwrap());
-
-        println!("real x: {}", actual_result.get_x().get_field_value().unwrap());
-        println!("real y: {}", actual_result.get_y().get_field_value().unwrap());
-        println!("real z: {}", actual_result.get_z().get_field_value().unwrap());
-        //let mut result = a.clone();
-        // result = result.add(&mut cs, &mut b).unwrap();
+        result = result.add(&mut cs, &mut b).unwrap();
         let counter_end = cs.get_current_step_number();
         println!("num of gates: {}", counter_end - counter_start);
 
@@ -128,7 +128,6 @@ mod test {
         AffinePointExt::enforce_equal(&mut cs, &mut result, &mut c).unwrap();
         assert!(cs.is_satisfied()); 
     }
-}
 
     // ---------------------------------------------------------------------------------------------------------
     // ---------------------------------------------------------------------------------------------------------
@@ -136,81 +135,131 @@ mod test {
     // ---------------------------------------------------------------------------------------------------------
     // ---------------------------------------------------------------------------------------------------------
     // test correctness of basic arithmetic operations of a curve: add, sub, double, double_add
-//     struct AffinePointTester<E:Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
-//     where <G as GenericCurveAffine>::Base: PrimeField
-//     {
-//         circuit_params: CurveCircuitParameters<E, G, T>,
-//     }
-
-//     impl<E: Engine, G: GenericCurveAffine + rand::Rand, T> Circuit<E> for AffinePointTester<E, G, T> 
-//     where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
-//     {
-//         type MainGate = SelectorOptimizedWidth4MainGateWithDNext;
-//         fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
-//             Ok(
-//                 vec![ SelectorOptimizedWidth4MainGateWithDNext::default().into_internal() ]
-//             )
-//         }
-    
-//         fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
-//             let mut rng = rand::thread_rng();
-
-//             let a: G1Affine = rng.gen();
-//             let b: G1Affine = rng.gen();
-            
-//             let mut tmp = bellman::CurveAffine::into_projective(&a);
-//             tmp.add_assign_mixed(&b);
-//             let a_plus_b_actual = tmp.into_affine();
-
-//             let mut tmp = bellman::CurveAffine::into_projective(&a);
-//             tmp.sub_assign_mixed(&b);
-//             let a_sub_b_actual = tmp.into_affine();
-
-//             let mut a_doubled_actual = a.clone();
-//             a_doubled_actual.double();
-            
+    fn affine_arithmetic_tester_impl<E, CS, G: GenericCurveAffine + rand::Rand, T: Extension2Params<G::Base>>(
+        cs: &mut CS, params: &CurveCircuitParameters<E, G, T>
+    ) 
+    where <G as GenericCurveAffine>::Base: PrimeField, E: Engine, CS: ConstraintSystem<E>
+    {
+        let mut rng = rand::thread_rng();
+        let a_wit: G = rng.gen();
+        let b_wit: G = rng.gen();
+        let mut b_negated_wit = b_wit.clone();
+        b_negated_wit.negate();
         
-//         let a = AffinePoint::alloc(&mut cs, Some(a), &params).unwrap();
-//         let mut b = AffinePoint::alloc(&mut cs, Some(b), &params).unwrap();
-//         let mut actual_result = AffinePoint::alloc(&mut cs, Some(result), &params).unwrap();
-//         let naive_mul_start = cs.get_current_step_number();
-//         let mut result = a.add_unequal_unchecked(&mut cs, &mut b).unwrap();
-//         let naive_mul_end = cs.get_current_step_number();
-//         println!("num of gates: {}", naive_mul_end - naive_mul_start);
+        let mut tmp = a_wit.into_projective();
+        tmp.add_assign_mixed(&b_wit);
+        let a_plus_b_wit = tmp.into_affine();
 
-//         // println!("actual result: x: {}, y: {}", actual_result.x.get_field_value().unwrap(), actual_result.y.get_field_value().unwrap());
-//         // println!("computed result: x: {}, y: {}", result.x.get_field_value().unwrap(), result.y.get_field_value().unwrap());
+        let mut tmp = a_wit.into_projective();
+        tmp.add_assign_mixed(&b_negated_wit);
+        let a_minus_b_wit = tmp.into_affine();
 
-//         AffinePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
-//         assert!(cs.is_satisfied()); 
-//         println!("SCALAR MULTIPLICATION final");
-//     }
+        let mut tmp = a_wit.into_projective();
+        tmp.double();
+        let a_doubled_wit = tmp.into_affine();
 
+        let mut tmp = a_wit.into_projective();
+        tmp.double();
+        tmp.add_assign_mixed(&b_wit);
+        let a_doubled_plus_b_wit = tmp.into_affine();
+        
+        let mut a = AffinePoint::alloc(cs, Some(a_wit), params).unwrap();
+        let mut b = AffinePoint::alloc(cs, Some(b_wit), params).unwrap();
+        let mut a_plus_b_actual = AffinePoint::alloc(cs, Some(a_plus_b_wit), params).unwrap();
+        let mut a_minus_b_actual = AffinePoint::alloc(cs, Some(a_minus_b_wit), params).unwrap();
+        let mut a_doubled_actual = AffinePoint::alloc(cs, Some(a_doubled_wit), params).unwrap();
+        let mut a_doubled_plus_b_actual = AffinePoint::alloc(cs, Some(a_doubled_plus_b_wit), params).unwrap();
 
+        let mut a_plus_b_computed = a.add_unequal(cs, &mut b).unwrap();
+        let mut a_minus_b_computed = a.sub_unequal(cs, &mut b).unwrap();
+        let mut a_doubled_computed = a.double(cs).unwrap();
+        let mut a_doubled_plus_b_computed = a.double_and_add(cs, &mut b).unwrap();
 
-//     struct AffineExt_vs_Projective<E:Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
-//     where <G as GenericCurveAffine>::Base: PrimeField
-//     {
-//         circuit_params: CurveCircuitParameters<E, G, T>,
-//     }
-    
-//     impl<E: Engine, G: GenericCurveAffine + rand::Rand, T> Circuit<E> for AffineExt_vs_Projective<E, G, T> 
-//     where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
-//     {
-//         type MainGate = SelectorOptimizedWidth4MainGateWithDNext;
-//         fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
-//             Ok(
-//                 vec![ SelectorOptimizedWidth4MainGateWithDNext::default().into_internal() ]
-//             )
-//         }
-    
-//         fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
-//             let mut rng = rand::thread_rng();
+        AffinePoint::enforce_equal(cs, &mut a_plus_b_actual, &mut a_plus_b_computed).unwrap();
+        AffinePoint::enforce_equal(cs, &mut a_minus_b_actual, &mut a_minus_b_computed).unwrap();
+        AffinePoint::enforce_equal(cs, &mut a_doubled_actual, &mut a_doubled_computed).unwrap();
+        AffinePoint::enforce_equal(cs, &mut a_doubled_plus_b_actual, &mut a_doubled_plus_b_computed).unwrap();
+    }
 
-//             let a: G = rng.gen();
-//             let b: G = rng.gen();
-//             let mut b_negated = b;
-//             b_megated.negate();
+    #[test]
+    fn affine_arithmetic_tester_for_bn256() {
+        let mut cs = TrivialAssembly::<
+            bn256::Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
+        >::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let params = generate_optimal_circuit_params_for_bn256::<bn256::Bn256, _>(&mut cs, 80usize, 80usize);
+        affine_arithmetic_tester_impl(&mut cs, &params);
+        assert!(cs.is_satisfied()); 
+    }
+
+    // ---------------------------------------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------------------------------------
+    // benchmark projective add, add_mixed, double, double_add_mixed againt their affine_ext counterparts
+    fn affine_ext_vs_projective_impl<E, CS, G: GenericCurveAffine + rand::Rand, T: Extension2Params<G::Base>>(
+        cs: &mut CS, params: &CurveCircuitParameters<E, G, T>
+    ) 
+    where <G as GenericCurveAffine>::Base: PrimeField, E: Engine, CS: ConstraintSystem<E>
+    {
+        let rns_params = &params.base_field_rns_params;
+        let mut rng = rand::thread_rng();
+        let a_wit: G = rng.gen();
+        let b_wit: G = rng.gen();
+
+        let mut tmp = a_wit.into_projective();
+        tmp.add_assign_mixed(&b_wit);
+        let a_plus_b_wit = tmp.into_affine();
+
+        let mut a_proj = ProjectivePoint::zero(&params);
+        let mut b_proj = ProjectivePoint::zero(&params);
+
+        let iter = std::iter::once((&a_wit, &mut a_proj)).chain(std::iter::once((&b_wit, &mut b_proj))); 
+        for (affine_point, out) in iter { 
+            let (mut x_wit, mut y_wit) = affine_point.into_xy_unchecked();
+            let z_wit : G::Base = rng.gen();
+            x_wit.mul_assign(&z_wit);
+            y_wit.mul_assign(&z_wit);
+
+            let x = FieldElement::alloc(cs, Some(x_wit), &rns_params).unwrap();
+            let y = FieldElement::alloc(cs, Some(y_wit), &rns_params).unwrap();
+            let z = FieldElement::alloc(cs, Some(z_wit), &rns_params).unwrap();
+
+            *out = ProjectivePoint {
+                x, y, z,
+                is_in_subgroup: true,
+                circuit_params: &params,
+                value: Some(affine_point.clone()),
+            };
+        };
+
+        let a = AffinePoint::alloc(cs, Some(a_wit), params).unwrap();
+        let b = AffinePoint::alloc(cs, Some(b_wit), params).unwrap();
+        let a_plus_b = AffinePoint::alloc(cs, Some(a_plus_b_wit), params).unwrap();
+
+        let counter_start = cs.get_current_step_number();
+        let mut result = a_proj.add(cs, &b_proj).unwrap(); 
+        let counter_end = cs.get_current_step_number();
+        println!("num of gates for projective add: {}", counter_end - counter_start);
+        ProjectivePoint::enforce_equal(&mut cs, &mut result, &mut c).unwrap();
+
+        let offset_generator = AffinePointExt::constant(
+            params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
+            params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
+            &params.base_field_rns_params
+        );
+        let mut a_ext = offset_generator.add_unequal_unchecked(cs, &AffinePointExt::from(a.clone())).unwrap();
+        let mut b_ext = offset_generator.add_unequal_unchecked(cs, &AffinePointExt::from(b.clone())).unwrap();
+
+        let counter_start = cs.get_current_step_number();
+        let mut result = a_ext.add_unequal_unchecked(cs, &b_ext).unwrap(); 
+        let counter_end = cs.get_current_step_number();
+        println!("num of gates for affine_ext add: {}", counter_end - counter_start);
+        AffinePoint::enforce_equal(&mut cs, &mut result, &mut c).unwrap();
+
+        
+}
     
 //             let mut tmp = a.into_projective();
 //         b.negate();

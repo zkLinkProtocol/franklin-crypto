@@ -62,6 +62,12 @@ pub(crate) trait TreeSelectable<E: Engine>: Sized + Clone {
     fn sub<CS: ConstraintSystem<E>>(
         cs: &mut CS, first: &mut Self, second: &mut Self
     ) -> Result<Self, SynthesisError>;
+
+    fn safe_sub<CS: ConstraintSystem<E>>(
+        cs: &mut CS, first: &mut Self, second: &mut Self
+    ) -> Result<Self, SynthesisError> {
+        Self::sub(cs, first, second)
+    }
     
     fn negate<CS: ConstraintSystem<E>>(cs: &mut CS, first: &mut Self) -> Result<Self, SynthesisError>;
     
@@ -324,8 +330,6 @@ impl<E: Engine, T: TreeSelectable<E>> SelectorTree<E, T> {
 
     pub fn select_last<CS: ConstraintSystem<E>>(&self, cs: &mut CS, bits: &[Boolean]) -> Result<T, SynthesisError>
     {
-        // TODO: Not always correct - should mix additional generator
-        
         // on every iteration of the inner loop (except the last one) of the point by scalar mul algorithm
         // we want to retrieve the point which is dependent on bits as follows:
         // bits = [b_0, b_1, .., b_n] -> /sum (2* b_i - 1) P_i = A
@@ -335,8 +339,11 @@ impl<E: Engine, T: TreeSelectable<E>> SelectorTree<E, T> {
         // hence we reduced the computation to one subtraction and one doubling
         let mut a = self.select(cs, &bits)?;
         let mut c = self.get_initial_accumulator();
-        let mut tmp = T::sub(cs, &mut a, &mut c)?;
+        // we use safe_sub here as it is possible here that a = +/- c 
+        let mut tmp = T::safe_sub(cs, &mut a, &mut c)?;
+        println!("before halving");
         let res = T::halving(cs, &mut tmp)?;
+        println!("after halving");
         Ok(res)
     }
 
@@ -465,9 +472,23 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
     ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError> 
     {
         let (candidate, is_point_at_infty) = self.select(cs, bits)?;
+        let params = candidate.circuit_params;
         // It is sometimes buggy(
-        let acc_modified = acc.double_and_add_unchecked(cs, &AffinePointExt::from(candidate))?;
-        AffinePointExt::conditionally_select(cs, &is_point_at_infty, &acc, &acc_modified)
+        let x_c0 = candidate.get_x();
+        let x_c1 = FieldElement::zero(&params.base_field_rns_params);
+        let y_c0 = candidate.get_y();
+        let y_c1 = FieldElement::conditionally_select(
+            cs, &is_point_at_infty, &self.adj_offset.get_y().c1, &FieldElement::zero(&params.base_field_rns_params)
+        )?;
+        let x_ext = Fp2::from_coordinates(x_c0, x_c1);
+        let y_ext = Fp2::from_coordinates(y_c0, y_c1);
+        let to_add = AffinePointExt { x: x_ext, y: y_ext };
+        
+        // let to_add = AffinePointExt::conditionally_select(
+        //     cs, &is_point_at_infty, &self.adj_offset, &AffinePointExt::from(candidate)
+        // )?;
+        acc.double_and_add_unchecked(cs, &to_add)
+        //AffinePointExt::conditionally_select(cs, &is_point_at_infty, &acc, &acc_modified)
     }
 
     pub fn add_initial_into_accumulator<CS: ConstraintSystem<E>>(

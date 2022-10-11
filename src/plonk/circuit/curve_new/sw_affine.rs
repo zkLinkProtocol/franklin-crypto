@@ -2167,6 +2167,37 @@ where <G as GenericCurveAffine>::Base: PrimeField
         assert_eq!(gate_count_end - gate_count_start, 0);
         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?;
 
+        let adj_offset = AffinePointExt::constant(
+            params.fp2_pt_ord3_x_c0, params.fp2_pt_ord3_x_c1, 
+            params.fp2_pt_ord3_y_c0, params.fp2_pt_ord3_y_c1,
+            &params.base_field_rns_params
+        );
+
+        let is_defined_over_base_field = |point: &AffinePointExt<'a, E, G, T>| -> Option<bool> {
+            point.get_value().map(|(_x_c0, x_c1, _y_c0, y_c1)| x_c1.is_zero() && y_c1.is_zero())
+        };
+
+        // adj_offset is a point of order 3, hence one of acc, acc + adj_offset, acc - adj belong to E(F_p)
+        let need_to_negate_wit = acc.get_value().map(|(x_c0, x_c1, y_c0, y_c1)| {
+            let gate_count_start = cs.get_current_step_number();
+
+            let mut tmp = AffinePointExt::<E, G, T>::constant(x_c0, x_c1, y_c0, y_c1, base_rns_params);
+            tmp = tmp.add_unequal_unchecked(cs, &adj_offset).expect("should synthesize");
+            let flag = is_defined_over_base_field(&tmp).expect("should be some");    
+                
+            let gate_count_end = cs.get_current_step_number();
+            assert_eq!(gate_count_end - gate_count_start, 0);
+            !flag
+        });
+
+        let need_to_negate = Boolean::Is(AllocatedBit::alloc(cs, need_to_negate_wit)?);
+        let to_add = adj_offset.conditionally_negate(cs, &need_to_negate)?;
+        let modified_acc = acc.add_unequal_unchecked(cs, &to_add)?;
+        
+        let cond_wit = is_defined_over_base_field(&modified_acc);
+        let cond = Boolean::Is(AllocatedBit::alloc(cs, cond_wit)?);
+        acc = AffinePointExt::conditionally_select(cs, &cond, &modified_acc, &acc)?; 
+
         let mut final_x = acc.get_x();
         let mut final_y = acc.get_y();
         let final_value = final_x.c0.get_field_value().zip(final_y.c0.get_field_value()).map(|(x, y)| {

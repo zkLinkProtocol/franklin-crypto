@@ -252,8 +252,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         )?;
         let x_for_safe_z = self.x.div(cs, &safe_z)?;
         let y_for_safe_z = self.y.div(cs, &safe_z)?;
-        //let x = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.x, &x_for_safe_z)?;
-        // TODO: I think we should call this method somehow different
+        let x = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.x, &x_for_safe_z)?;
         let x = x_for_safe_z;
         let y = FieldElement::conditionally_select(cs, &is_point_at_infty, &default.y, &y_for_safe_z)?;
 
@@ -416,14 +415,12 @@ where <G as GenericCurveAffine>::Base: PrimeField
         // y3 = 8 * t0 * t2  + y3
         let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&y3);
-        println!("HERE");
         let y3 = FieldElement::mul_with_chain(cs, &t0_mul_8, &t2, chain)?;
         // t1 = x * y
         let t1 = x.mul(cs, &y)?; 
         // x3 = 2 * t4 * t1
         let t4_mul_2 = t4.double(cs)?;
         let x3 = t4_mul_2.mul(cs, &t1)?;
-        println!("THERE");
 
         let new_value = self.value.clone().map(|el| {
             let mut tmp = el.into_projective();

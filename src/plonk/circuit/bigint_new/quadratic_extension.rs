@@ -25,7 +25,7 @@ pub trait Extension2Params<F: PrimeField>: Clone {
     fn is_default_impl() -> bool { true }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Bn256Extension2Params {}
 impl Extension2Params<Bn256Fq> for Bn256Extension2Params {}
 

@@ -555,7 +555,7 @@ pub enum MemoryEnforcementStrategy {
     HashSets,
 }
    
-pub(crate) struct Memory<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+pub struct Memory<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
 where <G as GenericCurveAffine>::Base: PrimeField
 {
     queries: Vec<(Num<E>, AffinePoint<'a, E, G, T>)>,
@@ -599,7 +599,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
     }
 
     pub fn write(&mut self, addr: u64, point: AffinePoint<'a, E, G, T>) {
-        assert!(log2_floor(addr as usize) as usize <= self.address_width);
+        // assert!(log2_floor(addr as usize) as usize <= self.address_width);
         self.witness_map.insert(addr, point.get_value());
         let addr_as_num = Num::Constant(u64_to_ff(addr));
         self.queries.push((addr_as_num, point));
@@ -686,7 +686,9 @@ where <G as GenericCurveAffine>::Base: PrimeField
         self.sorted_packed_elems_0 = sorted_packed_elems_0;
         self.sorted_packed_elems_1 = sorted_packed_elems_1;
 
+        dbg!(123);
         self.enforce_correctness_of_permutation(cs)?;
+        dbg!(1231234);
         self.enforce_correctness_of_sorted_packed_queries(cs)
     }
 

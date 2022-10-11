@@ -53,6 +53,17 @@ use crate::plonk::circuit::bigint_new::*;
 use crate::plonk::circuit::curve_new::sw_projective::*;
 use super::point_selection_tree::*;
 
+pub fn sign_i64(i64: i64)-> Boolean{
+
+    let a = i64::abs(i64);
+    let diff = i64 - a;
+    if diff == 0{
+        Boolean::Constant(false)
+    } else{
+        Boolean::Constant(true)
+    }
+}
+
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PointByScalarMulStrategy {
@@ -1288,9 +1299,9 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let mut offset_generator = AffinePoint::constant(G::one(), params);
         let mut acc = offset_generator.add_unequal(cs, &mut point_plus_point_endo)?;
         let num_of_doubles = k1_decomposition[1..].len();
-        let iter = k1_decomposition[1..].into_iter().zip(k2_decomposition[1..].into_iter()).rev().enumerate();
+        let iter = k1_decomposition[1..].into_iter().zip(k2_decomposition[1..].into_iter()).rev();
 
-        for (_idx, (k1_bit, k2_bit)) in iter {
+        for (k1_bit, k2_bit) in iter {
             // selection tree looks like following:
             //                              
             //                         |true --- P + Q
@@ -1346,6 +1357,232 @@ where <G as GenericCurveAffine>::Base: PrimeField
         Ok(result)
     }
 
+    pub fn const_number_in_skew(number: usize, count_bits: usize ) -> i64{
+
+        let bits_str: &str = &format!("{number:b}");
+        let char3: Vec<char> = bits_str.chars().collect::<Vec<_>>();
+
+        let zero_count = count_bits - bits_str.len();
+        let mut vec_bool = vec![Some(false); zero_count];
+    
+        for i in char3.iter(){
+            let bool = match i {
+                '0' => false, 
+                '1' => true,
+                _ => panic!()
+            };
+            vec_bool.push(Some(bool));
+            
+        };
+
+        let mut const_n: i64 = 0;
+        for i in 0..vec_bool.len(){
+            const_n *= 2;
+            let high_bit = vec_bool[i].unwrap();
+            let high_contribution = if high_bit {
+                1
+            } else{
+                -1
+            };
+    
+            const_n += high_contribution ;
+        }
+
+        const_n 
+    
+    }
+    pub fn mul_by_scalar_descending_skew_ladder_with_endo_with_using_ram<CS: ConstraintSystem<E>>(
+        &mut self,
+        cs: &mut CS, 
+        scalar: &mut FieldElement<'a, E, G::Scalar>, 
+        window: usize,
+        ram: MemoryEnforcementStrategy,
+    ) -> Result<Self, SynthesisError> {
+
+        if let Some(value) = scalar.get_field_value() {
+            assert!(!value.is_zero(), "can not multiply by zero in the current approach");
+        }
+        if scalar.is_constant() {
+            unimplemented!();
+        }
+
+        let params = self.circuit_params;
+        let scalar_rns_params = &params.scalar_field_rns_params;
+        let base_rns_params = &params.base_field_rns_params;
+
+        let limit = params.get_endomorphism_bitlen_limit();
+        let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
+            Some(x) => {
+                let dcmp = params.calculate_decomposition(x);
+                (Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus))
+            },
+            None => (None, None, None, None)
+        };
+        let mut k1_abs = FieldElement::alloc_for_known_bitwidth(cs, k1_abs_wit, limit, scalar_rns_params, true)?;
+        let mut k2_abs = FieldElement::alloc_for_known_bitwidth(cs, k2_abs_wit, limit, scalar_rns_params, true)?;
+        let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
+        let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
+
+        // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
+        let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
+        let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
+        let mut chain = FieldElementsChain::new();
+        chain.add_pos_term(&k1).add_neg_term(&scalar);
+        let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
+        FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
+
+        let mut point = self.conditionally_negate(cs, &k1_is_negative_flag)?;
+        let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+        let x_endo = point.get_x().mul(cs, &beta)?;
+        let y_endo = self.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
+        let mut point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
+
+        let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
+        let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
+        let point_minus_point_endo = point.sub_unequal_unchecked(cs, &mut point_endo)?;
+        let mut point_plus_point_endo = point.add_unequal_unchecked(cs, &point_endo)?;
+       
+        let mut offset_generator = AffinePoint::constant(GenericCurveAffine::one(), params);
+
+        let mut acc = offset_generator.add_unequal(cs, &mut point_plus_point_endo)?;
+        let mut num_doubles = 0;
+
+        // let blocks_for_cycle = (limit-1)/window;
+        // let last_block_wirh_remainder_bits = limit -1 - blocks_for_cycle*window; 
+
+        let bloks: Vec<Vec<Boolean>> = k1_decomposition[1..].chunks(window).map(|s| s.into()).rev().collect();
+        let bloks_2: Vec<Vec<Boolean>> = k2_decomposition[1..].chunks(window).map(|s| s.into()).rev().collect();
+
+        let bloks_whithout_last = &bloks[0..bloks.len()-1];
+        let bloks2_whithout_last = &bloks_2[0..bloks_2.len()-1];
+
+        let address_width = (2 as u64).pow(window as u32) * (2 as u64).pow(window as u32);
+
+        let mut memory = Memory::<'_, E, G, T >::new(address_width as usize, ram);
+        dbg!(12345);
+        self.clone().precomputation_for_ram(cs, &mut point_endo, window, &mut memory);
+        // let iter = bloks.into_iter().zip(bloks_2.into_iter());
+        dbg!(12345);
+        let shifts = compute_shifts::<E::Fr>();
+        // We create addresses according to the following scheme: 
+        // First, there is a simple numbering addres = 0 + 1, 0+2, 0+3 ... 0+n where n is bits of the window.
+        // Then the following happens. Just as a new cycle begins, we add n and add to the current number.
+        // This is done to prevent address overlap. For example: 2 P + 3 Q addrx will be 5 and 3 P + 2 Q addrx will also be 5.
+        // According to our trick, when n = 4, the address will be 11 in the first case, and 14 in the second.
+        let mut minus_one = E::Fr::one();
+        minus_one.negate();
+
+        for (bits1, bits2) in bloks_whithout_last.iter().zip(bloks2_whithout_last.iter()){
+            let mut lc = LinearCombination::zero();
+            let mut i = window;
+            for num_bit in 0..window{
+                i-= 1;
+                lc.add_assign_boolean_with_coeff(&bits1[num_bit], shifts[i]); 
+            }
+            lc.scale(&shifts[window]);
+            let mut j = window;
+            for num_bit in 0..window{
+                j-= 1;
+                lc.add_assign_boolean_with_coeff(&bits2[num_bit], shifts[j]); 
+            }
+            let addres = lc.into_num(cs)?;
+            let mut point = unsafe { memory.read(cs, addres, &params)? };
+            acc = acc.double_and_add(cs, &mut point)?;
+
+            num_doubles += 1;
+        }
+
+        let (last_blok1, last_blok2 ) = bloks.last().zip(bloks_2.last()).unwrap();
+
+        for (k1_bit, k2_bit) in last_blok1.iter().zip(last_blok2.iter()) {
+            let xor_flag = Boolean::xor(cs, &k1_bit, &k2_bit)?;
+            let selected_x = FieldElement:: conditionally_select(
+                cs, &xor_flag, &point_minus_point_endo.get_x(), &point_plus_point_endo.get_x()
+            )?;
+            let tmp_y = FieldElement::conditionally_select(
+                cs, &xor_flag, &point_minus_point_endo.get_y(), &point_plus_point_endo.get_y()
+            )?;
+            let selected_y = tmp_y.conditionally_negate(cs, &k1_bit.not())?;
+            let mut tmp = unsafe { AffinePoint::from_xy_unchecked(selected_x, selected_y, params) };
+            acc = acc.double_and_add(cs, &mut tmp)?;
+            num_doubles += 1;
+        }
+
+        let k1_bit = k1_decomposition.first().unwrap();
+        let k2_bit = k2_decomposition.first().unwrap();
+        let acc_is_unchanged = Boolean::and(cs, &k1_bit, &k2_bit)?; 
+        let mut tmp = AffinePoint::conditionally_select(cs, &k2_bit, &point, &point_plus_point_endo)?;
+        tmp = AffinePoint::conditionally_select(cs, &k1_bit, &point_endo, &tmp)?;
+        let skew_acc = acc.sub_unequal_unchecked(cs, &mut tmp)?;
+        acc = AffinePoint::conditionally_select(cs, &acc_is_unchanged, &acc, &skew_acc)?;
+       
+        let as_scalar_repr = biguint_to_repr::<G::Scalar>(BigUint::from(1u64) << num_doubles);
+        let scaled_offset_wit = G::one().mul(as_scalar_repr).into_affine();
+        let mut scaled_offset = AffinePoint::constant(scaled_offset_wit, params);
+        let result = acc.sub_unequal_unchecked(cs, &mut scaled_offset)?; 
+        memory.enforce_ram_correctness(cs)?;
+
+        Ok(result)
+
+    }
+    #[track_caller]
+    pub fn precomputation_for_ram<CS: ConstraintSystem<E>>(
+        self,  
+        cs: &mut CS, 
+        other: &Self, 
+        window: usize, 
+        memory: &mut Memory<'a, E, G, T>
+    )-> Result<(), SynthesisError>{
+
+        let window_width = (2 as u64).pow(window as u32);
+        let mut count = 0 as u64;
+
+        for i in 0..window_width{
+
+            let mut r_point = self.clone().mul_const_scalar_with_specified_window(cs, i as usize, window)?;
+
+
+            for j in 0..window_width{
+
+                let mut endo_point = other.clone().mul_const_scalar_with_specified_window(cs, j as usize, window)?;
+
+                let precomoute_point = r_point.add_unequal(cs, &mut endo_point)?;
+
+                memory.write(count, precomoute_point);
+                count+=1;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn mul_const_scalar_with_specified_window<CS: ConstraintSystem<E>>(
+        self,         
+        cs: &mut CS,        
+        number_to_skew: usize,
+        window: usize, 
+    )-> Result<Self, SynthesisError> {
+        let const_num = Self::const_number_in_skew(number_to_skew, window);
+        let is_ne_flag = sign_i64(const_num);
+        let unsign_nuber = i64::abs(const_num);
+
+        let mut q_point = self.clone();
+        let mut r_point: Self;
+        if unsign_nuber == 1 {
+            r_point = q_point;
+
+        } else{
+            r_point = q_point.double(cs).unwrap();
+
+            for _ in 0..unsign_nuber-2{
+
+                r_point = r_point.double_and_add(cs, &mut q_point).unwrap();
+            }
+        }
+        let x = r_point.get_x();
+        let y = r_point.get_y().conditionally_negate(cs, &is_ne_flag)?; 
+        r_point = unsafe { AffinePoint::from_xy_unchecked(x, y, self.circuit_params)};
+        Ok(r_point)
+    }
 
     #[track_caller]
     pub fn mul_by_scalar_descending_skew_ladder_with_base_ext<CS: ConstraintSystem<E>>(
@@ -2181,7 +2418,6 @@ where <G as GenericCurveAffine>::Base: PrimeField
     }
 }
 
-
 impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> AffinePoint<'a, E, G, T> 
 where <G as GenericCurveAffine>::Base: PrimeField {
     pub fn mul_by_scalar_ascending_ladder_proj<CS: ConstraintSystem<E>>(
@@ -2443,7 +2679,6 @@ where <G as GenericCurveAffine>::Base: PrimeField {
     }    
 }
 
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -2487,6 +2722,32 @@ mod test {
         assert!(cs.is_satisfied()); 
         println!("SCALAR MULTIPLICATION final");
     }
+    fn test_endo_mul_for_bn256_curve() {
+        let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+        let params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, 80usize, 80usize);
+        let mut rng = rand::thread_rng();
+
+        let a: G1Affine = rng.gen();
+        let b: G1Affine = rng.gen();
+        let mut tmp = bellman::CurveAffine::into_projective(&a);
+        tmp.add_assign_mixed(&b);
+        let result = tmp.into_affine();
+        
+        let a = AffinePoint::alloc(&mut cs, Some(a), &params).unwrap();
+        let mut b = AffinePoint::alloc(&mut cs, Some(b), &params).unwrap();
+        let mut actual_result = AffinePoint::alloc(&mut cs, Some(result), &params).unwrap();
+        let naive_mul_start = cs.get_current_step_number();
+        let mut result = a.add_unequal_unchecked(&mut cs, &mut b).unwrap();
+        let naive_mul_end = cs.get_current_step_number();
+        println!("num of gates: {}", naive_mul_end - naive_mul_start);
+
+        // println!("actual result: x: {}, y: {}", actual_result.x.get_field_value().unwrap(), actual_result.y.get_field_value().unwrap());
+        // println!("computed result: x: {}, y: {}", result.x.get_field_value().unwrap(), result.y.get_field_value().unwrap());
+
+        AffinePoint::enforce_equal(&mut cs, &mut result, &mut actual_result).unwrap();
+        assert!(cs.is_satisfied()); 
+        println!("SCALAR MULTIPLICATION final");
+    }
 
     struct TestCircuit<E:Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
     where <G as GenericCurveAffine>::Base: PrimeField
@@ -2495,7 +2756,7 @@ mod test {
     }
     
     impl<E: Engine, G: GenericCurveAffine + rand::Rand, T> Circuit<E> for TestCircuit<E, G, T> 
-    where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
+    where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base> + std::fmt::Debug
     {
         type MainGate = SelectorOptimizedWidth4MainGateWithDNext;
         fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
@@ -2516,74 +2777,93 @@ mod test {
             let mut scalar = FieldElement::alloc(cs, Some(scalar), &self.circuit_params.scalar_field_rns_params)?;
             let mut actual_result = AffinePoint::alloc(cs, Some(result), &self.circuit_params)?;
 
-            let naive_mul_start = cs.get_current_step_number();
-            let mut result = a.mul_by_scalar_descending_ladder(cs, &mut scalar)?;
-            let naive_mul_end = cs.get_current_step_number();
-            println!("num of gates for descending ladder: {}", naive_mul_end - naive_mul_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            // let naive_mul_start = cs.get_current_step_number();
+            // let mut result = a.mul_by_scalar_descending_ladder(cs, &mut scalar)?;
+            // let naive_mul_end = cs.get_current_step_number();
+            // println!("num of gates for descending ladder: {}", naive_mul_end - naive_mul_start);
+            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            let naive_mul_start = cs.get_current_step_number();
-            let mut result = a.mul_by_scalar_descending_skew_ladder(cs, &mut scalar)?;
-            let naive_mul_end = cs.get_current_step_number();
-            println!("num of gates for descending skew ladder: {}", naive_mul_end - naive_mul_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            // let naive_mul_start = cs.get_current_step_number();
+            // let mut result = a.mul_by_scalar_descending_skew_ladder(cs, &mut scalar)?;
+            // let naive_mul_end = cs.get_current_step_number();
+            // println!("num of gates for descending skew ladder: {}", naive_mul_end - naive_mul_start);
+            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            let naive_mul_start = cs.get_current_step_number();
-            let mut result = a.mul_by_scalar_descending_skew_ladder_with_endo(cs, &mut scalar)?;
-            let naive_mul_end = cs.get_current_step_number();
-            println!("num of gates for descending skew ladder with_endo: {}", naive_mul_end - naive_mul_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            // let naive_mul_start = cs.get_current_step_number();
+            // let mut result = a.mul_by_scalar_descending_skew_ladder_with_endo(cs, &mut scalar)?;
+            // let naive_mul_end = cs.get_current_step_number();
+            // println!("num of gates for descending skew ladder with_endo: {}", naive_mul_end - naive_mul_start);
+            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            let naive_mul_start = cs.get_current_step_number();
-            let mut result = a.mul_by_scalar_descending_skew_ladder_with_base_ext(cs, &mut scalar)?;
-            let naive_mul_end = cs.get_current_step_number();
-            println!("num of gates for descending skew ladder with base ext: {}", naive_mul_end - naive_mul_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            // let naive_mul_start = cs.get_current_step_number();
+            // let mut result = a.mul_by_scalar_descending_skew_ladder_with_base_ext(cs, &mut scalar)?;
+            // let naive_mul_end = cs.get_current_step_number();
+            // println!("num of gates for descending skew ladder with base ext: {}", naive_mul_end - naive_mul_start);
+            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            let naive_mul_start = cs.get_current_step_number();
-            let mut result = a.mul_by_scalar_descending_skew_ladder_with_endo_and_base_ext(cs, &mut scalar)?;
-            let naive_mul_end = cs.get_current_step_number();
-            println!(
-                "num of gates for descending skew ladder with endo and base ext: {}", naive_mul_end - naive_mul_start
-            );
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            // let naive_mul_start = cs.get_current_step_number();
+            // let mut result = a.mul_by_scalar_descending_skew_ladder_with_endo_and_base_ext(cs, &mut scalar)?;
+            // let naive_mul_end = cs.get_current_step_number();
+            // println!(
+            //     "num of gates for descending skew ladder with endo and base ext: {}", naive_mul_end - naive_mul_start
+            // );
+            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            let naive_mul_start = cs.get_current_step_number();
-            let mut result = a.test_selector_tree(cs, &mut scalar)?;
-            let naive_mul_end = cs.get_current_step_number();
-            println!(
-                "num of gates for descending skew ladder with endo and base ext (via tree selector): {}", naive_mul_end - naive_mul_start
-            );
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            // let naive_mul_start = cs.get_current_step_number();
+            // let mut result = a.test_selector_tree(cs, &mut scalar)?;
+            // let naive_mul_end = cs.get_current_step_number();
+            // println!(
+            //     "num of gates for descending skew ladder with endo and base ext (via tree selector): {}", naive_mul_end - naive_mul_start
+            // );
+            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
             
-            let naive_mul_start = cs.get_current_step_number();
-            let result = a.mul_by_scalar_ascending_ladder_proj(cs, &mut scalar)?;
-            let mut result = unsafe { result.convert_to_affine(cs)? };
-            let naive_mul_end = cs.get_current_step_number();
-            println!("num of gates for ascending ladder proj: {}", naive_mul_end - naive_mul_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            // let naive_mul_start = cs.get_current_step_number();
+            // let result = a.mul_by_scalar_ascending_ladder_proj(cs, &mut scalar)?;
+            // let mut result = unsafe { result.convert_to_affine(cs)? };
+            // let naive_mul_end = cs.get_current_step_number();
+            // println!("num of gates for ascending ladder proj: {}", naive_mul_end - naive_mul_start);
+            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            let naive_mul_start = cs.get_current_step_number();
-            let result = a.mul_by_scalar_ascending_skew_ladder_proj(cs, &mut scalar)?;
-            let mut result = unsafe { result.convert_to_affine(cs)? };
-            let naive_mul_end = cs.get_current_step_number();
-            println!("num of gates for ascending skew ladder proj: {}", naive_mul_end - naive_mul_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            // let naive_mul_start = cs.get_current_step_number();
+            // let result = a.mul_by_scalar_ascending_skew_ladder_proj(cs, &mut scalar)?;
+            // let mut result = unsafe { result.convert_to_affine(cs)? };
+            // let naive_mul_end = cs.get_current_step_number();
+            // println!("num of gates for ascending skew ladder proj: {}", naive_mul_end - naive_mul_start);
+            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            let naive_mul_start = cs.get_current_step_number();
-            let result = a.mul_by_scalar_descending_skew_ladder_proj(cs, &mut scalar)?;
-            let mut result = unsafe { result.convert_to_affine(cs)? };
-            let naive_mul_end = cs.get_current_step_number();
-            println!("num of gates for descending skew ladder proj: {}", naive_mul_end - naive_mul_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            // let naive_mul_start = cs.get_current_step_number();
+            // let result = a.mul_by_scalar_descending_skew_ladder_proj(cs, &mut scalar)?;
+            // let mut result = unsafe { result.convert_to_affine(cs)? };
+            // let naive_mul_end = cs.get_current_step_number();
+            // println!("num of gates for descending skew ladder proj: {}", naive_mul_end - naive_mul_start);
+            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            let naive_mul_start = cs.get_current_step_number();
-            let result = a.mul_by_scalar_descending_skew_ladder_with_endo_proj(cs, &mut scalar)?;
-            let mut result = unsafe { result.convert_to_affine(cs)? };
+            // let naive_mul_start = cs.get_current_step_number();
+            // let result = a.mul_by_scalar_descending_skew_ladder_with_endo_proj(cs, &mut scalar)?;
+            // let mut result = unsafe { result.convert_to_affine(cs)? };
+            // let naive_mul_end = cs.get_current_step_number();
+            // println!("num of gates for descending skew ladder with endo proj: {}", naive_mul_end - naive_mul_start);
+            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+
+            use plonk::circuit::curve_new::MemoryEnforcementStrategy::Waksman;
+            let endo_mul_start = cs.get_current_step_number();
+            let mut result = a.mul_by_scalar_descending_skew_ladder_with_endo_with_using_ram(cs, &mut scalar, 2, Waksman)?;
             let naive_mul_end = cs.get_current_step_number();
-            println!("num of gates for descending skew ladder with endo proj: {}", naive_mul_end - naive_mul_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            println!("num of gates for ascending ladder proj: {}", naive_mul_end - endo_mul_start);
+            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+
+            // let b: G = rng.gen();
+            // let scalar=  G::Scalar::from_str("1").unwrap();
+            // let mut tmp = b.into_projective();
+            // tmp.mul_assign(scalar);
+            // tmp.negate();
+            // let result = tmp.into_affine();
+            // let mut actual_result = AffinePoint::alloc(cs, Some(result), &self.circuit_params)?;
+            // let mut b = AffinePoint::alloc(cs, Some(b), &self.circuit_params)?;
+            // let mut sdf = b.mul_const_scalar_with_specified_window(cs, 0, 1).unwrap();
+            // // println!("{:?}, {:?}", constant, sdf);
+            // AffinePoint::enforce_equal(cs, &mut actual_result, &mut sdf)?;
 
             Ok(())
         }
@@ -2852,6 +3132,7 @@ mod test {
         cs.finalize();
         assert!(cs.is_satisfied()); 
     }
+
 }
 
 

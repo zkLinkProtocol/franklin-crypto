@@ -1082,9 +1082,19 @@ impl<E: Engine> Keccak256Gadget<E> {
 
             if lc.is_constant() {
                 let fr = lc.get_value().unwrap();
-                new_state[(i, j)] = Num::Constant(keccak_ff_second_converter(fr, KECCAK_FIRST_SPARSE_BASE));
-                if iter_count < elems_to_squeeze {
-                    squeezed.push(Num::Constant(keccak_ff_second_converter(fr, BINARY_BASE)));
+                if !is_final {
+                    new_state[(i, j)] = Num::Constant(keccak_ff_second_converter(fr, KECCAK_FIRST_SPARSE_BASE));
+                    if iter_count < elems_to_squeeze {
+                        squeezed.push(Num::Constant(keccak_ff_second_converter(fr, BINARY_BASE)));
+                    }
+                    new_state.base = KeccakStateBase::First;
+                } else {
+                    new_state[(i, j)] = Num::Constant(keccak_ff_second_converter(fr, BINARY_BASE));
+                    if iter_count < elems_to_squeeze {
+                        squeezed.push(Num::Constant(keccak_ff_second_converter(fr, BINARY_BASE)));
+                    }
+    
+                    new_state.base = KeccakStateBase::Binary;
                 }
                 iter_count += 1;
                 continue;

@@ -87,7 +87,7 @@ impl<E: Engine> Byte<E> {
     }
 
     pub fn from_num<CS: ConstraintSystem<E>>(cs: &mut CS, value: Num<E>) -> Result<Self, SynthesisError> {
-        if value.is_constant() {
+        if value.is_constant() == false {
             let var = value.get_variable();
             constraint_bit_length(cs, &var, 8)?;
         }

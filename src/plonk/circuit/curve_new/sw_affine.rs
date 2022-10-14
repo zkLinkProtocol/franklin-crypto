@@ -1525,6 +1525,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         Ok(result)
 
     }
+
     #[track_caller]
     pub fn precomputation_for_ram<CS: ConstraintSystem<E>>(
         self,  

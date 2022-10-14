@@ -330,6 +330,8 @@ impl<E: Engine, T: TreeSelectable<E>> SelectorTree<E, T> {
 
     pub fn select_last<CS: ConstraintSystem<E>>(&self, cs: &mut CS, bits: &[Boolean]) -> Result<T, SynthesisError>
     {
+        // TODO: also can be buggy: what if x = x'?
+        
         // on every iteration of the inner loop (except the last one) of the point by scalar mul algorithm
         // we want to retrieve the point which is dependent on bits as follows:
         // bits = [b_0, b_1, .., b_n] -> /sum (2* b_i - 1) P_i = A

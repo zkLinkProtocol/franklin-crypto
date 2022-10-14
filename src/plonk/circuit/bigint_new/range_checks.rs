@@ -57,6 +57,14 @@ pub struct RangeCheckDecomposition<E: Engine>
 }
 
 impl<E: Engine> RangeCheckDecomposition<E> {
+    pub fn uninitialized() -> Self {
+        RangeCheckDecomposition::<E>
+        {
+            chunks_bitlength: 0,
+            decomposition: DecompositionType::ChunkDecomposition(vec![])
+        }
+    }
+
     pub fn get_chunk_bitlen(&self) -> usize {
         self.chunks_bitlength
     }

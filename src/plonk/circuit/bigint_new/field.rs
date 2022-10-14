@@ -539,7 +539,8 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     #[track_caller]
     fn alloc_impl<CS: ConstraintSystem<E>>(
-        cs: &mut CS, value: Option<BigUint>, bit_width: usize, params: &'a RnsParameters<E, F>, coarsely: bool
+        cs: &mut CS, value: Option<BigUint>, bit_width: usize, params: &'a RnsParameters<E, F>, 
+        coarsely: bool, conduct_range_checks: bool
     ) -> Result<(Self, RangeCheckDecomposition<E>), SynthesisError> {
         assert!(bit_width > 0);
         if let Some(v) = value.as_ref() {
@@ -566,9 +567,13 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
             let max_value = if is_last { msl_max_val.clone() } else { params.max_ordinary_limb_val_on_alloc.clone() };
             let bitlength = if is_last { msl_width } else { params.binary_limb_width };
-            let decomposition = constraint_bit_length_ext_with_strategy(
-                cs, &a, bitlength, params.range_check_strategy, coarsely
-            )?; 
+            let decomposition = if conduct_range_checks {
+                constraint_bit_length_ext_with_strategy(
+                    cs, &a, bitlength, params.range_check_strategy, coarsely
+                )?
+            } else {
+                RangeCheckDecomposition::uninitialized()
+            }; 
             decompositions.push(decomposition);
 
             let term = Term::<E>::from_allocated_num(a.clone());
@@ -615,14 +620,22 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     {
         let bit_width = params.represented_field_modulus_bitlength;
         let value_as_biguint = value.map(|x| fe_to_biguint(&x));
-        Self::alloc_impl(cs, value_as_biguint, bit_width, params, false)
+        Self::alloc_impl(cs, value_as_biguint, bit_width, params, false, true)
     }
 
     #[track_caller]
     pub(crate) fn alloc_for_known_bitwidth<CS: ConstraintSystem<E>>(
         cs: &mut CS, value: Option<BigUint>, bit_width: usize, params: &'a RnsParameters<E, F>, coarsely: bool
     ) -> Result<Self, SynthesisError> {
-        let (val, _decomposition) = Self::alloc_impl(cs, value, bit_width, params, coarsely)?;
+        let (val, _decomposition) = Self::alloc_impl(cs, value, bit_width, params, coarsely, true)?;
+        Ok(val)
+    }
+
+    #[track_caller]
+    pub(crate) fn alloc_for_known_bitwidth_without_range_checks<CS: ConstraintSystem<E>>(
+        cs: &mut CS, value: Option<BigUint>, bit_width: usize, params: &'a RnsParameters<E, F>, coarsely: bool
+    ) -> Result<Self, SynthesisError> {
+        let (val, _decomposition) = Self::alloc_impl(cs, value, bit_width, params, coarsely, false)?;
         Ok(val)
     }
 

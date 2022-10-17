@@ -2778,6 +2778,14 @@ mod test {
             let mut scalar = FieldElement::alloc(cs, Some(scalar), &self.circuit_params.scalar_field_rns_params)?;
             let mut actual_result = AffinePoint::alloc(cs, Some(result), &self.circuit_params)?;
 
+            let fr_for_test = G::Scalar::from_str("3").unwrap();
+            let mut scalar_fixed = FieldElement::alloc(cs, Some(fr_for_test), &self.circuit_params.scalar_field_rns_params)?;
+
+            let bin_decomp = scalar_fixed.decompose_into_binary_representation(cs, Some(5)).unwrap();
+            let rev: Vec<&Boolean> = bin_decomp[1..].iter().rev().collect();
+            println!("bit decomposition{:?}", bin_decomp);
+            println!("bit decomposition rev {:?}", rev);
+
             // let naive_mul_start = cs.get_current_step_number();
             // let mut result = a.mul_by_scalar_descending_ladder(cs, &mut scalar)?;
             // let naive_mul_end = cs.get_current_step_number();
@@ -2847,11 +2855,11 @@ mod test {
             // println!("num of gates for descending skew ladder with endo proj: {}", naive_mul_end - naive_mul_start);
             // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            use plonk::circuit::curve_new::MemoryEnforcementStrategy::Waksman;
-            let endo_mul_start = cs.get_current_step_number();
-            let mut result = a.mul_by_scalar_descending_skew_ladder_with_endo_with_using_ram(cs, &mut scalar, 2, Waksman)?;
-            let naive_mul_end = cs.get_current_step_number();
-            println!("num of gates for ascending ladder proj: {}", naive_mul_end - endo_mul_start);
+            // use plonk::circuit::curve_new::MemoryEnforcementStrategy::Waksman;
+            // let endo_mul_start = cs.get_current_step_number();
+            // let mut result = a.mul_by_scalar_descending_skew_ladder_with_endo_with_using_ram(cs, &mut scalar, 2, Waksman)?;
+            // let naive_mul_end = cs.get_current_step_number();
+            // println!("num of gates for ascending ladder proj: {}", naive_mul_end - endo_mul_start);
             // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
             // let b: G = rng.gen();

@@ -16,17 +16,17 @@ use crate::plonk::circuit::bigint::split_into_fixed_number_of_limbs;
 use crate::plonk::circuit::utils::u64_to_fe;
 use plonk::circuit::bigint_new::Extension2Params;
 
-
-const RANGE_CHECK_WIDTH_LIMIT: usize = 8;
-const GEN_SCALAR_MUL_TABLE_NAME: &'static str = "generator by scalar mul table";
+pub(crate) const GEN_SCALAR_MUL_TABLE_NAME: &'static str = "generator by scalar mul table";
 
 // A table for storing a AffinePoint from a generator with using endomorphism.
 // Create a table of the view:
-// Point: k*P = k1*P + k2*Q where Q = lambda*P
+// Point: k*P = k0*P + k1*Q where Q = lambda*P
 // note that both k1 and k2 be of both signs: both positive and negative
 // the raw of the table is of the form:
-// prefix || k1 || k2 | limb_0 | limb_1
-// where prefix is combination of four flags:  limb_idx_selector | select_y_limbs | sign_k0 | sign_k1
+// prefix || k1 || k0 | limb_0 | limb_1
+// where prefix is combination of four flags: select_y_limbs | limb_idx_selector | sign_k1 | sign_k0
+// in total the first column is of the form: 
+// select_y_limbs | limb_idx_selector | sign_k1 | sign_k0 | k1 | k0
 #[derive(Clone)]
 pub struct GeneratorScalarMulTable<E: Engine>
 {
@@ -38,14 +38,15 @@ pub struct GeneratorScalarMulTable<E: Engine>
 
 impl<E: Engine> GeneratorScalarMulTable<E>
 {
-    pub fn new<'a, G: GenericCurveAffine, T: Extension2Params<G::Base>>(
-        window: usize, name: &'static str, params:&'a CurveCircuitParameters<E, G, T>
+    pub fn new<G: GenericCurveAffine, T: Extension2Params<G::Base>>(
+        window: usize, name: &'static str, params: &CurveCircuitParameters<E, G, T>
     ) -> Self 
     where <G as GenericCurveAffine>::Base: PrimeField 
     {   
         let binary_limb_width =  params.base_field_rns_params.binary_limb_width;      
         let num_of_limbs = params.base_field_rns_params.num_binary_limbs;
         let num_elems_in_window = (2 as u64).pow(window as u32) as usize;
+        assert_eq!(num_of_limbs % 2, 0);
         let num_of_limb_idxs = (num_of_limbs + 1) / 2;
         let table_len = num_elems_in_window * num_elems_in_window * 4 * num_of_limb_idxs;
        
@@ -64,7 +65,7 @@ impl<E: Engine> GeneratorScalarMulTable<E>
         generator_negated.negate();
         let mut generator_endo_negated = generator_endo.clone();
         generator_endo_negated.negate(); 
-        let aux_prefix_offset = 2 * RANGE_CHECK_WIDTH_LIMIT + 2;
+        let aux_prefix_offset = 2 * window + 2;
 
         let skew_mul = |point: &G, point_negated: &G, scalar: usize| -> G::Projective {
             // treat raw address is skew-represented address:
@@ -112,13 +113,14 @@ impl<E: Engine> GeneratorScalarMulTable<E>
             let y_limbs = split_into_limbs(y);
 
             let base_prefix = (k0_is_neg as usize) + (k1_is_neg as usize) * 2;
-            let base = k0 + k1 << RANGE_CHECK_WIDTH_LIMIT + base_prefix << ( 2 *RANGE_CHECK_WIDTH_LIMIT);
+            let base = k0 + k1 << window + base_prefix << ( 2 * window);
+            let idx_bitlength = crate::log2_floor(num_of_limb_idxs);
             
             let iter = x_limbs.chunks(2).zip(std::iter::repeat(0)).enumerate().chain(
                 y_limbs.chunks(2).zip(std::iter::repeat(1)).enumerate()
             );
             for (idx, (limbs, x_y_selector)) in iter {
-                let aux_prefix = (idx * 2 + x_y_selector) << aux_prefix_offset;
+                let aux_prefix = (idx + x_y_selector) << aux_prefix_offset;
                 let elem0 = u64_to_fe((base + aux_prefix) as u64);
                 let elem1 = limbs[0];
                 let elem2 = limbs[1];

@@ -540,7 +540,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     #[track_caller]
     fn alloc_impl<CS: ConstraintSystem<E>>(
         cs: &mut CS, value: Option<BigUint>, bit_width: usize, params: &'a RnsParameters<E, F>, 
-        coarsely: bool, conduct_range_checks: bool
+        coarsely: bool, granularity: Option<usize>
     ) -> Result<(Self, RangeCheckDecomposition<E>), SynthesisError> {
         assert!(bit_width > 0);
         if let Some(v) = value.as_ref() {
@@ -567,13 +567,9 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
             let max_value = if is_last { msl_max_val.clone() } else { params.max_ordinary_limb_val_on_alloc.clone() };
             let bitlength = if is_last { msl_width } else { params.binary_limb_width };
-            let decomposition = if conduct_range_checks {
-                constraint_bit_length_ext_with_strategy(
-                    cs, &a, bitlength, params.range_check_strategy, coarsely
-                )?
-            } else {
-                RangeCheckDecomposition::uninitialized()
-            }; 
+            let decomposition = constraint_bit_length_ext_with_strategy(
+                cs, &a, bitlength, params.range_check_strategy, coarsely, granularity
+            )?;
             decompositions.push(decomposition);
 
             let term = Term::<E>::from_allocated_num(a.clone());
@@ -620,23 +616,24 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     {
         let bit_width = params.represented_field_modulus_bitlength;
         let value_as_biguint = value.map(|x| fe_to_biguint(&x));
-        Self::alloc_impl(cs, value_as_biguint, bit_width, params, false, true)
+        Self::alloc_impl(cs, value_as_biguint, bit_width, params, false, None)
     }
 
     #[track_caller]
     pub(crate) fn alloc_for_known_bitwidth<CS: ConstraintSystem<E>>(
         cs: &mut CS, value: Option<BigUint>, bit_width: usize, params: &'a RnsParameters<E, F>, coarsely: bool
     ) -> Result<Self, SynthesisError> {
-        let (val, _decomposition) = Self::alloc_impl(cs, value, bit_width, params, coarsely, true)?;
+        let (val, _decomposition) = Self::alloc_impl(cs, value, bit_width, params, coarsely, None)?;
         Ok(val)
     }
 
     #[track_caller]
-    pub(crate) fn alloc_for_known_bitwidth_without_range_checks<CS: ConstraintSystem<E>>(
-        cs: &mut CS, value: Option<BigUint>, bit_width: usize, params: &'a RnsParameters<E, F>, coarsely: bool
-    ) -> Result<Self, SynthesisError> {
-        let (val, _decomposition) = Self::alloc_impl(cs, value, bit_width, params, coarsely, false)?;
-        Ok(val)
+    pub(crate) fn alloc_for_known_bitwidth_with_custom_range_check_granularity<CS: ConstraintSystem<E>>(
+        cs: &mut CS, value: Option<BigUint>, bit_width: usize, 
+        params: &'a RnsParameters<E, F>, granularity: usize
+    ) -> Result<(Self, RangeCheckDecomposition<E>), SynthesisError> {
+        assert_eq!(params.binary_limb_width % granularity, 0);
+        Self::alloc_impl(cs, value, bit_width, params, false, Some(granularity))
     }
 
     pub(crate) fn split_const_into_limbs(value: BigUint, params: &'a RnsParameters<E, F>) -> Vec<Limb<E>> {
@@ -1672,7 +1669,9 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             
             let abs_flag = Term::from_boolean(&Boolean::Is(AllocatedBit::alloc(cs, abs_flag_wit)?)); 
             let abs_carry = AllocatedNum::alloc(cs, || abs_wit.grab())?;
-            constraint_bit_length_ext_with_strategy(cs, &abs_carry, carry_width, params.range_check_strategy, true)?;
+            constraint_bit_length_ext_with_strategy(
+                cs, &abs_carry, carry_width, params.range_check_strategy, true, None
+            )?;
             let abs_carry = Term::from_num(Num::Variable(abs_carry)); 
            
             // we need to constraint: carry == (2 * abs_flag - 1) * abs_carry
@@ -1867,7 +1866,7 @@ mod test {
             let abs_flag = Term::from_boolean(&Boolean::Is(AllocatedBit::alloc(&mut cs, abs_flag_wit).unwrap())); 
             let abs_carry = AllocatedNum::alloc(&mut cs, || abs_wit.grab()).unwrap();
             constraint_bit_length_ext_with_strategy(
-                &mut cs, &abs_carry, carry_bitlen, params.range_check_strategy, true
+                &mut cs, &abs_carry, carry_bitlen, params.range_check_strategy, true, None
             ).unwrap();
             let abs_carry = Term::from_num(Num::Variable(abs_carry)); 
            

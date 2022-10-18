@@ -57,14 +57,6 @@ pub struct RangeCheckDecomposition<E: Engine>
 }
 
 impl<E: Engine> RangeCheckDecomposition<E> {
-    pub fn uninitialized() -> Self {
-        RangeCheckDecomposition::<E>
-        {
-            chunks_bitlength: 0,
-            decomposition: DecompositionType::ChunkDecomposition(vec![])
-        }
-    }
-
     pub fn get_chunk_bitlen(&self) -> usize {
         self.chunks_bitlength
     }
@@ -142,19 +134,31 @@ impl<E: Engine> RangeCheckDecomposition<E> {
 
 // if coarsely flag is set that we constraint bit length up to range check granularity
 pub fn constraint_bit_length_ext_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
-    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, strategy: RangeConstraintStrategy, coarsely: bool
+    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, strategy: RangeConstraintStrategy, 
+    coarsely: bool, granularity: Option<usize>,
 ) -> Result<RangeCheckDecomposition<E>, SynthesisError> {
+    let granularity = granularity.unwrap_or(0);
+    if granularity == 1 {
+        return enforce_range_check_using_naive_approach(cs, var, num_bits)
+    }
+
     match strategy {
         RangeConstraintStrategy::NaiveSingleBit => {
-            enforce_range_check_using_naive_approach(cs, var, num_bits)
+            unreachable!();
+            //enforce_range_check_using_naive_approach(cs, var, num_bits)
         },
         RangeConstraintStrategy::CustomTwoBitGate => {
             unreachable!();
-            enforce_range_check_using_custom_gate(cs, var, num_bits, coarsely)
+            //enforce_range_check_using_custom_gate(cs, var, num_bits, coarsely)
         },
         RangeConstraintStrategy::WithBitwiseOpTable(_table_width) => {  
-            let table = cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME).expect("should found a valid table");         
-            enforce_range_check_using_bitop_table(cs, var, num_bits, table, coarsely)
+            let table = cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME).expect("should found a valid table");
+            let default_granularity = (crate::log2_floor(table.size()) / 2) as usize;
+            if granularity == 0 {         
+                enforce_range_check_using_bitop_table_exact(cs, var, num_bits, table, coarsely)
+            } else {
+                enforce_range_check_using_bitop_table_non_exact(cs, var, num_bits, table, granularity)
+            }
         }    
     }
 }
@@ -162,14 +166,18 @@ pub fn constraint_bit_length_ext_with_strategy<E: Engine, CS: ConstraintSystem<E
 pub fn constraint_bit_length_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, range_check_strategy: RangeConstraintStrategy
 ) -> Result<(), SynthesisError> {
-    let _decomposition = constraint_bit_length_ext_with_strategy(cs, var, num_bits, range_check_strategy, false)?;
+    let _decomposition = constraint_bit_length_ext_with_strategy(
+        cs, var, num_bits, range_check_strategy, false, None
+    )?;
     Ok(())
 }
 
 pub fn coarsely_constraint_bit_length_with_strategy<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, range_check_strategy: RangeConstraintStrategy
 ) -> Result<(), SynthesisError> {
-    let _decomposition = constraint_bit_length_ext_with_strategy(cs, var, num_bits, range_check_strategy, true)?;
+    let _decomposition = constraint_bit_length_ext_with_strategy(
+        cs, var, num_bits, range_check_strategy, true, None
+    )?;
     Ok(())
 }
 
@@ -179,7 +187,7 @@ pub fn constraint_bit_length_ext<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize
 ) -> Result<RangeCheckDecomposition<E>, SynthesisError> {
     let range_check_strategy = get_optimal_strategy(cs);
-    constraint_bit_length_ext_with_strategy(cs, var, num_bits, range_check_strategy, false)
+    constraint_bit_length_ext_with_strategy(cs, var, num_bits, range_check_strategy, false, None)
 }
 
 pub fn constraint_bit_length<E: Engine, CS: ConstraintSystem<E>>(
@@ -517,8 +525,8 @@ pub fn apply_range_table_gate<E: Engine, CS: ConstraintSystem<E>>(
 }
 
 
-pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>(
-    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, table: Arc<LookupTableApplication<E>>, coarsely: bool
+pub fn enforce_range_check_using_bitop_table_exact<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, table: Arc<LookupTableApplication<E>>, coarsely: bool 
 ) -> Result<RangeCheckDecomposition<E>, SynthesisError> 
 {
     let chunk_width = (crate::log2_floor(table.size()) / 2) as usize;
@@ -582,6 +590,58 @@ pub fn enforce_range_check_using_bitop_table<E: Engine, CS: ConstraintSystem<E>>
 
     Ok(RangeCheckDecomposition {
         chunks_bitlength: chunk_width,
+        decomposition: DecompositionType::ChunkDecomposition(chunks),
+    })
+}
+
+
+pub fn enforce_range_check_using_bitop_table_non_exact<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, var: &AllocatedNum<E>, num_bits: usize, 
+    table: Arc<LookupTableApplication<E>>, granularity: usize,
+) -> Result<RangeCheckDecomposition<E>, SynthesisError> 
+{
+    let num_chunks = (num_bits + granularity - 1) / granularity;
+    increment_total_gates_count(num_chunks);
+    
+    let value = var.get_value().map(|x| { fe_to_biguint(&x) });
+    let chunks = split_some_into_fixed_number_of_limbs(value, granularity, num_chunks).into_iter().map(|x| {
+        AllocatedNum::alloc(cs, || some_biguint_to_fe::<E::Fr>(&x).grab())
+    }).collect::<Result<Vec<AllocatedNum<E>>, SynthesisError>>()?;
+
+    let shifts = compute_shifts::<E::Fr>();
+    let dummy = AllocatedNum::zero(cs);
+    let mut minus_one = E::Fr::one();
+    minus_one.negate();
+    let default_granularity = (crate::log2_floor(table.size()) / 2) as usize;
+
+    let mut lc = LinearCombination::zero();
+    lc.add_assign_variable_with_coeff(&var, minus_one);
+    let mut offset = 0;
+
+    for chunk in chunks.into_iter() {
+        let chunk_width = std::cmp::min(num_bits - offset, granularity);
+        assert_ne!(chunk_width, 0);
+        // new_acc * shift_d_next = prev_acc - a * shift_a - b * shift_b
+        // we want b = a * shift, hence:
+        // shift_a = -shift; b_shift = 1;
+        let shift = shifts[default_granularity - chunk_width];
+        let mut shift_negated = shift.clone();
+        shift_negated.negate();
+        let chunk_var_shifted =  AllocatedNum::alloc(cs, || {
+            let mut tmp = chunk.get_value().grab()?;
+            tmp.mul_assign(&shift);
+            Ok(tmp)
+        })?;
+        apply_range_table_gate(
+            cs, &chunk, &chunk_var_shifted, &dummy, &shift_negated, 
+            &E::Fr::one(), &E::Fr::zero(), &E::Fr::zero(), table.clone(), true
+        )?;
+        lc.add_assign_variable_with_coeff(&chunk, shifts[offset].clone());
+        offset += chunk_width;
+    }
+
+    Ok(RangeCheckDecomposition {
+        chunks_bitlength: granularity,
         decomposition: DecompositionType::ChunkDecomposition(chunks),
     })
 }

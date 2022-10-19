@@ -633,7 +633,7 @@ mod test {
         >::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
         let params = generate_optimal_circuit_params_for_bn256::<bn256::Bn256, _>(&mut cs, 80usize, 80usize);
-        gen_by_scalar_mul_test_impl(&mut cs, &params, 2);
+        gen_by_scalar_mul_test_impl(&mut cs, &params, 4);
         assert!(cs.is_satisfied()); 
     }
 }

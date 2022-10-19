@@ -2360,6 +2360,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
             PolyIdentifier::VariablesPolynomial(2)
         ];
         let name : &'static str = GEN_SCALAR_MUL_TABLE_NAME;
+        let counter_start = cs.get_current_step_number();
         let table = get_or_create_table(
             cs, name,
             || {
@@ -2372,6 +2373,8 @@ where <G as GenericCurveAffine>::Base: PrimeField
                 )
             } 
         ).unwrap();
+        let counter_end = cs.get_current_step_number();
+        println!("gates for table alloc: {}", counter_end - counter_start);
         
         let scalar_rns_params = &params.scalar_field_rns_params;
         let base_rns_params = &params.base_field_rns_params;
@@ -2446,6 +2449,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
             lc.add_assign_number_with_coeff(&k2_chunk, shifts[k2_offset]);
             lc.add_assign_number_with_coeff(&sign_bits, shifts[sign_offset]);
             let base = lc.into_num(cs)?.get_variable();
+            
 
             let mut x = FieldElement::zero(base_rns_params);
             let mut y = FieldElement::zero(base_rns_params);
@@ -2453,8 +2457,9 @@ where <G as GenericCurveAffine>::Base: PrimeField
             for (out, x_y_flag) in iter {
                 let mut raw_limbs = Vec::with_capacity(base_rns_params.num_binary_limbs);
                 for idx in 0..base_rns_params.num_binary_limbs/ 2 {
+                    let counter_start = cs.get_current_step_number();
                     let mut prefix = u64_to_ff::<E::Fr>(idx as u64);
-                    prefix.mul_assign(&shifts[idx_width]);
+                    prefix.mul_assign(&shifts[limb_idx_selector_offset]);
                     if x_y_flag {
                         prefix.add_assign(&shifts[x_or_y_flag_offset])
                     }
@@ -2472,14 +2477,19 @@ where <G as GenericCurveAffine>::Base: PrimeField
                             )
                         },
                         Some(val) => {
+                            println!("val: {}", val);
                             let vals = table.query(&[val])?;
+                            println!("queried");
                             (AllocatedNum::alloc(cs, || Ok(vals[0]))?, AllocatedNum::alloc(cs, || Ok(vals[1]))?)
                         },     
                     };
 
                     let vars = [a.get_variable(), b.get_variable(), c.get_variable(), base.get_variable()];
                     let coeffs = [minus_one.clone(), E::Fr::zero(), E::Fr::zero(), E::Fr::one()];
+                    let counter_end = cs.get_current_step_number();
+                    println!("gates for table query: {}", counter_end - counter_start);
                     
+                   
                     cs.begin_gates_batch_for_step()?;
                     cs.apply_single_lookup_gate(&vars[..table.width()], table.clone())?;
                 
@@ -2510,17 +2520,16 @@ where <G as GenericCurveAffine>::Base: PrimeField
             params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
             &params.base_field_rns_params
         );
-        println!("HERE");
+        
         let mut acc = AffinePointExt::from(query_point(cs, &Num::<E>::zero(), &Num::<E>::zero())?);
         let mut num_of_doubles = 0;
-        println!("THERE");
 
         let iter = k1_chunks.get_vars().iter().zip(k2_chunks.get_vars().iter()).rev().identify_first_last();
         for (is_first, _is_last, (k1_chunk, k2_chunk)) in iter {
             if is_first {
-                let tmp = limit % (1 << window);
+                let tmp = limit % window;
                 let msl_window = if tmp != 0 { tmp } else { window };
-                
+                assert!(msl_window >= 2);
                 for _ in 0..msl_window-2 {
                     acc = acc.double(cs)?;
                 }
@@ -2593,6 +2602,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
             G::from_xy_checked(x, y).expect("should be on the curve")
         });
+        println!("at the end");
 
         let result = Self {
             x: final_x,

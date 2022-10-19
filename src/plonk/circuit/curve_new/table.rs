@@ -48,6 +48,7 @@ impl<E: Engine> GeneratorScalarMulTable<E>
         let num_elems_in_window = (2 as u64).pow(window as u32) as usize;
         assert_eq!(num_of_limbs % 2, 0);
         let num_of_limb_idxs = (num_of_limbs + 1) / 2;
+        let btilen_of_limb_sel = crate::log2_floor(num_of_limb_idxs);
         let table_len = num_elems_in_window * num_elems_in_window * 8 * num_of_limb_idxs;
        
         let mut column0 = Vec::with_capacity(table_len);
@@ -113,13 +114,13 @@ impl<E: Engine> GeneratorScalarMulTable<E>
             let y_limbs = split_into_limbs(y);
 
             let base_prefix = (k0_is_neg as usize) + (k1_is_neg as usize) * 2;
-            let base = k0 + k1 << window + base_prefix << ( 2 * window);
+            let base = k0 + (k1 << window) + (base_prefix << ( 2 * window));
             
             let iter = x_limbs.chunks(2).zip(std::iter::repeat(0)).enumerate().chain(
                 y_limbs.chunks(2).zip(std::iter::repeat(1)).enumerate()
             );
             for (idx, (limbs, x_y_selector)) in iter {
-                let aux_prefix = (idx + x_y_selector) << aux_prefix_offset;
+                let aux_prefix = (idx + (x_y_selector << btilen_of_limb_sel)) << aux_prefix_offset;
                 let elem0 = u64_to_fe((base + aux_prefix) as u64);
                 let elem1 = limbs[0];
                 let elem2 = limbs[1];

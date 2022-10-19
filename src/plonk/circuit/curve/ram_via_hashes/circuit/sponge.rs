@@ -9,7 +9,7 @@ use crate::{
     plonk::circuit::linear_combination::LinearCombination,
 };
 use std::convert::TryInto;
-use crate::plonk::circuit::curve_new::DomainStrategy;
+use crate::plonk::circuit::curve::DomainStrategy;
 
 pub fn circuit_generic_hash<
     E: Engine,

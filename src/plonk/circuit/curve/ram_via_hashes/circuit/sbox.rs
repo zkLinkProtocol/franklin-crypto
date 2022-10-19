@@ -16,7 +16,7 @@ use crate::{
 use crate::plonk::circuit::Assignment;
 
 use super::super::traits::{CustomGate, Sbox};
-use crate::plonk::circuit::curve_new::ram_via_hashes::add_chain_pow_smallvec;
+use crate::plonk::circuit::curve::ram_via_hashes::add_chain_pow_smallvec;
 
 // Substitution box is non-linear part of permutation function.
 // It basically computes 5th power of each element in the state.

@@ -248,7 +248,7 @@ mod test {
         }
 
         fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
-            use plonk::circuit::bigint_new::inscribe_default_bitop_range_table;
+            use plonk::circuit::bigint::inscribe_default_bitop_range_table;
             inscribe_default_bitop_range_table(cs)?;
 
             let input_as_nums = self.input.iter().map(|x| {

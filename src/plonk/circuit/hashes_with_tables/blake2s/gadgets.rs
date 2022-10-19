@@ -11,7 +11,7 @@ use crate::plonk::circuit::allocated_num::{
     AllocatedNum,
     Num,
 };
-use crate::plonk::circuit::bigint_new::*;
+use crate::plonk::circuit::bigint::*;
 use crate::plonk::circuit::boolean::*;
 use crate::plonk::circuit::byte::{
     Byte,
@@ -19,8 +19,8 @@ use crate::plonk::circuit::byte::{
 use crate::plonk::circuit::assignment::{
     Assignment
 };
-use crate::plonk::circuit::bigint_new::range_checks::enforce_range_check_using_bitop_table_exact;
-use crate::plonk::circuit::bigint_new::bigint::split_some_into_fixed_number_of_limbs;
+use crate::plonk::circuit::bigint::range_checks::enforce_range_check_using_bitop_table_exact;
+use crate::plonk::circuit::bigint::bigint::split_some_into_fixed_number_of_limbs;
 
 use super::tables::*;
 use super::super::utils::*;

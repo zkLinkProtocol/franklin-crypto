@@ -4,7 +4,7 @@ use plonk::circuit::SomeArithmetizable;
 
 use crate::bellman::pairing::bn256::Fq as Bn256Fq;
 use crate::bellman::pairing::bls12_381::Fq as Bls12Fq;
-use super::super::curve_new::secp256k1::fq::Fq as SecpFq;
+use super::super::curve::secp256k1::fq::Fq as SecpFq;
 
 
 pub trait Extension2Params<F: PrimeField>: Clone {

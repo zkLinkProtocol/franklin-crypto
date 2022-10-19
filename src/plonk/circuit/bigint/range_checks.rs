@@ -654,7 +654,7 @@ mod test {
     fn check_two_bit_gate() {
         use crate::bellman::pairing::bn256::{Bn256, Fr};
         use crate::bellman::plonk::better_better_cs::cs::*;
-        use crate::plonk::circuit::bigint_new::*;
+        use crate::plonk::circuit::bigint::*;
         use crate::plonk::circuit::linear_combination::*;
         use crate::plonk::circuit::allocated_num::*;
 

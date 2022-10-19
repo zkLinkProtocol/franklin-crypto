@@ -9,7 +9,7 @@ use crate::plonk::circuit::allocated_num::{
     AllocatedNum,
     Num,
 };
-use crate::plonk::circuit::bigint_new::biguint_to_fe;
+use crate::plonk::circuit::bigint::biguint_to_fe;
 use crate::plonk::circuit::boolean::{Boolean, AllocatedBit};
 use crate::plonk::circuit::byte::{
     Byte,
@@ -19,7 +19,7 @@ use crate::plonk::circuit::assignment::{
 };
 use crate::plonk::circuit::custom_5th_degree_gate_optimized::Nonlinearity5CustomGate;
 use crate::plonk::circuit::custom_rescue_gate::Rescue5CustomGate;
-use crate::plonk::circuit::bigint_new::repr_to_biguint;
+use crate::plonk::circuit::bigint::repr_to_biguint;
 use crate::plonk::circuit::linear_combination::*;
 
 use super::tables::*;

@@ -23,7 +23,7 @@ use crate::bellman::plonk::better_better_cs::cs::{
 use crate::plonk::circuit::Assignment;
 
 use super::allocated_num::*;
-use super::bigint_new::AmplifiedLinearCombination;
+use super::bigint::AmplifiedLinearCombination;
 use super::linear_combination::*;
 use super::boolean::Boolean;
 

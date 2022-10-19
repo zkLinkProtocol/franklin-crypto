@@ -113,11 +113,11 @@ impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> PointWr
 where <G as GenericCurveAffine>::Base: PrimeField
 {
     pub fn add_mixed<CS: ConstraintSystem<E>>(
-        &mut self, cs: &mut CS, x: &mut AffinePoint<'a, E, G, T>, strict: bool
+        &mut self, cs: &mut CS, x: &mut AffinePoint<'a, E, G, T>
     ) -> Result<Self, SynthesisError> {
         let res = match self {
             PointWrapper::AffineOverBaseField(point) => {
-                let res = if strict { point.add_unequal(cs, x)? } else { point.add_unequal_unchecked(cs, x)?};
+                let res = point.add_unequal(cs, x)?;
                 PointWrapper::AffineOverBaseField(res)
             },
             PointWrapper::AffineOverExtField(point_ext) => {
@@ -134,11 +134,11 @@ where <G as GenericCurveAffine>::Base: PrimeField
     }
 
     pub fn sub_mixed<CS: ConstraintSystem<E>>(
-        &mut self, cs: &mut CS, x: &mut AffinePoint<'a, E, G, T>, strict: bool
+        &mut self, cs: &mut CS, x: &mut AffinePoint<'a, E, G, T>
     ) -> Result<Self, SynthesisError> {
         let res = match self {
             PointWrapper::AffineOverBaseField(point) => {
-                let res = if strict { point.sub_unequal(cs, x)? } else { point.sub_unequal_unchecked(cs, x)?};
+                let res = point.sub_unequal(cs, x)?;
                 PointWrapper::AffineOverBaseField(res)
             },
             PointWrapper::AffineOverExtField(point_ext) => {
@@ -163,11 +163,11 @@ where <G as GenericCurveAffine>::Base: PrimeField
                 PointWrapper::AffineOverBaseField(res)
             },
             PointWrapper::AffineOverExtField(point_ext) => {
-                let res = point_ext.double(cs)?;
+                let res = AffinePointExt::double(point_ext, cs)?;
                 PointWrapper::AffineOverExtField(res)
             },
             PointWrapper::HomogeniousForm(point_proj) => {
-                let res = point_proj.double(cs)?;
+                let res = ProjectivePoint::double(point_proj, cs)?;
                 PointWrapper::HomogeniousForm(res)
             },
         };
@@ -175,867 +175,1434 @@ where <G as GenericCurveAffine>::Base: PrimeField
         Ok(res)
     }
     
-    // pub fn double_add_mixed
-    // pub 
+    pub fn double_and_add_mixed<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, x: &mut AffinePoint<'a, E, G, T>
+    ) -> Result<Self, SynthesisError> {
+        let res = match self {
+            PointWrapper::AffineOverBaseField(point) => {
+                let res = point.double_and_add_unequal(cs, x)?; 
+                PointWrapper::AffineOverBaseField(res)
+            },
+            PointWrapper::AffineOverExtField(point_ext) => {
+                let res = point_ext.mixed_double_and_add_unequal_unchecked(cs, x)?;
+                PointWrapper::AffineOverExtField(res)
+            },
+            PointWrapper::HomogeniousForm(point_proj) => {
+                let res = ProjectivePoint::double(point_proj, cs)?;
+                let res = res.add_mixed(cs, x)?;
+                PointWrapper::HomogeniousForm(res)
+            },
+        };
+
+        Ok(res)
+    }
+
+    pub fn convert_to_affine_or_uninitialized<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS
+    ) -> Result<(AffinePoint<'a, E, G, T>, Boolean), SynthesisError> 
+    {
+        let res = match self {
+            PointWrapper::AffineOverBaseField(point) => {
+                (point.clone(), Boolean::constant(false))
+            },
+            PointWrapper::AffineOverExtField(point_ext) => {
+                unreachable!();
+            },
+            PointWrapper::HomogeniousForm(point_proj) => {
+                point_proj.convert_to_affine_or_uninitialized(cs)?
+            },
+        };
+
+        Ok(res)
+    }
 }
 
 
-
-
-//     pub fn mul_by_scalar_complete(&mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>)
-
-//     pub fn mul_by_scalar_non_complete()
-
-//     fn mul_by_scalar_impl()
-
-//     pub fn multiexp_complete()
+pub(crate) trait Selector<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
+{
+    fn absorb_precompute<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, precompute: Vec<(u64, AffinePoint<'a, E, G, T>)>
+    ) -> Result<(), SynthesisError>;
     
-//     pub fn multiexp_non_complete()
+    fn select<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, bits: &[Boolean], params: &'a CurveCircuitParameters<E, G, T>
+    ) -> Result<AffinePoint<'a, E, G, T>, SynthesisError>;
+    
+    fn postprocess<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError>;
+}
 
-//     fn mul_by_scalar_inner() 
-// }
 
-         
+const RATE: usize = 2;
+const WIDTH: usize = 3;
+
+fn round_function_absorb<E: Engine, CS: ConstraintSystem<E>, P: HashParams<E, RATE, WIDTH>>(
+    cs: &mut CS, state: &mut [Num<E>; WIDTH], input: &[Num<E>], hash_params: &P
+) -> Result<(), SynthesisError> 
+{
+    assert_eq!(input.len(), RATE);
+    
+    let mut state_lcs = vec![];
+    for (s, inp) in state.iter().zip(input.iter())  {
+        let mut lc = LinearCombination::from(*s);
+        lc.add_assign_number_with_coeff(&inp, E::Fr::one());
+        state_lcs.push(lc);
+    }
+
+    for s in state[input.len()..].iter() {
+        let lc = LinearCombination::from(*s);
+        state_lcs.push(lc);
+    }
+
+    let mut state_lcs = state_lcs.try_into().expect("state width should match");
+    
+    use crate::plonk::circuit::curve::ram_via_hashes::circuit::sponge::circuit_generic_round_function;
+    circuit_generic_round_function(cs, &mut state_lcs, hash_params)?;
+
+    for (a, b) in state.iter_mut().zip(state_lcs.iter()) {
+        *a = b.clone().into_num(cs)?;
+    }
+
+    Ok(())
+}
+
+fn round_function_squeeze<E: Engine>(state: &[Num<E>; WIDTH]) -> (Num<E>, Num<E>) {
+    (state[0].clone(), state[1].clone())
+}
 
 
-// impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand, T: Extension2Params<G::Base>> AffinePoint<'a, E, G, T> 
+pub(crate) struct Memory<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+where <G as GenericCurveAffine>::Base: PrimeField
+{
+    queries: Vec<(Num<E>, AffinePoint<'a, E, G, T>)>,
+    witness_map: HashMap<u64, Option<G>>,
+    address_width: usize,
+    validity_is_enforced: bool,
+    permutation_enforcement_strategy: MultiexpStrategy,
+
+    permutation: IntegerPermutation,
+    unsorted_packed_elems_0: Vec<Num<E>>,
+    unsorted_packed_elems_1: Vec<Num<E>>,
+    sorted_packed_elems_0: Vec<Num<E>>,
+    sorted_packed_elems_1: Vec<Num<E>>,
+}
+
+impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> Drop for Memory<'a, E, G, T> 
+where <G as GenericCurveAffine>::Base: PrimeField
+{
+    fn drop(&mut self) {
+        assert!(self.validity_is_enforced);
+    }
+}
+
+impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> Memory<'a, E, G, T>
+where <G as GenericCurveAffine>::Base: PrimeField
+{
+    pub fn new(address_width: usize, permutation_enforcement_strategy: MultiexpStrategy) -> Self {
+        Self {
+            queries: vec![],
+            witness_map: HashMap::new(),
+            address_width,
+            validity_is_enforced: false,
+            permutation_enforcement_strategy,
+
+            permutation: IntegerPermutation::new(1),
+            unsorted_packed_elems_0: vec![],
+            unsorted_packed_elems_1: vec![],
+            sorted_packed_elems_0: vec![],
+            sorted_packed_elems_1: vec![],
+        }
+    }
+
+    pub fn write(&mut self, addr: u64, point: AffinePoint<'a, E, G, T>) {
+        assert!(log2_floor(addr as usize) as usize <= self.address_width);
+        self.witness_map.insert(addr, point.get_value());
+        let addr_as_num = Num::Constant(u64_to_ff(addr));
+        self.queries.push((addr_as_num, point));
+        self.validity_is_enforced = false; 
+    }
+
+    pub fn read<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, addr: Num<E>, params: &'a CurveCircuitParameters<E, G, T>
+    ) -> Result<AffinePoint<'a, E, G, T>, SynthesisError> {
+        let wit = addr.get_value().and_then(|x| { self.witness_map.get(&ff_to_u64(&x)).cloned().unwrap_or(None) });
+        let res = AffinePoint::alloc(cs, wit, params)?;
+        self.queries.push((addr, res.clone()));
+        self.validity_is_enforced = false;
+
+        Ok(res)
+    }
+
+    fn calculate_permutation(&self) -> IntegerPermutation {
+        let mut keys = Vec::with_capacity(self.queries.len());
+        for (idx, (addr, _)) in self.queries.iter().enumerate() {
+            if let Some(addr) = addr.get_value() {
+                let composite_key = ff_to_u64(&addr);
+                keys.push((idx, composite_key));
+            } else {
+                return IntegerPermutation::new(self.queries.len());
+            }
+        }
+
+        keys.sort_by(|a, b| a.1.cmp(&b.1));
+        let integer_permutation: Vec<_> = keys.iter().map(|el| el.0).collect();
+        IntegerPermutation::new_from_permutation(integer_permutation)
+    }
+
+    fn enforce_correctness_of_sorted_packed_queries<CS>(&mut self, cs: &mut CS)-> Result<(), SynthesisError>
+    where CS: ConstraintSystem<E>
+    {
+        let limit = Num::Constant(u64_to_ff((1u64 << self.address_width) - 1));
+        let mut counter = Num::zero();
+        let iter = self.sorted_packed_elems_0.iter().zip(self.sorted_packed_elems_1.iter()).identify_first_last();
+        let mut el_0_prev = Num::zero();
+        let mut el_1_prev = Num::zero();
+    
+        for (is_first, _is_last, (el_0_cur, el_1_cur)) in iter {
+            if !is_first {
+                let is_equal_0 = Num::equals(cs, &el_0_prev, &el_0_cur)?;
+                let is_equal_1 = Num::equals(cs, &el_1_prev, &el_1_cur)?;
+                let both_are_equal = Boolean::and(cs, &is_equal_0, &is_equal_1)?;
+                counter = counter.conditionally_increment(cs, &both_are_equal.not())?;
+            }
+           
+            el_0_prev = *el_0_cur;
+            el_1_prev = *el_1_cur;
+        }
+        counter.enforce_equal(cs, &limit)
+    }
+
+    pub fn enforce_ram_correctness<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> 
+    {
+        self.validity_is_enforced = true;
+        let size = self.queries.len();
+
+        let permutation = self.calculate_permutation();
+        
+        let mut unsorted_packed_elems_0 = Vec::with_capacity(size);
+        let mut unsorted_packed_elems_1 = Vec::with_capacity(size);
+        let mut sorted_packed_elems_0 = Vec::with_capacity(size);
+        let mut sorted_packed_elems_1 = Vec::with_capacity(size);
+
+        for (addr, point) in self.queries.iter_mut() {
+            let packed = point.pack(cs, addr, self.address_width)?;
+            unsorted_packed_elems_0.push(packed[0]);
+            unsorted_packed_elems_1.push(packed[1]);
+        }
+        for index in permutation.elements.iter() {
+            let value_0 = unsorted_packed_elems_0[*index].clone();
+            sorted_packed_elems_0.push(value_0);
+            let value_1 = unsorted_packed_elems_1[*index].clone();
+            sorted_packed_elems_1.push(value_1);
+        }
+
+        self.permutation = permutation;
+        self.unsorted_packed_elems_0 = unsorted_packed_elems_0;
+        self.unsorted_packed_elems_1 = unsorted_packed_elems_1;
+        self.sorted_packed_elems_0 = sorted_packed_elems_0;
+        self.sorted_packed_elems_1 = sorted_packed_elems_1;
+
+        self.enforce_correctness_of_permutation(cs)?;
+        self.enforce_correctness_of_sorted_packed_queries(cs)
+    }
+
+    fn enforce_correctness_of_permutation<CS>(&mut self, cs: &mut CS) -> Result<(), SynthesisError>
+    where CS: ConstraintSystem<E>
+    {
+        match self.permutation_enforcement_strategy {
+            MultiexpStrategy::WaksmanBasedRam  => {
+                let switches = order_into_switches_set(cs, &self.permutation)?;
+                prove_permutation_of_nums_using_switches_witness(
+                    cs, &self.unsorted_packed_elems_0, &self.sorted_packed_elems_0, &switches
+                )?;
+                prove_permutation_of_nums_using_switches_witness(
+                    cs, &self.unsorted_packed_elems_1, &self.sorted_packed_elems_1, &switches
+                )
+            },
+            MultiexpStrategy::HashSetsBasedRam  => {
+                let hash_params = RescuePrimeParams::<E, RATE, WIDTH>::new_with_width4_custom_gate();
+                let mut state = [Num::<E>::zero(); WIDTH];
+
+                let iter = self.unsorted_packed_elems_0.iter().zip(self.unsorted_packed_elems_1.iter()).chain(
+                    self.sorted_packed_elems_0.iter().zip(self.sorted_packed_elems_1.iter())
+                );
+                for (x, y) in iter {
+                    let input = [x.clone(), y.clone()];
+                    round_function_absorb(cs, &mut state, &input, &hash_params)?;
+                };
+                let (challenge_a, challenge_b) = round_function_squeeze(&state);
+
+                // (Polynomials are of the form X + c0 * Y + c1)
+                // we substitute X and Y with challenge a and b correspondingly
+                let mut lhs = Num::Constant(E::Fr::one());
+                let mut rhs = Num::Constant(E::Fr::one());
+                
+                let outer_iter = std::iter::once(
+                    (&self.unsorted_packed_elems_0, &self.unsorted_packed_elems_1, &mut lhs)
+                ).chain(std::iter::once(
+                    (&self.sorted_packed_elems_0, &self.sorted_packed_elems_1, &mut rhs)
+                ));
+                for (column_0, column_1, out) in outer_iter {
+                    let inner_iter = column_0.iter().zip(column_1.iter());
+                    for (c0, c1) in inner_iter {
+                        let mut lc = LinearCombination::zero(); 
+                        lc.add_assign_number_with_coeff(&challenge_a.clone(), E::Fr::one());
+                        lc.add_assign_number_with_coeff(&c1, E::Fr::one());
+                        let c0_mul_challenge = c0.mul(cs, &challenge_b)?;
+                        lc.add_assign_number_with_coeff(&c0_mul_challenge, E::Fr::one());
+                        let multiplier = lc.into_num(cs)?;
+                        *out = Num::mul(out, cs, &multiplier)?;
+                    }
+                } 
+                lhs.enforce_equal(cs, &rhs)
+            },
+            _ => unreachable!(),
+        }    
+    }
+}
+
+impl<'a, E: Engine, G: GenericCurveAffine, T> Selector<'a, E, G, T> for Memory<'a, E, G, T> 
+where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
+{
+    fn absorb_precompute<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, precompute: Vec<(u64, AffinePoint<'a, E, G, T>)>
+    ) -> Result<(), SynthesisError> {
+        for (addr, point) in precompute.into_iter() {
+            self.write(addr, point);
+            let bitflipped_addr = !addr & ((1 << self.address_width) - 1);
+            let point_negated = point.negate(cs)?;
+            self.write(bitflipped_addr, point_negated);
+        }
+        Ok(())
+    }
+    
+    fn select<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, bits: &[Boolean], params: &'a CurveCircuitParameters<E, G, T>
+    ) -> Result<AffinePoint<'a, E, G, T>, SynthesisError> {
+        let mut offset = E::Fr::one();
+        let mut lc = LinearCombination::zero();
+        for bit in bits.iter() {
+            lc.add_assign_boolean_with_coeff(bit, offset);
+            offset.double();
+        }
+        let addr = lc.into_num(cs)?;
+        self.read(cs, addr, params)
+    }
+    
+    fn postprocess<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
+        self.enforce_ram_correctness(cs)
+    }
+}
+
+
+pub(crate) struct TreeSelector<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+where <G as GenericCurveAffine>::Base: PrimeField {
+    precompute: Vec<AffinePoint<'a, E, G, T>>
+}
+
+impl<'a, E: Engine, G: GenericCurveAffine, T> Selector<'a, E, G, T> for TreeSelector<'a, E, G, T> 
+where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
+{
+    fn absorb_precompute<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, mut precompute: Vec<(u64, AffinePoint<'a, E, G, T>)>
+    ) -> Result<(), SynthesisError> {
+        self.precompute.extend(precompute.drain(..).map(|x| x.1));
+        Ok(())
+    }
+    
+    fn select<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, bits: &[Boolean], _params: &CurveCircuitParameters<E, G, T>
+    ) -> Result<AffinePoint<'a, E, G, T>, SynthesisError> {
+        let mut selector_subtree = self.precompute.clone(); 
+        
+        for (k0_bit, k1_bit) in bits.iter().rev().tuple_windows() {
+            let mut new_selector_subtree = Vec::with_capacity(selector_subtree.len() >> 1);
+            let xor_flag = Boolean::xor(cs, &k0_bit, &k1_bit)?;
+            for (first, second) in selector_subtree.into_iter().tuples() {
+                let selected = AffinePoint::conditionally_select(cs, &xor_flag, &first, &second)?;
+                new_selector_subtree.push(selected);
+            }
+            selector_subtree = new_selector_subtree;
+        }
+
+        assert_eq!(selector_subtree.len(), 1);
+        let last_flag = bits[0];
+        let selected = selector_subtree.pop().unwrap();
+        let candidate = AffinePoint::conditionally_negate(&selected, cs, &last_flag.not())?;
+        
+        Ok(candidate)    
+    }
+    
+    fn postprocess<CS: ConstraintSystem<E>>(&mut self, _cs: &mut CS) -> Result<(), SynthesisError> {
+        Ok(())
+    }
+}
+
+
+#[derive(Clone, Debug)]
+pub(crate) struct Combiner<'a, E: Engine, G: GenericCurveAffine, T, S: Selector<'a, E, G, T>> 
+where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
+{
+    entries: Vec<AffinePoint<'a, E, G, T>>, // raw elements P1, P2, ..., Pn
+    selector_impl: S,
+    exception_free_version: bool,
+
+    initail_point_affine: Option<AffinePoint<'a, E, G, T>>,
+    initial_point_proj: Option<ProjectivePoint<'a, E, G, T>>,
+    initial_point_is_infty: Option<Boolean>,
+    adj_offset: AffinePointExt<'a, E, G, T>
+}
+
+impl<'a, E: Engine, G: GenericCurveAffine, T, S: Selector<'a, E, G, T>> Combiner<'a, E, G, T, S> 
+where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
+{
+    pub fn new<CS: ConstraintSystem<E>>(
+        cs: &mut CS, entries: &[AffinePoint<'a, E, G, T>], selector: S, exception_free_version: bool
+    ) -> Result<Self, SynthesisError> {
+        let first_elem = entries.get(0).expect("Entries must be nonempty");
+        let params = first_elem.circuit_params;
+        // for now we do not work over BLS12-381 but all it trvially extendable
+        assert_eq!(params.is_prime_order_curve, true);
+
+        let get_bit_at_pos = |num: u64, pos: usize| -> bool {
+            (num >> pos) & 1 != 0
+        };
+        let extend_addr = |num: u64, pos: usize, msb: bool| -> u64 {
+            if msb { (1u64 << (pos+1)) + num } else { num }
+        }; 
+        
+        let initial = if exception_free_version {
+            PointWrapper::HomogeniousForm(ProjectivePoint::from(first_elem.clone()))
+        } else {
+            PointWrapper::AffineOverBaseField(first_elem.clone())
+        };
+        
+        // using Selector tree makes sense only if there are more than 1 element
+        let mut entries = entries.to_vec();
+        let mut workpad : Vec<(u64, PointWrapper<'a, E, G, T>)> = vec![(0, initial)];
+        let mut pos = 0;
+
+        for (_is_first, _is_last, elem) in entries[1..].iter_mut().identify_first_last() {
+            let mut new_working_pad = Vec::with_capacity(workpad.len() << 1);
+            for (addr, acc) in workpad.iter_mut() {
+                let msb = get_bit_at_pos(*addr, pos);
+                if msb { 
+                    new_working_pad.push((extend_addr(*addr, pos, !msb), acc.sub_mixed(cs, elem)?));
+                    new_working_pad.push((extend_addr(*addr, pos, msb), acc.add_mixed(cs, elem)?));   
+                }
+                else {
+                    new_working_pad.push((extend_addr(*addr, pos, !msb), acc.add_mixed(cs, elem)?));   
+                    new_working_pad.push((extend_addr(*addr, pos, msb), acc.sub_mixed(cs, elem)?));
+                }
+            };
+            pos += 1;
+            workpad = new_working_pad
+        }
+        assert_eq!(workpad.len(), 1 << (entries.len() - 1));
+        
+        let mut precompute = Vec::with_capacity(workpad.len());
+        let mut initial_point_affine = None;
+        let mut iniitial_point_is_infty = None;
+        let mut initial_point_proj = None;
+
+        let mut adj_offset = AffinePointExt::constant(
+            params.fp2_pt_ord3_x_c0, params.fp2_pt_ord3_x_c1, 
+            params.fp2_pt_ord3_y_c0, params.fp2_pt_ord3_y_c1,
+            &params.base_field_rns_params
+        );
+        
+        for (_is_first, is_last, elem) in workpad.into_iter().identify_first_last() {
+            let (addr, mut wrapped_point) = elem;
+            let (point_affine, is_infty) = point_proj.convert_to_affine_or_uninitialized(cs)?;
+            
+            if is_last {
+                is safe or not safe
+                initial_point_affine = point_affine.clone();
+                iniitial_point_is_infty = is_infty;
+                initial_point_proj = point_proj;
+            }
+            precompute.push(point_affine);
+        }
+        selector.absorb(cs, precompute)?;
+
+        Ok(SelectorTree2 {
+            entries: Vec<AffinePoint<'a, E, G, T>>, // raw elements P1, P2, ..., Pn
+            selector_impl: S,
+            exception_free_version: bool,
+            initial_point_affine,
+            iniitial_point_is_infty,
+            initial_point_proj,
+            adj_offset
+        })
+    }
+
+    fn select<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, bits: &[Boolean]
+    ) -> Result<(AffinePoint<'a, E, G, T>, Option<Boolean>), SynthesisError> {
+        let candidate = self.inner
+        // 
+    }
+   
+    pub fn double_and_add_selected<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>, bits: &[Boolean]
+    ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError> 
+    {
+        let (candidate, is_point_at_infty) = self.select(cs, bits)?;
+        let params = candidate.circuit_params;
+        // It is sometimes buggy(
+        let x_c0 = candidate.get_x();
+        let x_c1 = FieldElement::zero(&params.base_field_rns_params);
+        let y_c0 = candidate.get_y();
+        let y_c1 = FieldElement::conditionally_select(
+            cs, &is_point_at_infty, &self.adj_offset.get_y().c1, &FieldElement::zero(&params.base_field_rns_params)
+        )?;
+        let x_ext = Fp2::from_coordinates(x_c0, x_c1);
+        let y_ext = Fp2::from_coordinates(y_c0, y_c1);
+        let to_add = AffinePointExt { x: x_ext, y: y_ext };
+        
+        // let to_add = AffinePointExt::conditionally_select(
+        //     cs, &is_point_at_infty, &self.adj_offset, &AffinePointExt::from(candidate)
+        // )?;
+        acc.double_and_add_unchecked(cs, &to_add)
+        //AffinePointExt::conditionally_select(cs, &is_point_at_infty, &acc, &acc_modified)
+    }
+
+    pub fn add_initial_into_accumulator<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>
+    ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError> 
+    {
+        // initial accumulator value is equal to + P1 + P2 + ... + Pn
+        let (point, is_point_at_infty, _point_proj) = self.get_initial();
+        let acc_modified = acc.add_unequal_unchecked(cs, &AffinePointExt::from(point))?;
+        AffinePointExt::conditionally_select(cs, &is_point_at_infty, &acc, &acc_modified)
+    }
+
+    pub fn add_last_into_accumulator<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>, bits: &[Boolean]
+    ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError>
+    { 
+        // on every iteration of the inner loop (except the last one) of the point by scalar mul algorithm
+        // we want to retrieve the point which is dependent on bits as follows:
+        // bits = [b_0, b_1, .., b_n] -> /sum (2* b_i - 1) P_i = A
+        // on the last iteration we do however want to add the point \sum (b_i - 1) * P_i = B
+        // if we denote the starting value of accumulator = /sum P_i as C
+        // then it is obvious that the following relation always holds: A - C = 2 * B
+        // hence we reduced the computation to one subtraction and one doubling
+        
+        let (selected, is_selected_point_at_infty) = self.select(cs, &bits)?;
+        let params = selected.circuit_params;
+        let rns_params = &params.base_field_rns_params;
+
+        let proj_x = selected.get_x();
+        let proj_y = FieldElement::conditionally_select(
+            cs, &is_selected_point_at_infty, &FieldElement::one(rns_params), &selected.get_y()
+        )?;
+        let proj_z = FieldElement::conditionally_select(
+            cs, &is_selected_point_at_infty, &FieldElement::zero(rns_params), &FieldElement::one(rns_params)
+        )?;
+        let a = ProjectivePoint::from_coordinates_unchecked(
+            proj_x, proj_y, proj_z, selected.is_in_subgroup, params
+        );
+        
+        let (_, _, c) = self.get_initial();
+        let mut a_minus_c = a.sub(cs, &c)?;
+        let mut res_proj = ProjectivePoint::halving(cs, &mut a_minus_c)?;
+
+        let (res_affine, is_infty) = res_proj.convert_to_affine_or_default(
+            cs, &AffinePoint::uninitialized(params)
+        )?;
+        let acc_modified = acc.add_unequal_unchecked(cs, &AffinePointExt::from(res_affine))?;
+        AffinePointExt::conditionally_select(cs, &is_infty, &acc, &acc_modified)
+    }
+
+    pub fn add_last_into_accumulator_unoptimized<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>, bits: &[Boolean]
+    ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError>
+    {
+        let mut acc = acc.clone();
+        for (bit, point) in bits.iter().zip(self.entries.iter()) {
+            let is_point_at_infty = FieldElement::is_zero(&mut point.get_y(), cs)?;
+            let acc_modified = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(point.clone()))?;
+            let cond_flag = Boolean::or(cs, &is_point_at_infty, &bit)?;
+            acc = AffinePointExt::conditionally_select(cs, &cond_flag, &acc, &acc_modified)?;
+        }
+        Ok(acc) 
+    }
+}
+
+
+// impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> AffinePoint<'a, E, G, T> 
 // where <G as GenericCurveAffine>::Base: PrimeField 
 // {
+//     pub fn mul_by_scalar_complete<CS: ConstraintSystem<E>>(
+//         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>
+//     ) -> Result<(Self, Boolean), SynthesisError> {
+//         Self::multiexp_impl(cs, &vec![scalar], &vec![self.clone()], true)
+//     }
     
-//     #[track_caller]
-//     pub fn mul_by_scalar_descending_skew_ladder_with_endo<CS: ConstraintSystem<E>>(
-//         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
+//     pub fn mul_by_scalar_non_complete<CS: ConstraintSystem<E>>(
+//         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>
 //     ) -> Result<Self, SynthesisError> {
-//         if let Some(value) = scalar.get_field_value() {
-//             assert!(!value.is_zero(), "can not multiply by zero in the current approach");
-//         }
-//         if scalar.is_constant() {
-//             unimplemented!();
-//         }
-
-//         let params = self.circuit_params;
-//         let scalar_rns_params = &params.scalar_field_rns_params;
-//         let base_rns_params = &params.base_field_rns_params;
-
-//         let limit = params.get_endomorphism_bitlen_limit();
-//         let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
-//             Some(x) => {
-//                 let dcmp = params.calculate_decomposition(x);
-//                 (Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus))
-//             },
-//             None => (None, None, None, None)
-//         };
-//         let mut k1_abs = FieldElement::alloc_for_known_bitwidth(cs, k1_abs_wit, limit, scalar_rns_params, true)?;
-//         let mut k2_abs = FieldElement::alloc_for_known_bitwidth(cs, k2_abs_wit, limit, scalar_rns_params, true)?;
-//         let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
-//         let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
-
-//         // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
-//         let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
-//         let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
-//         let mut chain = FieldElementsChain::new();
-//         chain.add_pos_term(&k1).add_neg_term(&scalar);
-//         let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
-//         FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
-
-//         let mut point = self.conditionally_negate(cs, &k1_is_negative_flag)?;
-//         let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
-//         let x_endo = point.get_x().mul(cs, &beta)?;
-//         let y_endo = self.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
-//         let mut point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
-
-//         let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
-//         let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
-//         let point_minus_point_endo = point.sub_unequal_unchecked(cs, &mut point_endo)?;
-//         let mut point_plus_point_endo = point.add_unequal_unchecked(cs, &point_endo)?;
-       
-//         let mut offset_generator = AffinePoint::constant(G::one(), params);
-//         let mut acc = offset_generator.add_unequal(cs, &mut point_plus_point_endo)?;
-//         let num_of_doubles = k1_decomposition[1..].len();
-//         let iter = k1_decomposition[1..].into_iter().zip(k2_decomposition[1..].into_iter()).rev().enumerate();
-
-//         for (_idx, (k1_bit, k2_bit)) in iter {
-//             // selection tree looks like following:
-//             //                              
-//             //                         |true --- P + Q
-//             //         |true---k2_bit--|
-//             //         |               |false --- P - Q
-//             // k1_bit--|
-//             //         |        
-//             //         |                |true --- -P + Q
-//             //         |false---k2_bit--|
-//             //                          |false --- -P - Q
-//             //
-//             // hence:
-//             // res.X = select(k1_bit ^ k2_bit, P-Q.X, P+Q.X)
-//             // tmp.Y = select(k1_bit ^ k2_bit, P-Q.Y, P+Q.Y)
-//             // res.Y = conditionally_negate(!k1, tmp.Y)
-//             let xor_flag = Boolean::xor(cs, &k1_bit, &k2_bit)?;
-//             let selected_x = FieldElement:: conditionally_select(
-//                 cs, &xor_flag, &point_minus_point_endo.get_x(), &point_plus_point_endo.get_x()
-//             )?;
-//             let tmp_y = FieldElement::conditionally_select(
-//                 cs, &xor_flag, &point_minus_point_endo.get_y(), &point_plus_point_endo.get_y()
-//             )?;
-//             let selected_y = tmp_y.conditionally_negate(cs, &k1_bit.not())?;
-//             let mut tmp = unsafe { AffinePoint::from_xy_unchecked(selected_x, selected_y, params) };
-//             acc = acc.double_and_add(cs, &mut tmp)?;
-//         }
-
-//         // we subtract either O, or P, or Q or P + Q
-//         // selection tree in this case looks like following:
-//         //                              
-//         //                         |true --- O
-//         //         |true---k2_bit--|
-//         //         |               |false --- Q
-//         // k1_bit--|
-//         //         |        
-//         //         |                |true --- P
-//         //         |false---k2_bit--|
-//         //                          |false --- P+Q
-//         //
-//         let k1_bit = k1_decomposition.first().unwrap();
-//         let k2_bit = k2_decomposition.first().unwrap();
-//         let acc_is_unchanged = Boolean::and(cs, &k1_bit, &k2_bit)?; 
-//         let mut tmp = AffinePoint::conditionally_select(cs, &k2_bit, &point, &point_plus_point_endo)?;
-//         tmp = AffinePoint::conditionally_select(cs, &k1_bit, &point_endo, &tmp)?;
-//         let skew_acc = acc.sub_unequal_unchecked(cs, &mut tmp)?;
-//         acc = AffinePoint::conditionally_select(cs, &acc_is_unchanged, &acc, &skew_acc)?;
-       
-//         let as_scalar_repr = biguint_to_repr::<G::Scalar>(BigUint::from(1u64) << num_of_doubles);
-//         let scaled_offset_wit = G::one().mul(as_scalar_repr).into_affine();
-//         let mut scaled_offset = AffinePoint::constant(scaled_offset_wit, params);
-//         let result = acc.sub_unequal_unchecked(cs, &mut scaled_offset)?; 
-
-//         Ok(result)
+//         let (point, is_infty) = Self::multiexp_impl(cs, &vec![scalar], &vec![self.clone()], false);
+//         Ok(point)
+//     } 
+   
+//     pub fn multiexp_complete<CS: ConstraintSystem<E>>(
+//         cs: &mut CS, scalars: &[FieldElement<'a, E, G::Scalar>], points: &[Self] 
+//     ) -> Result<(Self, Boolean), SynthesisError> {
+//         Self::multiexp_impl(cs, scalars, points, true)
 //     }
 
-
-//     #[track_caller]
-//     pub fn mul_by_scalar_descending_skew_ladder_with_base_ext<CS: ConstraintSystem<E>>(
-//         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
-//     ) -> Result<Self, SynthesisError> {
-//         if let Some(value) = scalar.get_field_value() {
-//             assert!(!value.is_zero(), "can not multiply by zero in the current approach");
-//         }
-//         if scalar.is_constant() {
-//             unimplemented!();
-//         }
-        
-//         let circuit_params = self.circuit_params;
-//         let scalar_decomposition = scalar.decompose_into_binary_representation(cs, None)?;
-
-//         let offset_generator = AffinePointExt::constant(
-//             circuit_params.fp2_offset_generator_x_c0, circuit_params.fp2_offset_generator_x_c1,
-//             circuit_params.fp2_offset_generator_y_c0, circuit_params.fp2_offset_generator_y_c1,
-//             &circuit_params.base_field_rns_params
-//         );
-//         let mut acc = offset_generator.add_unequal_unchecked(cs, &AffinePointExt::from(self.clone()))?;
-//         let mut y_negated = self.get_y().negate(cs)?;
-//         y_negated.reduce(cs)?;
-//         let num_of_doubles = scalar_decomposition[1..].len();
-      
-//         for bit in scalar_decomposition[1..].into_iter().rev() {
-//             let selected_y = FieldElement::conditionally_select(cs, &bit, &self.y, &y_negated)?;
-//             let mut tmp = AffinePointExt::from(
-//                 unsafe { AffinePoint::from_xy_unchecked(self.x.clone(), selected_y, circuit_params) }
-//             );
-//             acc = acc.double_and_add_unchecked(cs, &mut tmp)?;
-//         }
-
-//         let with_skew = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(self.clone()))?;
-//         let flag = scalar_decomposition.first().unwrap();
-//         acc = AffinePointExt::conditionally_select(cs, flag, &acc, &with_skew)?;
-        
-//         let mut scaled_offset = offset_generator;
-//         for _ in 0..num_of_doubles {
-//             scaled_offset = scaled_offset.double(cs)?;
-//         }
-//         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?;
-
-//         let final_x = acc.get_x().c0;
-//         let final_y = acc.get_y().c0;
-//         let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
-//             G::from_xy_checked(x, y).expect("should be on the curve")
-//         }); 
-//         // let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
-//         //     G::from_xy_unchecked(x, y)
-//         // });
-
-//        let result = AffinePoint { 
-//             x: final_x, 
-//             y: final_y, 
-//             value: final_value, 
-//             circuit_params: self.circuit_params 
-//         };
-//         Ok(result)
-//     }
-
-    
-//     #[track_caller]
-//     pub fn mul_by_scalar_descending_skew_ladder_with_endo_and_base_ext<CS: ConstraintSystem<E>>(
-//         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
-//     ) -> Result<Self, SynthesisError> {
-//         if let Some(value) = scalar.get_field_value() {
-//             assert!(!value.is_zero(), "can not multiply by zero in the current approach");
-//         }
-//         if scalar.is_constant() {
-//             unimplemented!();
-//         }
-
-//         let params = self.circuit_params;
-//         let scalar_rns_params = &params.scalar_field_rns_params;
-//         let base_rns_params = &params.base_field_rns_params;
-
-//         let limit = params.get_endomorphism_bitlen_limit();
-//         let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
-//             Some(x) => {
-//                 let dcmp = params.calculate_decomposition(x);
-//                 (Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus))
-//             },
-//             None => (None, None, None, None)
-//         };
-//         let mut k1_abs = FieldElement::alloc_for_known_bitwidth(cs, k1_abs_wit, limit, scalar_rns_params, true)?;
-//         let mut k2_abs = FieldElement::alloc_for_known_bitwidth(cs, k2_abs_wit, limit, scalar_rns_params, true)?;
-//         let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
-//         let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
-
-//         // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
-//         let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
-//         let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
-//         let mut chain = FieldElementsChain::new();
-//         chain.add_pos_term(&k1).add_neg_term(&scalar);
-//         let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
-//         FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
-
-//         let mut point = self.conditionally_negate(cs, &k1_is_negative_flag)?;
-//         let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
-//         let x_endo = point.get_x().mul(cs, &beta)?;
-//         let y_endo = self.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
-//         let mut point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
-
-//         let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
-//         let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
-//         let point_minus_point_endo = point.sub_unequal_unchecked(cs, &mut point_endo)?;
-//         let point_plus_point_endo = point.add_unequal_unchecked(cs, &point_endo)?;
-       
-//         let offset_generator = AffinePointExt::constant(
-//             params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
-//             params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
-//             &params.base_field_rns_params
-//         );
-//         let mut acc = offset_generator.add_unequal_unchecked(
-//             cs, &AffinePointExt::from(point_plus_point_endo.clone())
-//         )?;
-//         let num_of_doubles = k1_decomposition[1..].len();
-//         let iter = k1_decomposition[1..].into_iter().zip(k2_decomposition[1..].into_iter()).rev().enumerate();
-
-//         let naive_mul_start = cs.get_current_step_number();
-//         for (_idx, (k1_bit, k2_bit)) in iter {
-//             // selection tree looks like following:
-//             //                              
-//             //                         |true --- P + Q
-//             //         |true---k2_bit--|
-//             //         |               |false --- P - Q
-//             // k1_bit--|
-//             //         |        
-//             //         |                |true --- -P + Q
-//             //         |false---k2_bit--|
-//             //                          |false --- -P - Q
-//             //
-//             // hence:
-//             // res.X = select(k1_bit ^ k2_bit, P-Q.X, P+Q.X)
-//             // tmp.Y = select(k1_bit ^ k2_bit, P-Q.Y, P+Q.Y)
-//             // res.Y = conditionally_negate(!k1, tmp.Y)
-//             let xor_flag = Boolean::xor(cs, &k1_bit, &k2_bit)?;
-//             let selected_x = FieldElement:: conditionally_select(
-//                 cs, &xor_flag, &point_minus_point_endo.get_x(), &point_plus_point_endo.get_x()
-//             )?;
-//             let tmp_y = FieldElement::conditionally_select(
-//                 cs, &xor_flag, &point_minus_point_endo.get_y(), &point_plus_point_endo.get_y()
-//             )?;
-//             let selected_y = tmp_y.conditionally_negate(cs, &k1_bit.not())?;
-//             let mut tmp = AffinePointExt::from(
-//                 unsafe { AffinePoint::from_xy_unchecked(selected_x, selected_y, params) }
-//             );
-//             acc = acc.double_and_add_unchecked(cs, &mut tmp)?;
-//         }
-//         let naive_mul_end = cs.get_current_step_number();
-//         println!("gates fpr main cycle: {}", naive_mul_end - naive_mul_start);
-
-//         // we subtract either O, or P, or Q or P + Q
-//         // selection tree in this case looks like following:
-//         //                              
-//         //                         |true --- O
-//         //         |true---k2_bit--|
-//         //         |               |false --- Q
-//         // k1_bit--|
-//         //         |        
-//         //         |                |true --- P
-//         //         |false---k2_bit--|
-//         //                          |false --- P+Q
-//         //
-//         let k1_bit = k1_decomposition.first().unwrap();
-//         let k2_bit = k2_decomposition.first().unwrap();
-//         let acc_is_unchanged = Boolean::and(cs, &k1_bit, &k2_bit)?; 
-//         let mut tmp = AffinePoint::conditionally_select(cs, &k2_bit, &point, &point_plus_point_endo)?;
-//         tmp = AffinePoint::conditionally_select(cs, &k1_bit, &point_endo, &tmp)?;
-//         let skew_acc = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(tmp))?;
-//         acc = AffinePointExt::conditionally_select(cs, &acc_is_unchanged, &acc, &skew_acc)?;
-       
-//         let mut scaled_offset = offset_generator;
-//         for _ in 0..num_of_doubles {
-//             scaled_offset = scaled_offset.double(cs)?;
-//         }
-//         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?; 
-
-//         let final_x = acc.get_x().c0;
-//         let final_y = acc.get_y().c0;
-//         let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
-//             G::from_xy_checked(x, y).expect("should be on the curve")
-//         }); 
-
-//        let result = AffinePoint { 
-//             x: final_x, 
-//             y: final_y, 
-//             value: final_value, 
-//             is_in_subgroup: self.is_in_subgroup, 
-//             circuit_params: self.circuit_params 
-//         };
-//         Ok(result)
-//     }
-
-
-//     #[track_caller]
-//     pub fn test_selector_tree<CS: ConstraintSystem<E>>(
-//         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
-//     ) -> Result<Self, SynthesisError> {
-//         if let Some(value) = scalar.get_field_value() {
-//             assert!(!value.is_zero(), "can not multiply by zero in the current approach");
-//         }
-//         if scalar.is_constant() {
-//             unimplemented!();
-//         }
-
-//         let params = self.circuit_params;
-//         let scalar_rns_params = &params.scalar_field_rns_params;
-//         let base_rns_params = &params.base_field_rns_params;
-
-//         let limit = params.get_endomorphism_bitlen_limit();
-//         let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
-//             Some(x) => {
-//                 let dcmp = params.calculate_decomposition(x);
-//                 (Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus))
-//             },
-//             None => (None, None, None, None)
-//         };
-//         let mut k1_abs = FieldElement::alloc_for_known_bitwidth(cs, k1_abs_wit, limit, scalar_rns_params, true)?;
-//         let mut k2_abs = FieldElement::alloc_for_known_bitwidth(cs, k2_abs_wit, limit, scalar_rns_params, true)?;
-//         let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
-//         let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
-
-//         // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
-//         let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
-//         let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
-//         let mut chain = FieldElementsChain::new();
-//         chain.add_pos_term(&k1).add_neg_term(&scalar);
-//         let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
-//         FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
-
-//         let point = self.conditionally_negate(cs, &k1_is_negative_flag)?;
-//         let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
-//         let x_endo = point.get_x().mul(cs, &beta)?;
-//         let y_endo = self.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
-//         let point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
-
-//         let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
-//         let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
-        
-//         let points = [point, point_endo];
-//         let selector_tree = SelectorTree::new(cs, &points[..])?;
-//         let initial_acc = selector_tree.get_initial_accumulator();
-       
-//         let offset_generator = AffinePointExt::constant(
-//             params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
-//             params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
-//             &params.base_field_rns_params
-//         );
-//         let mut acc = offset_generator.add_unequal_unchecked(
-//             cs, &AffinePointExt::from(initial_acc)
-//         )?;
-//         let num_of_doubles = k1_decomposition[1..].len();
-//         let iter = k1_decomposition.into_iter().zip(k2_decomposition.into_iter()).rev().identify_first_last();
-
-//         let naive_mul_start = cs.get_current_step_number();
-//         for (_is_first, is_last, (k1_bit, k2_bit)) in iter {
-//             let flags = [k1_bit, k2_bit];
-//             if !is_last {
-//                 let tmp = selector_tree.select(cs, &flags[..])?;
-//                 let mut tmp = AffinePointExt::from(tmp);
-                    
-//                 acc = acc.double_and_add_unchecked(cs, &mut tmp)?;
-//             }
-//             else {
-//                 let naive_mul_end = cs.get_current_step_number();
-//                 println!("gates fpr main cycle: {}", naive_mul_end - naive_mul_start);
-//                 let tmp = selector_tree.select_last(cs, &flags[..])?;
-//                 let mut tmp = AffinePointExt::from(tmp);
-//                 acc = acc.add_unequal_unchecked(cs, &mut tmp)?;
-//             }
-//         }
-       
-//         let mut scaled_offset = offset_generator;
-//         for _ in 0..num_of_doubles {
-//             scaled_offset = scaled_offset.double(cs)?;
-//         }
-//         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?; 
-
-//         let final_x = acc.get_x().c0;
-//         let final_y = acc.get_y().c0;
-//         let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
-//             G::from_xy_checked(x, y).expect("should be on the curve")
-//         }); 
-
-//        let result = AffinePoint { 
-//             x: final_x, 
-//             y: final_y, 
-//             value: final_value, 
-//             is_in_subgroup: self.is_in_subgroup, 
-//             circuit_params: self.circuit_params 
-//         };
-//         Ok(result)
-//     }
-
-//     #[track_caller]
-//     pub fn test_ram<CS: ConstraintSystem<E>>(
-//         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
-//     ) -> Result<Self, SynthesisError> {
-//         if let Some(value) = scalar.get_field_value() {
-//             assert!(!value.is_zero(), "can not multiply by zero in the current approach");
-//         }
-//         if scalar.is_constant() {
-//             unimplemented!();
-//         }
-
-//         let params = self.circuit_params;
-//         let scalar_rns_params = &params.scalar_field_rns_params;
-//         let base_rns_params = &params.base_field_rns_params;
-
-//         let limit = params.get_endomorphism_bitlen_limit();
-//         let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
-//             Some(x) => {
-//                 let dcmp = params.calculate_decomposition(x);
-//                 (Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus))
-//             },
-//             None => (None, None, None, None)
-//         };
-//         let mut k1_abs = FieldElement::alloc_for_known_bitwidth(cs, k1_abs_wit, limit, scalar_rns_params, true)?;
-//         let mut k2_abs = FieldElement::alloc_for_known_bitwidth(cs, k2_abs_wit, limit, scalar_rns_params, true)?;
-//         let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
-//         let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
-
-//         // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
-//         let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
-//         let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
-//         let mut chain = FieldElementsChain::new();
-//         chain.add_pos_term(&k1).add_neg_term(&scalar);
-//         let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
-//         FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
-
-//         let point = self.conditionally_negate(cs, &k1_is_negative_flag)?;
-//         let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
-//         let x_endo = point.get_x().mul(cs, &beta)?;
-//         let y_endo = self.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
-//         let point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
-
-//         let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
-//         let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
-        
-//         let points = [point, point_endo];
-//         let selector_tree = SelectorTree::new(cs, &points[..])?;
-//         let initial_acc = selector_tree.get_initial_accumulator();
-       
-//         let offset_generator = AffinePointExt::constant(
-//             params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
-//             params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
-//             &params.base_field_rns_params
-//         );
-//         let mut acc = offset_generator.add_unequal_unchecked(
-//             cs, &AffinePointExt::from(initial_acc)
-//         )?;
-//         let num_of_doubles = k1_decomposition[1..].len();
-//         let iter = k1_decomposition.into_iter().zip(k2_decomposition.into_iter()).rev().identify_first_last();
-
-//         let naive_mul_start = cs.get_current_step_number();
-//         for (_is_first, is_last, (k1_bit, k2_bit)) in iter {
-//             let flags = [k1_bit, k2_bit];
-//             if !is_last {
-//                 let tmp = selector_tree.select(cs, &flags[..])?;
-//                 let mut tmp = AffinePointExt::from(tmp);
-                    
-//                 acc = acc.double_and_add_unchecked(cs, &mut tmp)?;
-//             }
-//             else {
-//                 let naive_mul_end = cs.get_current_step_number();
-//                 println!("gates fpr main cycle: {}", naive_mul_end - naive_mul_start);
-//                 let tmp = selector_tree.select_last(cs, &flags[..])?;
-//                 let mut tmp = AffinePointExt::from(tmp);
-//                 acc = acc.add_unequal_unchecked(cs, &mut tmp)?;
-//             }
-//         }
-       
-//         let mut scaled_offset = offset_generator;
-//         for _ in 0..num_of_doubles {
-//             scaled_offset = scaled_offset.double(cs)?;
-//         }
-//         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?; 
-
-//         let final_x = acc.get_x().c0;
-//         let final_y = acc.get_y().c0;
-//         let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
-//             G::from_xy_checked(x, y).expect("should be on the curve")
-//         }); 
-
-//        let result = AffinePoint { 
-//             x: final_x, 
-//             y: final_y, 
-//             value: final_value, 
-//             is_in_subgroup: self.is_in_subgroup, 
-//             circuit_params: self.circuit_params 
-//         };
-//         Ok(result)
-//     }
-
-
-    
-//     #[track_caller]
-//     pub fn safe_multiexp_affine<CS: ConstraintSystem<E>>(
+//     pub fn multiexp_non_complete<CS: ConstraintSystem<E>>(
 //         cs: &mut CS, scalars: &[FieldElement<'a, E, G::Scalar>], points: &[Self] 
 //     ) -> Result<Self, SynthesisError> {
-//         let params = points[0].circuit_params;
-//         let scalar_rns_params = &params.scalar_field_rns_params;
-//         let base_rns_params = &params.base_field_rns_params;
-//         let limit = params.get_endomorphism_bitlen_limit();
-
-//         struct PointAuxData<'a1, E1: Engine, G1: GenericCurveAffine + rand::Rand, T1: Extension2Params<G1::Base>> 
-//         where <G1 as GenericCurveAffine>::Base: PrimeField 
-//         {
-//             point: AffinePoint<'a1, E1, G1, T1>,
-//             point_endo: AffinePoint<'a1, E1, G1, T1>,
-//             point_plus_point_endo: AffinePoint<'a1, E1, G1, T1>,
-//             point_minus_point_endo: AffinePoint<'a1, E1, G1, T1>,
-//             point_scalar_decomposition: Vec<Boolean>,
-//             point_endo_scalar_decomposition: Vec<Boolean>
-//         }
-
-//         let mut points_aux_data = Vec::<PointAuxData::<E, G, T>>::with_capacity(scalars.len());
-//         for (scalar, point) in scalars.iter().zip(points.iter()) { 
-//             let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
-//                 Some(x) => {
-//                     let dcmp = params.calculate_decomposition(x);
-//                     (
-//                         Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), 
-//                         Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus)
-//                     )
-//                 },
-//                 None => (None, None, None, None)
-//             };
-//             let mut k1_abs = FieldElement::alloc_for_known_bitwidth(
-//                 cs, k1_abs_wit, limit, scalar_rns_params, true
-//             )?;
-//             let mut k2_abs = FieldElement::alloc_for_known_bitwidth(
-//                 cs, k2_abs_wit, limit, scalar_rns_params, true
-//             )?;
-//             let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
-//             let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
-
-//             // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
-//             let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
-//             let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
-//             let mut chain = FieldElementsChain::new();
-//             chain.add_pos_term(&k1).add_neg_term(&scalar);
-//             let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
-//             FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
-
-//             let mut point_reg = point.conditionally_negate(cs, &k1_is_negative_flag)?;
-//             let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
-//             let x_endo = point.get_x().mul(cs, &beta)?;
-//             let y_endo = point.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
-//             let mut point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
-
-//             let point_scalar_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
-//             let point_endo_scalar_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
-//             let point_minus_point_endo = point_reg.sub_unequal_unchecked(cs, &mut point_endo)?;
-//             let point_plus_point_endo = point_reg.add_unequal_unchecked(cs, &point_endo)?;
-
-//             let point_aux_data = PointAuxData {
-//                 point: point_reg, point_endo, point_plus_point_endo, point_minus_point_endo,
-//                 point_scalar_decomposition, point_endo_scalar_decomposition
-//             };
-//             points_aux_data.push(point_aux_data);
-//         }
-       
-//         let offset_generator = AffinePointExt::constant(
-//             params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
-//             params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
-//             &params.base_field_rns_params
-//         );
-//         // let offset_generator = AffinePointExt::constant(
-//         //     params.fp2_pt_ord3_x_c0, params.fp2_pt_ord3_x_c1,
-//         //     params.fp2_pt_ord3_y_c0, params.fp2_pt_ord3_y_c1,
-//         //     &params.base_field_rns_params
-//         // );
-        
-//         let mut acc = offset_generator.clone();
-//         for point_aux_data in points_aux_data.iter() {
-//             acc = acc.add_unequal_unchecked(
-//                 cs, &AffinePointExt::from(point_aux_data.point_plus_point_endo.clone())
-//             )?;
-//         }
-        
-//         let num_of_doubles = points_aux_data[0].point_scalar_decomposition.len() - 1;
-//         let mut idx = num_of_doubles; 
-//         while idx > 0 {
-//             for (is_first, _is_last, data) in points_aux_data.iter().identify_first_last() {
-//                 let k1_bit = data.point_scalar_decomposition[idx];
-//                 let k2_bit = data.point_endo_scalar_decomposition[idx];
-//                 // selection tree looks like following:
-//                 //                              
-//                 //                         |true --- P + Q
-//                 //         |true---k2_bit--|
-//                 //         |               |false --- P - Q
-//                 // k1_bit--|
-//                 //         |        
-//                 //         |                |true --- -P + Q
-//                 //         |false---k2_bit--|
-//                 //                          |false --- -P - Q
-//                 //
-//                 // hence:
-//                 // res.X = select(k1_bit ^ k2_bit, P-Q.X, P+Q.X)
-//                 // tmp.Y = select(k1_bit ^ k2_bit, P-Q.Y, P+Q.Y)
-//                 // res.Y = conditionally_negate(!k1, tmp.Y)
-//                 let xor_flag = Boolean::xor(cs, &k1_bit, &k2_bit)?;
-//                 let selected_x = FieldElement:: conditionally_select(
-//                     cs, &xor_flag, &data.point_minus_point_endo.get_x(), &data.point_plus_point_endo.get_x()
-//                 )?;
-//                 let tmp_y = FieldElement::conditionally_select(
-//                     cs, &xor_flag, &data.point_minus_point_endo.get_y(), &data.point_plus_point_endo.get_y()
-//                 )?;
-//                 let selected_y = tmp_y.conditionally_negate(cs, &k1_bit.not())?;
-//                 let mut tmp = AffinePointExt::from(
-//                     unsafe { AffinePoint::from_xy_unchecked(selected_x, selected_y, params) }
-//                 );
-//                 acc = if is_first { 
-//                     acc.double_and_add_unchecked(cs, &mut tmp)? 
-//                 } else {
-//                     acc.add_unequal_unchecked(cs, &mut tmp)? 
-//                 };
-//             }
-//             idx -= 1;
-//         }
-
-//         for data in points_aux_data.iter() {
-//             let k1_bit = data.point_scalar_decomposition[idx];
-//             let k2_bit = data.point_endo_scalar_decomposition[idx];
-//             // we subtract either O, or P, or Q or P + Q
-//             // selection tree in this case looks like following:
-//             //                              
-//             //                         |true --- O
-//             //         |true---k2_bit--|
-//             //         |               |false --- Q
-//             // k1_bit--|
-//             //         |        
-//             //         |                |true --- P
-//             //         |false---k2_bit--|
-//             //                          |false --- P+Q
-//             //
-//             let acc_is_unchanged = Boolean::and(cs, &k1_bit, &k2_bit)?; 
-//             let mut tmp = AffinePoint::conditionally_select(cs, &k2_bit, &data.point, &data.point_plus_point_endo)?;
-//             tmp = AffinePoint::conditionally_select(cs, &k1_bit, &data.point_endo, &tmp)?;
-//             let skew_acc = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(tmp))?;
-//             acc = AffinePointExt::conditionally_select(cs, &acc_is_unchanged, &acc, &skew_acc)?;
-//         }
-       
-//         let mut scaled_offset = offset_generator;
-//         for _ in 0..num_of_doubles {
-//             scaled_offset = scaled_offset.double(cs)?;
-//         }
-//         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?; 
-
-//         let final_x = acc.get_x().c0;
-//         let final_y = acc.get_y().c0;
-//         let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
-//             G::from_xy_checked(x, y).expect("should be on the curve")
-//         }); 
-
-//        let result = AffinePoint { 
-//             x: final_x, 
-//             y: final_y, 
-//             value: final_value, 
-//             is_in_subgroup: points[0].is_in_subgroup, 
-//             circuit_params: points[0].circuit_params 
-//         };
-//         Ok(result)
+//         let (point, is_infty) = Self::multiexp_impl(cs, scalars, points, false);
+//         Ok(point)
 //     }
 
 //     pub fn safe_multiexp_affine2<CS: ConstraintSystem<E>>(
-//         cs: &mut CS, scalars: &[FieldElement<'a, E, G::Scalar>], points: &[Self]
-//     ) -> Result<AffinePoint<'a, E, G, T>, SynthesisError> {
-//         assert_eq!(scalars.len(), points.len());
-//         let params = points[0].circuit_params;
-//         let scalar_rns_params = &params.scalar_field_rns_params;
-//         let base_rns_params = &params.base_field_rns_params;
-//         let limit = params.get_endomorphism_bitlen_limit();
+//         // //         cs: &mut CS, scalars: &[FieldElement<'a, E, G::Scalar>], points: &[Self]
+//         // //     ) -> Result<AffinePoint<'a, E, G, T>, SynthesisError> {
+//         // //         assert_eq!(scalars.len(), points.len());
+//         // //         let params = points[0].circuit_params;
+//         // //         let scalar_rns_params = &params.scalar_field_rns_params;
+//         // //         let base_rns_params = &params.base_field_rns_params;
+//         // //         let limit = params.get_endomorphism_bitlen_limit();
+                
+//         // //         struct Multizip<T>(Vec<T>);
+                
+//         // //         impl<T> Iterator for Multizip<T>
+//         // //         where T: Iterator,
+//         // //         {
+//         // //             type Item = Vec<T::Item>;
         
-//         struct Multizip<T>(Vec<T>);
+//         // //             fn next(&mut self) -> Option<Self::Item> {
+//         // //                 self.0.iter_mut().map(Iterator::next).collect()
+//         //             }
+//         //         }
         
-//         impl<T> Iterator for Multizip<T>
-//         where T: Iterator,
-//         {
-//             type Item = Vec<T::Item>;
-
-//             fn next(&mut self) -> Option<Self::Item> {
-//                 self.0.iter_mut().map(Iterator::next).collect()
-//             }
-//         }
-
-//         let offset_generator = AffinePointExt::constant(
-//             params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
-//             params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
-//             &params.base_field_rns_params
-//         );
-//         let adj_offset = AffinePointExt::constant(
-//             params.fp2_pt_ord3_x_c0, params.fp2_pt_ord3_x_c1, 
-//             params.fp2_pt_ord3_y_c0, params.fp2_pt_ord3_y_c1,
-//             &params.base_field_rns_params
-//         );
-
-//         let mut points_unrolled = Vec::with_capacity(points.len() << 1);
-//         let mut scalars_unrolled = Vec::with_capacity(points.len() << 1);
-//         for (is_first, _is_last, (scalar, point)) in scalars.iter().zip(points.iter()).identify_first_last() { 
-//             let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
-//                 Some(x) => {
-//                     let dcmp = params.calculate_decomposition(x);
-//                     (
-//                         Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), 
-//                         Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus)
-//                     )
-//                 },
-//                 None => (None, None, None, None)
-//             };
-//             let mut k1_abs = FieldElement::alloc_for_known_bitwidth(
-//                 cs, k1_abs_wit, limit, scalar_rns_params, true
-//             )?;
-//             let mut k2_abs = FieldElement::alloc_for_known_bitwidth(
-//                 cs, k2_abs_wit, limit, scalar_rns_params, true
-//             )?;
-//             let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
-//             let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
-
-//             // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
-//             let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
-//             let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
-//             let mut chain = FieldElementsChain::new();
-//             chain.add_pos_term(&k1).add_neg_term(&scalar);
-//             let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
-//             FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
-
-//             let point_reg = point.conditionally_negate(cs, &k1_is_negative_flag)?;
-//             let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
-//             let x_endo = point.get_x().mul(cs, &beta)?;
-//             let y_endo = point.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
-//             let point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
-
-//             let mut point_ext = AffinePointExt::<E, G, T>::from(point_reg);
-//             if is_first {
-//                 point_ext = point_ext.add_unequal_unchecked(cs, &adj_offset)?;
-//             }
-//             let point_endo_ext = AffinePointExt::<E, G, T>::from(point_endo);
-//             points_unrolled.push(point_ext);
-//             points_unrolled.push(point_endo_ext);
-
-//             let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
-//             let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
-//             scalars_unrolled.push(k1_decomposition.into_iter().rev());
-//             scalars_unrolled.push(k2_decomposition.into_iter().rev());
-//         }
-
-//         let selector_tree = SelectorTree::new(cs, &points_unrolled)?;
-//         let mut acc = selector_tree.get_initial_accumulator();
-//         acc = acc.add_unequal_unchecked(cs, &offset_generator)?;
-
-//         for (_, is_last, bits) in Multizip(scalars_unrolled).identify_first_last() {
-//             if !is_last {
-//                 let to_add = selector_tree.select(cs, &bits)?;
-//                 acc = acc.double_and_add_unchecked(cs, &to_add)?;
-//             }
-//             else {
-//                 let to_add = selector_tree.select_last(cs, &bits)?;
-//                 acc = acc.add_unequal_unchecked(cs, &to_add)?;
-//             }
-//         }
-
-//         let gate_count_start = cs.get_current_step_number();
-//         let num_of_doubles = limit - 1;
-//         let mut scaled_offset = offset_generator;
-//         for _ in 0..num_of_doubles {
-//             scaled_offset = scaled_offset.double(cs)?;
-//         }
-//         let gate_count_end = cs.get_current_step_number();
-//         assert_eq!(gate_count_end - gate_count_start, 0);
-//         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?;
-
-//         let is_defined_over_base_field = |point: &AffinePointExt<'a, E, G, T>| -> Option<bool> {
-//             point.get_value().map(|(_x_c0, x_c1, _y_c0, y_c1)| x_c1.is_zero() && y_c1.is_zero())
-//         };
-
-//         println!("before last check");
-
-//         // adj_offset is a point of order 3, hence one of acc, acc + adj_offset, acc - adj belong to E(F_p)
-//         let need_to_negate_wit = acc.get_value().map(|(x_c0, x_c1, y_c0, y_c1)| {
-//             let gate_count_start = cs.get_current_step_number();
-
-//             let mut tmp = AffinePointExt::<E, G, T>::constant(x_c0, x_c1, y_c0, y_c1, base_rns_params);
-//             tmp = tmp.add_unequal_unchecked(cs, &adj_offset).expect("should synthesize");
-//             let flag = is_defined_over_base_field(&tmp).expect("should be some");    
-               
-//             let gate_count_end = cs.get_current_step_number();
-//             assert_eq!(gate_count_end - gate_count_start, 0);
-//             !flag
-//         });
-
-//         println!("after last check");
-
-
-//         let need_to_negate = Boolean::Is(AllocatedBit::alloc(cs, need_to_negate_wit)?);
-//         let to_add = adj_offset.conditionally_negate(cs, &need_to_negate)?;
-//         let modified_acc = acc.add_unequal_unchecked(cs, &to_add)?;
+//         //         let offset_generator = AffinePointExt::constant(
+//         //             params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
+//         //             params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
+        //             &params.base_field_rns_params
+        //         );
+        //         let adj_offset = AffinePointExt::constant(
+        //             params.fp2_pt_ord3_x_c0, params.fp2_pt_ord3_x_c1, 
+        //             params.fp2_pt_ord3_y_c0, params.fp2_pt_ord3_y_c1,
+        //             &params.base_field_rns_params
+        //         );
         
-//         let cond_wit = is_defined_over_base_field(&modified_acc);
-//         let cond = Boolean::Is(AllocatedBit::alloc(cs, cond_wit)?);
-//         let res_ext = AffinePointExt::conditionally_select(cs, &cond, &modified_acc, &acc)?; 
+        //         let mut points_unrolled = Vec::with_capacity(points.len() << 1);
+        //         let mut scalars_unrolled = Vec::with_capacity(points.len() << 1);
+        //         for (is_first, _is_last, (scalar, point)) in scalars.iter().zip(points.iter()).identify_first_last() { 
+        //             let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
+        //                 Some(x) => {
+        //                     let dcmp = params.calculate_decomposition(x);
+        //                     (
+        //                         Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), 
+        //                         Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus)
+        //                     )
+        //                 },
+        //                 None => (None, None, None, None)
+        //             };
+        //             let mut k1_abs = FieldElement::alloc_for_known_bitwidth(
+        //                 cs, k1_abs_wit, limit, scalar_rns_params, true
+        //             )?;
+        //             let mut k2_abs = FieldElement::alloc_for_known_bitwidth(
+        //                 cs, k2_abs_wit, limit, scalar_rns_params, true
+        //             )?;
+        //             let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
+        //             let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
+        
+        //             // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
+        //             let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
+        //             let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
+        //             let mut chain = FieldElementsChain::new();
+        //             chain.add_pos_term(&k1).add_neg_term(&scalar);
+        //             let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
+        //             FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
+        
+        //             let point_reg = point.conditionally_negate(cs, &k1_is_negative_flag)?;
+        //             let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+        //             let x_endo = point.get_x().mul(cs, &beta)?;
+        //             let y_endo = point.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
+        //             let point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
+        
+        //             let mut point_ext = AffinePointExt::<E, G, T>::from(point_reg);
+        //             if is_first {
+        //                 point_ext = point_ext.add_unequal_unchecked(cs, &adj_offset)?;
+        //             }
+        //             let point_endo_ext = AffinePointExt::<E, G, T>::from(point_endo);
+        //             points_unrolled.push(point_ext);
+        //             points_unrolled.push(point_endo_ext);
+        
+        //             let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
+        //             let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
+        //             scalars_unrolled.push(k1_decomposition.into_iter().rev());
+        //             scalars_unrolled.push(k2_decomposition.into_iter().rev());
+        //         }
+        
+        //         let selector_tree = SelectorTree::new(cs, &points_unrolled)?;
+        //         let mut acc = selector_tree.get_initial_accumulator();
+        //         acc = acc.add_unequal_unchecked(cs, &offset_generator)?;
+        
+        //         for (_, is_last, bits) in Multizip(scalars_unrolled).identify_first_last() {
+        //             if !is_last {
+        //                 let to_add = selector_tree.select(cs, &bits)?;
+        //                 acc = acc.double_and_add_unchecked(cs, &to_add)?;
+        //             }
+        //             else {
+        //                 let to_add = selector_tree.select_last(cs, &bits)?;
+        //                 acc = acc.add_unequal_unchecked(cs, &to_add)?;
+        //             }
+        //         }
+        
+        //         let gate_count_start = cs.get_current_step_number();
+        //         let num_of_doubles = limit - 1;
+        //         let mut scaled_offset = offset_generator;
+        //         for _ in 0..num_of_doubles {
+        //             scaled_offset = scaled_offset.double(cs)?;
+        //         }
+        //         let gate_count_end = cs.get_current_step_number();
+        //         assert_eq!(gate_count_end - gate_count_start, 0);
+        //         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?;
+        
+        //         let is_defined_over_base_field = |point: &AffinePointExt<'a, E, G, T>| -> Option<bool> {
+        //             point.get_value().map(|(_x_c0, x_c1, _y_c0, y_c1)| x_c1.is_zero() && y_c1.is_zero())
+        //         };
+        
+        //         println!("before last check");
+        
+        //         // adj_offset is a point of order 3, hence one of acc, acc + adj_offset, acc - adj belong to E(F_p)
+        //         let need_to_negate_wit = acc.get_value().map(|(x_c0, x_c1, y_c0, y_c1)| {
+        //             let gate_count_start = cs.get_current_step_number();
+        
+        //             let mut tmp = AffinePointExt::<E, G, T>::constant(x_c0, x_c1, y_c0, y_c1, base_rns_params);
+        //             tmp = tmp.add_unequal_unchecked(cs, &adj_offset).expect("should synthesize");
+        //             let flag = is_defined_over_base_field(&tmp).expect("should be some");    
+                       
+        //             let gate_count_end = cs.get_current_step_number();
+        //             assert_eq!(gate_count_end - gate_count_start, 0);
+        //             !flag
+        //         });
+        
+        //         println!("after last check");
+        
+        
+        //         let need_to_negate = Boolean::Is(AllocatedBit::alloc(cs, need_to_negate_wit)?);
+        //         let to_add = adj_offset.conditionally_negate(cs, &need_to_negate)?;
+        //         let modified_acc = acc.add_unequal_unchecked(cs, &to_add)?;
+                
+        //         let cond_wit = is_defined_over_base_field(&modified_acc);
+        //         let cond = Boolean::Is(AllocatedBit::alloc(cs, cond_wit)?);
+        //         let res_ext = AffinePointExt::conditionally_select(cs, &cond, &modified_acc, &acc)?; 
+        
+        //         let mut final_x = res_ext.get_x();
+        //         let mut final_y = res_ext.get_y();
+        //         let final_value = final_x.c0.get_field_value().zip(final_y.c0.get_field_value()).map(|(x, y)| {
+        //             G::from_xy_checked(x, y).expect("should be on the curve")
+        //         }); 
+        //         let mut zero = FieldElement::<E, G::Base>::zero(base_rns_params);
+        //         FieldElement::enforce_equal(cs, &mut final_x.c1, &mut zero)?;
+        //         FieldElement::enforce_equal(cs, &mut final_y.c1, &mut zero)?;
+        
+        //         println!("THE VERY FINAL VALUE: {}", final_value.unwrap());
+        
+        
+        //         let new = Self {
+        //             x: final_x.c0,
+        //             y: final_y.c0,
+        //             value: final_value,
+        //             is_in_subgroup: true,
+        //             circuit_params: params
+        //         };
+        //         Ok(new)
+        //     }
+}
+         
 
-//         let mut final_x = res_ext.get_x();
-//         let mut final_y = res_ext.get_y();
-//         let final_value = final_x.c0.get_field_value().zip(final_y.c0.get_field_value()).map(|(x, y)| {
-//             G::from_xy_checked(x, y).expect("should be on the curve")
-//         }); 
-//         let mut zero = FieldElement::<E, G::Base>::zero(base_rns_params);
-//         FieldElement::enforce_equal(cs, &mut final_x.c1, &mut zero)?;
-//         FieldElement::enforce_equal(cs, &mut final_y.c1, &mut zero)?;
 
-//         println!("THE VERY FINAL VALUE: {}", final_value.unwrap());
+// // impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand, T: Extension2Params<G::Base>> AffinePoint<'a, E, G, T> 
+// // where <G as GenericCurveAffine>::Base: PrimeField 
+// // {
+    
+// //     #[track_caller]
+// //     pub fn mul_by_scalar_descending_skew_ladder_with_endo<CS: ConstraintSystem<E>>(
+// //         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
+// //     ) -> Result<Self, SynthesisError> {
+// //         if let Some(value) = scalar.get_field_value() {
+// //             assert!(!value.is_zero(), "can not multiply by zero in the current approach");
+// //         }
+// //         if scalar.is_constant() {
+// //             unimplemented!();
+// //         }
+
+// //         let params = self.circuit_params;
+// //         let scalar_rns_params = &params.scalar_field_rns_params;
+// //         let base_rns_params = &params.base_field_rns_params;
+
+// //         let limit = params.get_endomorphism_bitlen_limit();
+// //         let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
+// //             Some(x) => {
+// //                 let dcmp = params.calculate_decomposition(x);
+// //                 (Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus))
+// //             },
+// //             None => (None, None, None, None)
+// //         };
+// //         let mut k1_abs = FieldElement::alloc_for_known_bitwidth(cs, k1_abs_wit, limit, scalar_rns_params, true)?;
+// //         let mut k2_abs = FieldElement::alloc_for_known_bitwidth(cs, k2_abs_wit, limit, scalar_rns_params, true)?;
+// //         let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
+// //         let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
+
+// //         // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
+// //         let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
+// //         let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
+// //         let mut chain = FieldElementsChain::new();
+// //         chain.add_pos_term(&k1).add_neg_term(&scalar);
+// //         let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
+// //         FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
+
+// //         let mut point = self.conditionally_negate(cs, &k1_is_negative_flag)?;
+// //         let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+// //         let x_endo = point.get_x().mul(cs, &beta)?;
+// //         let y_endo = self.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
+// //         let mut point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
+
+// //         let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
+// //         let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
+// //         let point_minus_point_endo = point.sub_unequal_unchecked(cs, &mut point_endo)?;
+// //         let mut point_plus_point_endo = point.add_unequal_unchecked(cs, &point_endo)?;
+       
+// //         let mut offset_generator = AffinePoint::constant(G::one(), params);
+// //         let mut acc = offset_generator.add_unequal(cs, &mut point_plus_point_endo)?;
+// //         let num_of_doubles = k1_decomposition[1..].len();
+// //         let iter = k1_decomposition[1..].into_iter().zip(k2_decomposition[1..].into_iter()).rev().enumerate();
+
+// //         for (_idx, (k1_bit, k2_bit)) in iter {
+// //             // selection tree looks like following:
+// //             //                              
+// //             //                         |true --- P + Q
+// //             //         |true---k2_bit--|
+// //             //         |               |false --- P - Q
+// //             // k1_bit--|
+// //             //         |        
+// //             //         |                |true --- -P + Q
+// //             //         |false---k2_bit--|
+// //             //                          |false --- -P - Q
+// //             //
+// //             // hence:
+// //             // res.X = select(k1_bit ^ k2_bit, P-Q.X, P+Q.X)
+// //             // tmp.Y = select(k1_bit ^ k2_bit, P-Q.Y, P+Q.Y)
+// //             // res.Y = conditionally_negate(!k1, tmp.Y)
+// //             let xor_flag = Boolean::xor(cs, &k1_bit, &k2_bit)?;
+// //             let selected_x = FieldElement:: conditionally_select(
+// //                 cs, &xor_flag, &point_minus_point_endo.get_x(), &point_plus_point_endo.get_x()
+// //             )?;
+// //             let tmp_y = FieldElement::conditionally_select(
+// //                 cs, &xor_flag, &point_minus_point_endo.get_y(), &point_plus_point_endo.get_y()
+// //             )?;
+// //             let selected_y = tmp_y.conditionally_negate(cs, &k1_bit.not())?;
+// //             let mut tmp = unsafe { AffinePoint::from_xy_unchecked(selected_x, selected_y, params) };
+// //             acc = acc.double_and_add(cs, &mut tmp)?;
+// //         }
+
+// //         // we subtract either O, or P, or Q or P + Q
+// //         // selection tree in this case looks like following:
+// //         //                              
+// //         //                         |true --- O
+// //         //         |true---k2_bit--|
+// //         //         |               |false --- Q
+// //         // k1_bit--|
+// //         //         |        
+// //         //         |                |true --- P
+// //         //         |false---k2_bit--|
+// //         //                          |false --- P+Q
+// //         //
+// //         let k1_bit = k1_decomposition.first().unwrap();
+// //         let k2_bit = k2_decomposition.first().unwrap();
+// //         let acc_is_unchanged = Boolean::and(cs, &k1_bit, &k2_bit)?; 
+// //         let mut tmp = AffinePoint::conditionally_select(cs, &k2_bit, &point, &point_plus_point_endo)?;
+// //         tmp = AffinePoint::conditionally_select(cs, &k1_bit, &point_endo, &tmp)?;
+// //         let skew_acc = acc.sub_unequal_unchecked(cs, &mut tmp)?;
+// //         acc = AffinePoint::conditionally_select(cs, &acc_is_unchanged, &acc, &skew_acc)?;
+       
+// //         let as_scalar_repr = biguint_to_repr::<G::Scalar>(BigUint::from(1u64) << num_of_doubles);
+// //         let scaled_offset_wit = G::one().mul(as_scalar_repr).into_affine();
+// //         let mut scaled_offset = AffinePoint::constant(scaled_offset_wit, params);
+// //         let result = acc.sub_unequal_unchecked(cs, &mut scaled_offset)?; 
+
+// //         Ok(result)
+// //     }
 
 
-//         let new = Self {
-//             x: final_x.c0,
-//             y: final_y.c0,
-//             value: final_value,
-//             is_in_subgroup: true,
-//             circuit_params: params
-//         };
-//         Ok(new)
-//     }
+// //     #[track_caller]
+// //     pub fn mul_by_scalar_descending_skew_ladder_with_base_ext<CS: ConstraintSystem<E>>(
+// //         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
+// //     ) -> Result<Self, SynthesisError> {
+// //         if let Some(value) = scalar.get_field_value() {
+// //             assert!(!value.is_zero(), "can not multiply by zero in the current approach");
+// //         }
+// //         if scalar.is_constant() {
+// //             unimplemented!();
+// //         }
+        
+// //         let circuit_params = self.circuit_params;
+// //         let scalar_decomposition = scalar.decompose_into_binary_representation(cs, None)?;
+
+// //         let offset_generator = AffinePointExt::constant(
+// //             circuit_params.fp2_offset_generator_x_c0, circuit_params.fp2_offset_generator_x_c1,
+// //             circuit_params.fp2_offset_generator_y_c0, circuit_params.fp2_offset_generator_y_c1,
+// //             &circuit_params.base_field_rns_params
+// //         );
+// //         let mut acc = offset_generator.add_unequal_unchecked(cs, &AffinePointExt::from(self.clone()))?;
+// //         let mut y_negated = self.get_y().negate(cs)?;
+// //         y_negated.reduce(cs)?;
+// //         let num_of_doubles = scalar_decomposition[1..].len();
+      
+// //         for bit in scalar_decomposition[1..].into_iter().rev() {
+// //             let selected_y = FieldElement::conditionally_select(cs, &bit, &self.y, &y_negated)?;
+// //             let mut tmp = AffinePointExt::from(
+// //                 unsafe { AffinePoint::from_xy_unchecked(self.x.clone(), selected_y, circuit_params) }
+// //             );
+// //             acc = acc.double_and_add_unchecked(cs, &mut tmp)?;
+// //         }
+
+// //         let with_skew = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(self.clone()))?;
+// //         let flag = scalar_decomposition.first().unwrap();
+// //         acc = AffinePointExt::conditionally_select(cs, flag, &acc, &with_skew)?;
+        
+// //         let mut scaled_offset = offset_generator;
+// //         for _ in 0..num_of_doubles {
+// //             scaled_offset = scaled_offset.double(cs)?;
+// //         }
+// //         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?;
+
+// //         let final_x = acc.get_x().c0;
+// //         let final_y = acc.get_y().c0;
+// //         let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
+// //             G::from_xy_checked(x, y).expect("should be on the curve")
+// //         }); 
+// //         // let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
+// //         //     G::from_xy_unchecked(x, y)
+// //         // });
+
+// //        let result = AffinePoint { 
+// //             x: final_x, 
+// //             y: final_y, 
+// //             value: final_value, 
+// //             circuit_params: self.circuit_params 
+// //         };
+// //         Ok(result)
+// //     }
+
+    
+// //     #[track_caller]
+// //     pub fn mul_by_scalar_descending_skew_ladder_with_endo_and_base_ext<CS: ConstraintSystem<E>>(
+// //         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
+// //     ) -> Result<Self, SynthesisError> {
+// //         if let Some(value) = scalar.get_field_value() {
+// //             assert!(!value.is_zero(), "can not multiply by zero in the current approach");
+// //         }
+// //         if scalar.is_constant() {
+// //             unimplemented!();
+// //         }
+
+// //         let params = self.circuit_params;
+// //         let scalar_rns_params = &params.scalar_field_rns_params;
+// //         let base_rns_params = &params.base_field_rns_params;
+
+// //         let limit = params.get_endomorphism_bitlen_limit();
+// //         let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
+// //             Some(x) => {
+// //                 let dcmp = params.calculate_decomposition(x);
+// //                 (Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus))
+// //             },
+// //             None => (None, None, None, None)
+// //         };
+// //         let mut k1_abs = FieldElement::alloc_for_known_bitwidth(cs, k1_abs_wit, limit, scalar_rns_params, true)?;
+// //         let mut k2_abs = FieldElement::alloc_for_known_bitwidth(cs, k2_abs_wit, limit, scalar_rns_params, true)?;
+// //         let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
+// //         let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
+
+// //         // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
+// //         let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
+// //         let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
+// //         let mut chain = FieldElementsChain::new();
+// //         chain.add_pos_term(&k1).add_neg_term(&scalar);
+// //         let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
+// //         FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
+
+// //         let mut point = self.conditionally_negate(cs, &k1_is_negative_flag)?;
+// //         let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+// //         let x_endo = point.get_x().mul(cs, &beta)?;
+// //         let y_endo = self.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
+// //         let mut point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
+
+// //         let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
+// //         let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
+// //         let point_minus_point_endo = point.sub_unequal_unchecked(cs, &mut point_endo)?;
+// //         let point_plus_point_endo = point.add_unequal_unchecked(cs, &point_endo)?;
+       
+// //         let offset_generator = AffinePointExt::constant(
+// //             params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
+// //             params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
+// //             &params.base_field_rns_params
+// //         );
+// //         let mut acc = offset_generator.add_unequal_unchecked(
+// //             cs, &AffinePointExt::from(point_plus_point_endo.clone())
+// //         )?;
+// //         let num_of_doubles = k1_decomposition[1..].len();
+// //         let iter = k1_decomposition[1..].into_iter().zip(k2_decomposition[1..].into_iter()).rev().enumerate();
+
+// //         let naive_mul_start = cs.get_current_step_number();
+// //         for (_idx, (k1_bit, k2_bit)) in iter {
+// //             // selection tree looks like following:
+// //             //                              
+// //             //                         |true --- P + Q
+// //             //         |true---k2_bit--|
+// //             //         |               |false --- P - Q
+// //             // k1_bit--|
+// //             //         |        
+// //             //         |                |true --- -P + Q
+// //             //         |false---k2_bit--|
+// //             //                          |false --- -P - Q
+// //             //
+// //             // hence:
+// //             // res.X = select(k1_bit ^ k2_bit, P-Q.X, P+Q.X)
+// //             // tmp.Y = select(k1_bit ^ k2_bit, P-Q.Y, P+Q.Y)
+// //             // res.Y = conditionally_negate(!k1, tmp.Y)
+// //             let xor_flag = Boolean::xor(cs, &k1_bit, &k2_bit)?;
+// //             let selected_x = FieldElement:: conditionally_select(
+// //                 cs, &xor_flag, &point_minus_point_endo.get_x(), &point_plus_point_endo.get_x()
+// //             )?;
+// //             let tmp_y = FieldElement::conditionally_select(
+// //                 cs, &xor_flag, &point_minus_point_endo.get_y(), &point_plus_point_endo.get_y()
+// //             )?;
+// //             let selected_y = tmp_y.conditionally_negate(cs, &k1_bit.not())?;
+// //             let mut tmp = AffinePointExt::from(
+// //                 unsafe { AffinePoint::from_xy_unchecked(selected_x, selected_y, params) }
+// //             );
+// //             acc = acc.double_and_add_unchecked(cs, &mut tmp)?;
+// //         }
+// //         let naive_mul_end = cs.get_current_step_number();
+// //         println!("gates fpr main cycle: {}", naive_mul_end - naive_mul_start);
+
+// //         // we subtract either O, or P, or Q or P + Q
+// //         // selection tree in this case looks like following:
+// //         //                              
+// //         //                         |true --- O
+// //         //         |true---k2_bit--|
+// //         //         |               |false --- Q
+// //         // k1_bit--|
+// //         //         |        
+// //         //         |                |true --- P
+// //         //         |false---k2_bit--|
+// //         //                          |false --- P+Q
+// //         //
+// //         let k1_bit = k1_decomposition.first().unwrap();
+// //         let k2_bit = k2_decomposition.first().unwrap();
+// //         let acc_is_unchanged = Boolean::and(cs, &k1_bit, &k2_bit)?; 
+// //         let mut tmp = AffinePoint::conditionally_select(cs, &k2_bit, &point, &point_plus_point_endo)?;
+// //         tmp = AffinePoint::conditionally_select(cs, &k1_bit, &point_endo, &tmp)?;
+// //         let skew_acc = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(tmp))?;
+// //         acc = AffinePointExt::conditionally_select(cs, &acc_is_unchanged, &acc, &skew_acc)?;
+       
+// //         let mut scaled_offset = offset_generator;
+// //         for _ in 0..num_of_doubles {
+// //             scaled_offset = scaled_offset.double(cs)?;
+// //         }
+// //         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?; 
+
+// //         let final_x = acc.get_x().c0;
+// //         let final_y = acc.get_y().c0;
+// //         let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
+// //             G::from_xy_checked(x, y).expect("should be on the curve")
+// //         }); 
+
+// //        let result = AffinePoint { 
+// //             x: final_x, 
+// //             y: final_y, 
+// //             value: final_value, 
+// //             is_in_subgroup: self.is_in_subgroup, 
+// //             circuit_params: self.circuit_params 
+// //         };
+// //         Ok(result)
+// //     }
+
+
+// //     #[track_caller]
+// //     pub fn test_selector_tree<CS: ConstraintSystem<E>>(
+// //         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
+// //     ) -> Result<Self, SynthesisError> {
+// //         if let Some(value) = scalar.get_field_value() {
+// //             assert!(!value.is_zero(), "can not multiply by zero in the current approach");
+// //         }
+// //         if scalar.is_constant() {
+// //             unimplemented!();
+// //         }
+
+// //         let params = self.circuit_params;
+// //         let scalar_rns_params = &params.scalar_field_rns_params;
+// //         let base_rns_params = &params.base_field_rns_params;
+
+// //         let limit = params.get_endomorphism_bitlen_limit();
+// //         let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
+// //             Some(x) => {
+// //                 let dcmp = params.calculate_decomposition(x);
+// //                 (Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus))
+// //             },
+// //             None => (None, None, None, None)
+// //         };
+// //         let mut k1_abs = FieldElement::alloc_for_known_bitwidth(cs, k1_abs_wit, limit, scalar_rns_params, true)?;
+// //         let mut k2_abs = FieldElement::alloc_for_known_bitwidth(cs, k2_abs_wit, limit, scalar_rns_params, true)?;
+// //         let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
+// //         let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
+
+// //         // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
+// //         let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
+// //         let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
+// //         let mut chain = FieldElementsChain::new();
+// //         chain.add_pos_term(&k1).add_neg_term(&scalar);
+// //         let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
+// //         FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
+
+// //         let point = self.conditionally_negate(cs, &k1_is_negative_flag)?;
+// //         let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+// //         let x_endo = point.get_x().mul(cs, &beta)?;
+// //         let y_endo = self.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
+// //         let point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
+
+// //         let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
+// //         let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
+        
+// //         let points = [point, point_endo];
+// //         let selector_tree = SelectorTree::new(cs, &points[..])?;
+// //         let initial_acc = selector_tree.get_initial_accumulator();
+       
+// //         let offset_generator = AffinePointExt::constant(
+// //             params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
+// //             params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
+// //             &params.base_field_rns_params
+// //         );
+// //         let mut acc = offset_generator.add_unequal_unchecked(
+// //             cs, &AffinePointExt::from(initial_acc)
+// //         )?;
+// //         let num_of_doubles = k1_decomposition[1..].len();
+// //         let iter = k1_decomposition.into_iter().zip(k2_decomposition.into_iter()).rev().identify_first_last();
+
+// //         let naive_mul_start = cs.get_current_step_number();
+// //         for (_is_first, is_last, (k1_bit, k2_bit)) in iter {
+// //             let flags = [k1_bit, k2_bit];
+// //             if !is_last {
+// //                 let tmp = selector_tree.select(cs, &flags[..])?;
+// //                 let mut tmp = AffinePointExt::from(tmp);
+                    
+// //                 acc = acc.double_and_add_unchecked(cs, &mut tmp)?;
+// //             }
+// //             else {
+// //                 let naive_mul_end = cs.get_current_step_number();
+// //                 println!("gates fpr main cycle: {}", naive_mul_end - naive_mul_start);
+// //                 let tmp = selector_tree.select_last(cs, &flags[..])?;
+// //                 let mut tmp = AffinePointExt::from(tmp);
+// //                 acc = acc.add_unequal_unchecked(cs, &mut tmp)?;
+// //             }
+// //         }
+       
+// //         let mut scaled_offset = offset_generator;
+// //         for _ in 0..num_of_doubles {
+// //             scaled_offset = scaled_offset.double(cs)?;
+// //         }
+// //         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?; 
+
+// //         let final_x = acc.get_x().c0;
+// //         let final_y = acc.get_y().c0;
+// //         let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
+// //             G::from_xy_checked(x, y).expect("should be on the curve")
+// //         }); 
+
+// //        let result = AffinePoint { 
+// //             x: final_x, 
+// //             y: final_y, 
+// //             value: final_value, 
+// //             is_in_subgroup: self.is_in_subgroup, 
+// //             circuit_params: self.circuit_params 
+// //         };
+// //         Ok(result)
+// //     }
+
+// //     #[track_caller]
+// //     pub fn test_ram<CS: ConstraintSystem<E>>(
+// //         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, 
+// //     ) -> Result<Self, SynthesisError> {
+// //         if let Some(value) = scalar.get_field_value() {
+// //             assert!(!value.is_zero(), "can not multiply by zero in the current approach");
+// //         }
+// //         if scalar.is_constant() {
+// //             unimplemented!();
+// //         }
+
+// //         let params = self.circuit_params;
+// //         let scalar_rns_params = &params.scalar_field_rns_params;
+// //         let base_rns_params = &params.base_field_rns_params;
+
+// //         let limit = params.get_endomorphism_bitlen_limit();
+// //         let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
+// //             Some(x) => {
+// //                 let dcmp = params.calculate_decomposition(x);
+// //                 (Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus))
+// //             },
+// //             None => (None, None, None, None)
+// //         };
+// //         let mut k1_abs = FieldElement::alloc_for_known_bitwidth(cs, k1_abs_wit, limit, scalar_rns_params, true)?;
+// //         let mut k2_abs = FieldElement::alloc_for_known_bitwidth(cs, k2_abs_wit, limit, scalar_rns_params, true)?;
+// //         let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
+// //         let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
+
+// //         // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
+// //         let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
+// //         let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
+// //         let mut chain = FieldElementsChain::new();
+// //         chain.add_pos_term(&k1).add_neg_term(&scalar);
+// //         let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
+// //         FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
+
+// //         let point = self.conditionally_negate(cs, &k1_is_negative_flag)?;
+// //         let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+// //         let x_endo = point.get_x().mul(cs, &beta)?;
+// //         let y_endo = self.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
+// //         let point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
+
+// //         let k1_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
+// //         let k2_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
+        
+// //         let points = [point, point_endo];
+// //         let selector_tree = SelectorTree::new(cs, &points[..])?;
+// //         let initial_acc = selector_tree.get_initial_accumulator();
+       
+// //         let offset_generator = AffinePointExt::constant(
+// //             params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
+// //             params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
+// //             &params.base_field_rns_params
+// //         );
+// //         let mut acc = offset_generator.add_unequal_unchecked(
+// //             cs, &AffinePointExt::from(initial_acc)
+// //         )?;
+// //         let num_of_doubles = k1_decomposition[1..].len();
+// //         let iter = k1_decomposition.into_iter().zip(k2_decomposition.into_iter()).rev().identify_first_last();
+
+// //         let naive_mul_start = cs.get_current_step_number();
+// //         for (_is_first, is_last, (k1_bit, k2_bit)) in iter {
+// //             let flags = [k1_bit, k2_bit];
+// //             if !is_last {
+// //                 let tmp = selector_tree.select(cs, &flags[..])?;
+// //                 let mut tmp = AffinePointExt::from(tmp);
+                    
+// //                 acc = acc.double_and_add_unchecked(cs, &mut tmp)?;
+// //             }
+// //             else {
+// //                 let naive_mul_end = cs.get_current_step_number();
+// //                 println!("gates fpr main cycle: {}", naive_mul_end - naive_mul_start);
+// //                 let tmp = selector_tree.select_last(cs, &flags[..])?;
+// //                 let mut tmp = AffinePointExt::from(tmp);
+// //                 acc = acc.add_unequal_unchecked(cs, &mut tmp)?;
+// //             }
+// //         }
+       
+// //         let mut scaled_offset = offset_generator;
+// //         for _ in 0..num_of_doubles {
+// //             scaled_offset = scaled_offset.double(cs)?;
+// //         }
+// //         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?; 
+
+// //         let final_x = acc.get_x().c0;
+// //         let final_y = acc.get_y().c0;
+// //         let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
+// //             G::from_xy_checked(x, y).expect("should be on the curve")
+// //         }); 
+
+// //        let result = AffinePoint { 
+// //             x: final_x, 
+// //             y: final_y, 
+// //             value: final_value, 
+// //             is_in_subgroup: self.is_in_subgroup, 
+// //             circuit_params: self.circuit_params 
+// //         };
+// //         Ok(result)
+// //     }
+
+
+    
+// //     #[track_caller]
+// //     pub fn safe_multiexp_affine<CS: ConstraintSystem<E>>(
+// //         cs: &mut CS, scalars: &[FieldElement<'a, E, G::Scalar>], points: &[Self] 
+// //     ) -> Result<Self, SynthesisError> {
+// //         let params = points[0].circuit_params;
+// //         let scalar_rns_params = &params.scalar_field_rns_params;
+// //         let base_rns_params = &params.base_field_rns_params;
+// //         let limit = params.get_endomorphism_bitlen_limit();
+
+// //         struct PointAuxData<'a1, E1: Engine, G1: GenericCurveAffine + rand::Rand, T1: Extension2Params<G1::Base>> 
+// //         where <G1 as GenericCurveAffine>::Base: PrimeField 
+// //         {
+// //             point: AffinePoint<'a1, E1, G1, T1>,
+// //             point_endo: AffinePoint<'a1, E1, G1, T1>,
+// //             point_plus_point_endo: AffinePoint<'a1, E1, G1, T1>,
+// //             point_minus_point_endo: AffinePoint<'a1, E1, G1, T1>,
+// //             point_scalar_decomposition: Vec<Boolean>,
+// //             point_endo_scalar_decomposition: Vec<Boolean>
+// //         }
+
+// //         let mut points_aux_data = Vec::<PointAuxData::<E, G, T>>::with_capacity(scalars.len());
+// //         for (scalar, point) in scalars.iter().zip(points.iter()) { 
+// //             let (k1_flag_wit, k1_abs_wit, k2_flag_wit, k2_abs_wit) = match scalar.get_field_value() {
+// //                 Some(x) => {
+// //                     let dcmp = params.calculate_decomposition(x);
+// //                     (
+// //                         Some(dcmp.k1_is_negative), Some(dcmp.k1_modulus), 
+// //                         Some(dcmp.k2_is_negative), Some(dcmp.k2_modulus)
+// //                     )
+// //                 },
+// //                 None => (None, None, None, None)
+// //             };
+// //             let mut k1_abs = FieldElement::alloc_for_known_bitwidth(
+// //                 cs, k1_abs_wit, limit, scalar_rns_params, true
+// //             )?;
+// //             let mut k2_abs = FieldElement::alloc_for_known_bitwidth(
+// //                 cs, k2_abs_wit, limit, scalar_rns_params, true
+// //             )?;
+// //             let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
+// //             let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
+
+// //             // constraint that scalar = (k1_sign) * k1_abs + lambda * (k2_sign) * k2_abs
+// //             let k1 = k1_abs.conditionally_negate(cs, &k1_is_negative_flag)?;
+// //             let k2 = k2_abs.conditionally_negate(cs, &k2_is_negative_flag)?;
+// //             let mut chain = FieldElementsChain::new();
+// //             chain.add_pos_term(&k1).add_neg_term(&scalar);
+// //             let lambda = FieldElement::constant(params.lambda.clone(), scalar_rns_params);
+// //             FieldElement::constraint_fma(cs, &k2, &lambda, chain)?;
+
+// //             let mut point_reg = point.conditionally_negate(cs, &k1_is_negative_flag)?;
+// //             let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+// //             let x_endo = point.get_x().mul(cs, &beta)?;
+// //             let y_endo = point.get_y().conditionally_negate(cs, &k2_is_negative_flag)?;
+// //             let mut point_endo = unsafe { AffinePoint::from_xy_unchecked(x_endo, y_endo, params) };
+
+// //             let point_scalar_decomposition = k1_abs.decompose_into_binary_representation(cs, Some(limit))?;
+// //             let point_endo_scalar_decomposition = k2_abs.decompose_into_binary_representation(cs, Some(limit))?;
+// //             let point_minus_point_endo = point_reg.sub_unequal_unchecked(cs, &mut point_endo)?;
+// //             let point_plus_point_endo = point_reg.add_unequal_unchecked(cs, &point_endo)?;
+
+// //             let point_aux_data = PointAuxData {
+// //                 point: point_reg, point_endo, point_plus_point_endo, point_minus_point_endo,
+// //                 point_scalar_decomposition, point_endo_scalar_decomposition
+// //             };
+// //             points_aux_data.push(point_aux_data);
+// //         }
+       
+// //         let offset_generator = AffinePointExt::constant(
+// //             params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
+// //             params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
+// //             &params.base_field_rns_params
+// //         );
+// //         // let offset_generator = AffinePointExt::constant(
+// //         //     params.fp2_pt_ord3_x_c0, params.fp2_pt_ord3_x_c1,
+// //         //     params.fp2_pt_ord3_y_c0, params.fp2_pt_ord3_y_c1,
+// //         //     &params.base_field_rns_params
+// //         // );
+        
+// //         let mut acc = offset_generator.clone();
+// //         for point_aux_data in points_aux_data.iter() {
+// //             acc = acc.add_unequal_unchecked(
+// //                 cs, &AffinePointExt::from(point_aux_data.point_plus_point_endo.clone())
+// //             )?;
+// //         }
+        
+// //         let num_of_doubles = points_aux_data[0].point_scalar_decomposition.len() - 1;
+// //         let mut idx = num_of_doubles; 
+// //         while idx > 0 {
+// //             for (is_first, _is_last, data) in points_aux_data.iter().identify_first_last() {
+// //                 let k1_bit = data.point_scalar_decomposition[idx];
+// //                 let k2_bit = data.point_endo_scalar_decomposition[idx];
+// //                 // selection tree looks like following:
+// //                 //                              
+// //                 //                         |true --- P + Q
+// //                 //         |true---k2_bit--|
+// //                 //         |               |false --- P - Q
+// //                 // k1_bit--|
+// //                 //         |        
+// //                 //         |                |true --- -P + Q
+// //                 //         |false---k2_bit--|
+// //                 //                          |false --- -P - Q
+// //                 //
+// //                 // hence:
+// //                 // res.X = select(k1_bit ^ k2_bit, P-Q.X, P+Q.X)
+// //                 // tmp.Y = select(k1_bit ^ k2_bit, P-Q.Y, P+Q.Y)
+// //                 // res.Y = conditionally_negate(!k1, tmp.Y)
+// //                 let xor_flag = Boolean::xor(cs, &k1_bit, &k2_bit)?;
+// //                 let selected_x = FieldElement:: conditionally_select(
+// //                     cs, &xor_flag, &data.point_minus_point_endo.get_x(), &data.point_plus_point_endo.get_x()
+// //                 )?;
+// //                 let tmp_y = FieldElement::conditionally_select(
+// //                     cs, &xor_flag, &data.point_minus_point_endo.get_y(), &data.point_plus_point_endo.get_y()
+// //                 )?;
+// //                 let selected_y = tmp_y.conditionally_negate(cs, &k1_bit.not())?;
+// //                 let mut tmp = AffinePointExt::from(
+// //                     unsafe { AffinePoint::from_xy_unchecked(selected_x, selected_y, params) }
+// //                 );
+// //                 acc = if is_first { 
+// //                     acc.double_and_add_unchecked(cs, &mut tmp)? 
+// //                 } else {
+// //                     acc.add_unequal_unchecked(cs, &mut tmp)? 
+// //                 };
+// //             }
+// //             idx -= 1;
+// //         }
+
+// //         for data in points_aux_data.iter() {
+// //             let k1_bit = data.point_scalar_decomposition[idx];
+// //             let k2_bit = data.point_endo_scalar_decomposition[idx];
+// //             // we subtract either O, or P, or Q or P + Q
+// //             // selection tree in this case looks like following:
+// //             //                              
+// //             //                         |true --- O
+// //             //         |true---k2_bit--|
+// //             //         |               |false --- Q
+// //             // k1_bit--|
+// //             //         |        
+// //             //         |                |true --- P
+// //             //         |false---k2_bit--|
+// //             //                          |false --- P+Q
+// //             //
+// //             let acc_is_unchanged = Boolean::and(cs, &k1_bit, &k2_bit)?; 
+// //             let mut tmp = AffinePoint::conditionally_select(cs, &k2_bit, &data.point, &data.point_plus_point_endo)?;
+// //             tmp = AffinePoint::conditionally_select(cs, &k1_bit, &data.point_endo, &tmp)?;
+// //             let skew_acc = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(tmp))?;
+// //             acc = AffinePointExt::conditionally_select(cs, &acc_is_unchanged, &acc, &skew_acc)?;
+// //         }
+       
+// //         let mut scaled_offset = offset_generator;
+// //         for _ in 0..num_of_doubles {
+// //             scaled_offset = scaled_offset.double(cs)?;
+// //         }
+// //         acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?; 
+
+// //         let final_x = acc.get_x().c0;
+// //         let final_y = acc.get_y().c0;
+// //         let final_value = final_x.get_field_value().zip(final_y.get_field_value()).map(|(x, y)| {
+// //             G::from_xy_checked(x, y).expect("should be on the curve")
+// //         }); 
+
+// //        let result = AffinePoint { 
+// //             x: final_x, 
+// //             y: final_y, 
+// //             value: final_value, 
+// //             is_in_subgroup: points[0].is_in_subgroup, 
+// //             circuit_params: points[0].circuit_params 
+// //         };
+// //         Ok(result)
+// //     }
+
+// //     
 
 //     pub fn safe_multiexp_affine3<CS: ConstraintSystem<E>>(
 //         cs: &mut CS, scalars: &[FieldElement<'a, E, G::Scalar>], points: &[Self]
@@ -2161,205 +2728,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
 // }
 
 
-// #[derive(Clone, Debug)]
-// pub(crate) struct SelectorTree2<'a, E: Engine, G: GenericCurveAffine, T> 
-// where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
-// {
-//     entries: Vec<AffinePoint<'a, E, G, T>>, // raw elements P1, P2, ..., Pn
-//     precompute: Vec<AffinePoint<'a, E, G, T>>, // precomputed linear combinations +/ P1 +/ P2 +/- ... +/ Pn
-//     initial_point_affine: AffinePoint<'a, E, G, T>,
-//     initial_point_proj: ProjectivePoint<'a, E, G, T>,
-//     iniitial_point_is_infty: Boolean,
-//     adj_offset: AffinePointExt<'a, E, G, T>
-// }
 
-// impl<'a, E: Engine, G: GenericCurveAffine, T> SelectorTree2<'a, E, G, T> 
-// where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
-// {
-//     fn get_initial(&self) -> (AffinePoint<'a, E, G, T>, Boolean, ProjectivePoint<'a, E, G, T>) {
-//         (self.initial_point_affine.clone(), self.iniitial_point_is_infty, self.initial_point_proj.clone())
-//     }
-    
-//     pub fn new<CS: ConstraintSystem<E>>(
-//         cs: &mut CS, entries: &[AffinePoint<'a, E, G, T>]
-//     ) -> Result<Self, SynthesisError> {
-//         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-//         pub enum Sign {
-//             Plus,
-//             Minus
-//         }
-
-//         let first_elem = entries.get(0).expect("Entries must be nonempty");
-//         let params = first_elem.circuit_params;
-//         let initial = ProjectivePoint::from(first_elem.clone());
-        
-//         // using Selector tree makes sense only if there are more than 1 element
-//         let mut entries = entries.to_vec();
-//         let mut workpad : Vec<(Sign, ProjectivePoint<'a, E, G, T>)> = vec![(Sign::Plus, initial)];
-
-//         for (_is_first, _is_last, elem) in entries[1..].iter_mut().identify_first_last() {
-//             let mut new_working_pad = Vec::with_capacity(workpad.len() << 1);
-//             for (sign, acc) in workpad.iter_mut() {
-//                 match sign {
-//                     Sign::Plus => {
-//                         new_working_pad.push((Sign::Minus, acc.sub_mixed(cs, elem)?));
-//                         new_working_pad.push((Sign::Plus, acc.add_mixed(cs, elem)?));   
-//                     },
-//                     Sign::Minus => {
-//                         new_working_pad.push((Sign::Plus, acc.add_mixed(cs, elem)?));   
-//                         new_working_pad.push((Sign::Minus, acc.sub_mixed(cs, elem)?));
-//                     },
-//                 };
-//             }
-//             workpad = new_working_pad
-//         }
-//         assert_eq!(workpad.len(), 1 << (entries.len() - 1));
-        
-//         let point_uninitialized = AffinePoint::uninitialized(params);
-//         let mut precompute = Vec::with_capacity(workpad.len());
-//         let mut initial_point_affine = point_uninitialized.clone();
-//         let mut iniitial_point_is_infty = Boolean::constant(false);
-//         let mut initial_point_proj = ProjectivePoint::zero(params);
-
-//         let mut adj_offset = AffinePointExt::constant(
-//             params.fp2_pt_ord3_x_c0, params.fp2_pt_ord3_x_c1, 
-//             params.fp2_pt_ord3_y_c0, params.fp2_pt_ord3_y_c1,
-//             &params.base_field_rns_params
-//         );
-        
-//         for (_is_first, is_last, elem) in workpad.into_iter().identify_first_last() {
-//             let (_sign, mut point_proj) = elem;
-//             let (point_affine, is_infty) = point_proj.convert_to_affine_or_default(cs, &point_uninitialized)?;
-            
-//             if is_last {
-//                 initial_point_affine = point_affine.clone();
-//                 iniitial_point_is_infty = is_infty;
-//                 initial_point_proj = point_proj;
-//             }
-//             precompute.push(point_affine);
-//         }
-//         Ok(SelectorTree2 {
-//             entries, 
-//             precompute,
-//             initial_point_affine,
-//             iniitial_point_is_infty,
-//             initial_point_proj,
-//             adj_offset
-//         })
-//     }
-
-//     fn select<CS: ConstraintSystem<E>>(
-//         &self, cs: &mut CS, bits: &[Boolean]
-//     ) -> Result<(AffinePoint<'a, E, G, T>, Boolean), SynthesisError> {
-//         assert_eq!(bits.len(), self.entries.len());
-//         let mut selector_subtree = self.precompute.clone(); 
-        
-//         for (k0_bit, k1_bit) in bits.iter().rev().tuple_windows() {
-//             let mut new_selector_subtree = Vec::with_capacity(selector_subtree.len() >> 1);
-//             let xor_flag = Boolean::xor(cs, &k0_bit, &k1_bit)?;
-//             for (first, second) in selector_subtree.into_iter().tuples() {
-//                 let selected = AffinePoint::conditionally_select(cs, &xor_flag, &first, &second)?;
-//                 new_selector_subtree.push(selected);
-//             }
-//             selector_subtree = new_selector_subtree;
-//         }
-
-//         assert_eq!(selector_subtree.len(), 1);
-//         let last_flag = bits[0];
-//         let selected = selector_subtree.pop().unwrap();
-        
-//         let is_point_at_infty = FieldElement::is_zero(&mut selected.get_y(), cs)?;
-//         let candidate = AffinePoint::conditionally_negate(&selected, cs, &last_flag.not())?;
-
-//         Ok((candidate, is_point_at_infty))
-//     }
-   
-//     pub fn double_and_add_selected<CS: ConstraintSystem<E>>(
-//         &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>, bits: &[Boolean]
-//     ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError> 
-//     {
-//         let (candidate, is_point_at_infty) = self.select(cs, bits)?;
-//         let params = candidate.circuit_params;
-//         // It is sometimes buggy(
-//         let x_c0 = candidate.get_x();
-//         let x_c1 = FieldElement::zero(&params.base_field_rns_params);
-//         let y_c0 = candidate.get_y();
-//         let y_c1 = FieldElement::conditionally_select(
-//             cs, &is_point_at_infty, &self.adj_offset.get_y().c1, &FieldElement::zero(&params.base_field_rns_params)
-//         )?;
-//         let x_ext = Fp2::from_coordinates(x_c0, x_c1);
-//         let y_ext = Fp2::from_coordinates(y_c0, y_c1);
-//         let to_add = AffinePointExt { x: x_ext, y: y_ext };
-        
-//         // let to_add = AffinePointExt::conditionally_select(
-//         //     cs, &is_point_at_infty, &self.adj_offset, &AffinePointExt::from(candidate)
-//         // )?;
-//         acc.double_and_add_unchecked(cs, &to_add)
-//         //AffinePointExt::conditionally_select(cs, &is_point_at_infty, &acc, &acc_modified)
-//     }
-
-//     pub fn add_initial_into_accumulator<CS: ConstraintSystem<E>>(
-//         &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>
-//     ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError> 
-//     {
-//         // initial accumulator value is equal to + P1 + P2 + ... + Pn
-//         let (point, is_point_at_infty, _point_proj) = self.get_initial();
-//         let acc_modified = acc.add_unequal_unchecked(cs, &AffinePointExt::from(point))?;
-//         AffinePointExt::conditionally_select(cs, &is_point_at_infty, &acc, &acc_modified)
-//     }
-
-//     pub fn add_last_into_accumulator<CS: ConstraintSystem<E>>(
-//         &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>, bits: &[Boolean]
-//     ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError>
-//     { 
-//         // on every iteration of the inner loop (except the last one) of the point by scalar mul algorithm
-//         // we want to retrieve the point which is dependent on bits as follows:
-//         // bits = [b_0, b_1, .., b_n] -> /sum (2* b_i - 1) P_i = A
-//         // on the last iteration we do however want to add the point \sum (b_i - 1) * P_i = B
-//         // if we denote the starting value of accumulator = /sum P_i as C
-//         // then it is obvious that the following relation always holds: A - C = 2 * B
-//         // hence we reduced the computation to one subtraction and one doubling
-        
-//         let (selected, is_selected_point_at_infty) = self.select(cs, &bits)?;
-//         let params = selected.circuit_params;
-//         let rns_params = &params.base_field_rns_params;
-
-//         let proj_x = selected.get_x();
-//         let proj_y = FieldElement::conditionally_select(
-//             cs, &is_selected_point_at_infty, &FieldElement::one(rns_params), &selected.get_y()
-//         )?;
-//         let proj_z = FieldElement::conditionally_select(
-//             cs, &is_selected_point_at_infty, &FieldElement::zero(rns_params), &FieldElement::one(rns_params)
-//         )?;
-//         let a = ProjectivePoint::from_coordinates_unchecked(
-//             proj_x, proj_y, proj_z, selected.is_in_subgroup, params
-//         );
-        
-//         let (_, _, c) = self.get_initial();
-//         let mut a_minus_c = a.sub(cs, &c)?;
-//         let mut res_proj = ProjectivePoint::halving(cs, &mut a_minus_c)?;
-
-//         let (res_affine, is_infty) = res_proj.convert_to_affine_or_default(
-//             cs, &AffinePoint::uninitialized(params)
-//         )?;
-//         let acc_modified = acc.add_unequal_unchecked(cs, &AffinePointExt::from(res_affine))?;
-//         AffinePointExt::conditionally_select(cs, &is_infty, &acc, &acc_modified)
-//     }
-
-//     pub fn add_last_into_accumulator_unoptimized<CS: ConstraintSystem<E>>(
-//         &self, cs: &mut CS, acc: &AffinePointExt<'a, E, G, T>, bits: &[Boolean]
-//     ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError>
-//     {
-//         let mut acc = acc.clone();
-//         for (bit, point) in bits.iter().zip(self.entries.iter()) {
-//             let is_point_at_infty = FieldElement::is_zero(&mut point.get_y(), cs)?;
-//             let acc_modified = acc.sub_unequal_unchecked(cs, &AffinePointExt::from(point.clone()))?;
-//             let cond_flag = Boolean::or(cs, &is_point_at_infty, &bit)?;
-//             acc = AffinePointExt::conditionally_select(cs, &cond_flag, &acc, &acc_modified)?;
-//         }
-//         Ok(acc) 
-//     }
-// }
 
 
 // #[derive(Clone, Debug)]
@@ -2587,42 +2956,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
 // }
 
 
-// const RATE: usize = 2;
-// const WIDTH: usize = 3;
 
-// fn round_function_absorb<E: Engine, CS: ConstraintSystem<E>, P: HashParams<E, RATE, WIDTH>>(
-//     cs: &mut CS, state: &mut [Num<E>; WIDTH], input: &[Num<E>], hash_params: &P
-// ) -> Result<(), SynthesisError> 
-// {
-//     assert_eq!(input.len(), RATE);
-    
-//     let mut state_lcs = vec![];
-//     for (s, inp) in state.iter().zip(input.iter())  {
-//         let mut lc = LinearCombination::from(*s);
-//         lc.add_assign_number_with_coeff(&inp, E::Fr::one());
-//         state_lcs.push(lc);
-//     }
-
-//     for s in state[input.len()..].iter() {
-//         let lc = LinearCombination::from(*s);
-//         state_lcs.push(lc);
-//     }
-
-//     let mut state_lcs = state_lcs.try_into().expect("state width should match");
-    
-//     use crate::plonk::circuit::curve_new::ram_via_hashes::circuit::sponge::circuit_generic_round_function;
-//     circuit_generic_round_function(cs, &mut state_lcs, hash_params)?;
-
-//     for (a, b) in state.iter_mut().zip(state_lcs.iter()) {
-//         *a = b.clone().into_num(cs)?;
-//     }
-
-//     Ok(())
-// }
-
-// fn round_function_squeeze<E: Engine>(state: &[Num<E>; WIDTH]) -> (Num<E>, Num<E>) {
-//     (state[0].clone(), state[1].clone())
-// }
 
 
 // #[derive(Clone, PartialEq, Eq, Debug)]
@@ -2631,304 +2965,5 @@ where <G as GenericCurveAffine>::Base: PrimeField
 //     HashSets,
 // }
    
-// pub(crate) struct Memory<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
-// where <G as GenericCurveAffine>::Base: PrimeField
-// {
-//     queries: Vec<(Num<E>, AffinePoint<'a, E, G, T>)>,
-//     witness_map: HashMap<u64, Option<G>>,
-//     address_width: usize,
-//     validity_is_enforced: bool,
-//     permutation_enforcement_strategy: MemoryEnforcementStrategy,
 
-//     permutation: IntegerPermutation,
-//     unsorted_packed_elems_0: Vec<Num<E>>,
-//     unsorted_packed_elems_1: Vec<Num<E>>,
-//     sorted_packed_elems_0: Vec<Num<E>>,
-//     sorted_packed_elems_1: Vec<Num<E>>,
-// }
-
-// impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> Drop for Memory<'a, E, G, T> 
-// where <G as GenericCurveAffine>::Base: PrimeField
-// {
-//     fn drop(&mut self) {
-//         assert!(self.validity_is_enforced);
-//     }
-// }
-
-// impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> Memory<'a, E, G, T>
-// where <G as GenericCurveAffine>::Base: PrimeField
-// {
-//     pub fn new(address_width: usize, permutation_enforcement_strategy: MemoryEnforcementStrategy) -> Self {
-//         Self {
-//             queries: vec![],
-//             witness_map: HashMap::new(),
-//             address_width,
-//             validity_is_enforced: false,
-//             permutation_enforcement_strategy,
-
-//             permutation: IntegerPermutation::new(1),
-//             unsorted_packed_elems_0: vec![],
-//             unsorted_packed_elems_1: vec![],
-//             sorted_packed_elems_0: vec![],
-//             sorted_packed_elems_1: vec![],
-//         }
-//     }
-
-//     pub fn write(&mut self, addr: u64, point: AffinePoint<'a, E, G, T>) {
-//         assert!(log2_floor(addr as usize) as usize <= self.address_width);
-//         self.witness_map.insert(addr, point.get_value());
-//         let addr_as_num = Num::Constant(u64_to_ff(addr));
-//         self.queries.push((addr_as_num, point));
-//         self.validity_is_enforced = false; 
-//     }
-
-//     pub fn read<CS: ConstraintSystem<E>>(
-//         &mut self, cs: &mut CS, addr: Num<E>, params: &'a CurveCircuitParameters<E, G, T>
-//     ) -> Result<AffinePoint<'a, E, G, T>, SynthesisError> {
-//         let wit = addr.get_value().and_then(|x| { self.witness_map.get(&ff_to_u64(&x)).cloned().unwrap_or(None) });
-//         let res = AffinePoint::alloc(cs, wit, params)?;
-//         self.queries.push((addr, res.clone()));
-//         self.validity_is_enforced = false;
-
-//         Ok(res)
-//     }
-
-//     fn calculate_permutation(&self) -> IntegerPermutation {
-//         let mut keys = Vec::with_capacity(self.queries.len());
-//         for (idx, (addr, _)) in self.queries.iter().enumerate() {
-//             if let Some(addr) = addr.get_value() {
-//                 let composite_key = ff_to_u64(&addr);
-//                 keys.push((idx, composite_key));
-//             } else {
-//                 return IntegerPermutation::new(self.queries.len());
-//             }
-//         }
-
-//         keys.sort_by(|a, b| a.1.cmp(&b.1));
-//         let integer_permutation: Vec<_> = keys.iter().map(|el| el.0).collect();
-//         IntegerPermutation::new_from_permutation(integer_permutation)
-//     }
-
-//     fn enforce_correctness_of_sorted_packed_queries<CS>(&mut self, cs: &mut CS)-> Result<(), SynthesisError>
-//     where CS: ConstraintSystem<E>
-//     {
-//         let limit = Num::Constant(u64_to_ff((1u64 << self.address_width) - 1));
-//         let mut counter = Num::zero();
-//         let iter = self.sorted_packed_elems_0.iter().zip(self.sorted_packed_elems_1.iter()).identify_first_last();
-//         let mut el_0_prev = Num::zero();
-//         let mut el_1_prev = Num::zero();
-    
-//         for (is_first, _is_last, (el_0_cur, el_1_cur)) in iter {
-//             if !is_first {
-//                 let is_equal_0 = Num::equals(cs, &el_0_prev, &el_0_cur)?;
-//                 let is_equal_1 = Num::equals(cs, &el_1_prev, &el_1_cur)?;
-//                 let both_are_equal = Boolean::and(cs, &is_equal_0, &is_equal_1)?;
-//                 counter = counter.conditionally_increment(cs, &both_are_equal.not())?;
-//             }
-           
-//             el_0_prev = *el_0_cur;
-//             el_1_prev = *el_1_cur;
-//         }
-//         counter.enforce_equal(cs, &limit)
-//     }
-
-//     pub fn enforce_ram_correctness<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> 
-//     {
-//         self.validity_is_enforced = true;
-//         let size = self.queries.len();
-
-//         let permutation = self.calculate_permutation();
-        
-//         let mut unsorted_packed_elems_0 = Vec::with_capacity(size);
-//         let mut unsorted_packed_elems_1 = Vec::with_capacity(size);
-//         let mut sorted_packed_elems_0 = Vec::with_capacity(size);
-//         let mut sorted_packed_elems_1 = Vec::with_capacity(size);
-
-//         for (addr, point) in self.queries.iter_mut() {
-//             let packed = point.pack(cs, addr, self.address_width)?;
-//             unsorted_packed_elems_0.push(packed[0]);
-//             unsorted_packed_elems_1.push(packed[1]);
-//         }
-//         for index in permutation.elements.iter() {
-//             let value_0 = unsorted_packed_elems_0[*index].clone();
-//             sorted_packed_elems_0.push(value_0);
-//             let value_1 = unsorted_packed_elems_1[*index].clone();
-//             sorted_packed_elems_1.push(value_1);
-//         }
-
-//         self.permutation = permutation;
-//         self.unsorted_packed_elems_0 = unsorted_packed_elems_0;
-//         self.unsorted_packed_elems_1 = unsorted_packed_elems_1;
-//         self.sorted_packed_elems_0 = sorted_packed_elems_0;
-//         self.sorted_packed_elems_1 = sorted_packed_elems_1;
-
-//         self.enforce_correctness_of_permutation(cs)?;
-//         self.enforce_correctness_of_sorted_packed_queries(cs)
-//     }
-
-    
-
-//     fn enforce_correctness_of_permutation<CS>(&mut self, cs: &mut CS) -> Result<(), SynthesisError>
-//     where CS: ConstraintSystem<E>
-//     {
-//         match self.permutation_enforcement_strategy {
-//             MemoryEnforcementStrategy::Waksman => {
-//                 let switches = order_into_switches_set(cs, &self.permutation)?;
-//                 prove_permutation_of_nums_using_switches_witness(
-//                     cs, &self.unsorted_packed_elems_0, &self.sorted_packed_elems_0, &switches
-//                 )?;
-//                 prove_permutation_of_nums_using_switches_witness(
-//                     cs, &self.unsorted_packed_elems_1, &self.sorted_packed_elems_1, &switches
-//                 )
-//             },
-//             MemoryEnforcementStrategy::HashSets => {
-//                 let hash_params = RescuePrimeParams::<E, RATE, WIDTH>::new_with_width4_custom_gate();
-//                 let mut state = [Num::<E>::zero(); WIDTH];
-
-//                 let iter = self.unsorted_packed_elems_0.iter().zip(self.unsorted_packed_elems_1.iter()).chain(
-//                     self.sorted_packed_elems_0.iter().zip(self.sorted_packed_elems_1.iter())
-//                 );
-//                 for (x, y) in iter {
-//                     let input = [x.clone(), y.clone()];
-//                     round_function_absorb(cs, &mut state, &input, &hash_params)?;
-//                 };
-//                 let (challenge_a, challenge_b) = round_function_squeeze(&state);
-
-//                 // (Polynomials are of the form X + c0 * Y + c1)
-//                 // we substitute X and Y with challenge a and b correspondingly
-//                 let mut lhs = Num::Constant(E::Fr::one());
-//                 let mut rhs = Num::Constant(E::Fr::one());
-                
-//                 let outer_iter = std::iter::once(
-//                     (&self.unsorted_packed_elems_0, &self.unsorted_packed_elems_1, &mut lhs)
-//                 ).chain(std::iter::once(
-//                     (&self.sorted_packed_elems_0, &self.sorted_packed_elems_1, &mut rhs)
-//                 ));
-//                 for (column_0, column_1, out) in outer_iter {
-//                     let inner_iter = column_0.iter().zip(column_1.iter());
-//                     for (c0, c1) in inner_iter {
-//                         let mut lc = LinearCombination::zero(); 
-//                         lc.add_assign_number_with_coeff(&challenge_a.clone(), E::Fr::one());
-//                         lc.add_assign_number_with_coeff(&c1, E::Fr::one());
-//                         let c0_mul_challenge = c0.mul(cs, &challenge_b)?;
-//                         lc.add_assign_number_with_coeff(&c0_mul_challenge, E::Fr::one());
-//                         let multiplier = lc.into_num(cs)?;
-//                         *out = Num::mul(out, cs, &multiplier)?;
-//                     }
-//                 } 
-//                 lhs.enforce_equal(cs, &rhs)
-//             }
-//         }    
-//     }
-// }
-
-
-// #[cfg(test)]
-// mod test {
-//     use super::*;
-//     use crate::bellman::pairing::bn256::{Fq, Bn256, Fr, G1, G1Affine};
-//     use crate::bellman::pairing::bls12_381::Bls12;
-//     use plonk::circuit::Width4WithCustomGates;
-//     use bellman::plonk::better_better_cs::gates::{selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext, self};
-//     use rand::{XorShiftRng, SeedableRng, Rng};
-//     use bellman::plonk::better_better_cs::cs::*;
-//     use plonk::circuit::boolean::AllocatedBit;
-//     use itertools::Itertools;
-
-//     struct TestSelectorTreeCircuit<E:Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
-//     where <G as GenericCurveAffine>::Base: PrimeField
-//     {
-//         circuit_params: CurveCircuitParameters<E, G, T>,
-//         num_of_points: usize
-//     }
-    
-//     impl<E: Engine, G: GenericCurveAffine + rand::Rand, T> Circuit<E> for TestSelectorTreeCircuit<E, G, T> 
-//     where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
-//     {
-//         type MainGate = SelectorOptimizedWidth4MainGateWithDNext;
-//         fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
-//             Ok(
-//                 vec![ SelectorOptimizedWidth4MainGateWithDNext::default().into_internal() ]
-//             )
-//         }
-    
-//         fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
-//             let mut rng = rand::thread_rng();
-//             let mut points = Vec::with_capacity(self.num_of_points);
-//             let mut scalars = Vec::with_capacity(self.num_of_points);
-
-//             for _ in 0..self.num_of_points {
-//                 let scalar_wit : G::Scalar = rng.gen();
-//                 let point_wit : G = rng.gen();
-    
-//                 let point = AffinePoint::alloc(cs, Some(point_wit), &self.circuit_params)?;
-//                 let scalar = FieldElement::alloc(cs, Some(scalar_wit), &self.circuit_params.scalar_field_rns_params)?;
-    
-//                 points.push(point);
-//                 scalars.push(scalar);
-//             }
-
-//             let selector_tree = SelectorTree::new(cs, &points)?;
-//             let in_circuit_false = Boolean::Is(AllocatedBit::alloc(cs, Some(false))?);
-//             let in_circuit_true = Boolean::Is(AllocatedBit::alloc(cs, Some(true))?);
-//             let iter = (0..self.num_of_points).map(
-//                 |_| std::iter::once(in_circuit_false).chain(std::iter::once(in_circuit_true))
-//             ).multi_cartesian_product();
-
-//             for (is_first, _is_last, bits) in iter.identify_first_last() {
-//                 let mut acc = points[0].conditionally_negate(cs, &bits[0].not())?;
-//                 for (point, bit) in points.iter().zip(bits.iter()).skip(1) {
-//                     let mut to_add = point.conditionally_negate(cs, &bit.not())?;
-//                     acc = acc.add_unequal(cs, &mut to_add)?;
-//                 }
-//                 let mut chosen_from_selector_tree = selector_tree.select(cs, &bits[..])?;
-//                 AffinePoint::enforce_equal(cs, &mut acc, &mut chosen_from_selector_tree)?;
-
-//                 if bits.iter().all(|x| x.get_value().unwrap()) {
-//                     let mut sum_all = selector_tree.get_initial_accumulator();
-//                     AffinePoint::enforce_equal(cs, &mut acc, &mut sum_all)?;
-//                 }
-
-//                 // check what should be done on the last iterator
-//                 let mut is_infty = true;
-//                 let mut acc = AffinePoint::constant(G::one(), &self.circuit_params);
-//                 for (point, bit) in points.iter().zip(bits.iter()) {
-//                     if !bit.get_value().unwrap() {
-//                         if is_infty {
-//                             is_infty = false;
-//                             acc = point.negate(cs)?;
-//                         }
-//                         else {
-//                             let mut tmp = point.clone();    
-//                             acc = acc.sub_unequal(cs, &mut tmp)?;
-//                         }
-//                     }
-//                 }
-//                 if !is_infty && !is_first {
-//                     let mut last_selection = selector_tree.select_last(cs, &bits[..])?; 
-//                     AffinePoint::enforce_equal(cs, &mut acc, &mut last_selection)?;
-//                 }
-//             }
-           
-//             Ok(())
-//         }
-//     }
-
-//     #[test]
-//     fn test_tree_selector_for_bn256() {
-//         const LIMB_SIZE: usize = 80;
-//         const NUM_OF_POINTS: usize = 3;
-
-//         let mut cs = TrivialAssembly::<
-//             Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
-//         >::new();
-//         inscribe_default_bitop_range_table(&mut cs).unwrap();
-//         let circuit_params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
-
-//         let circuit = TestSelectorTreeCircuit { circuit_params, num_of_points: NUM_OF_POINTS };
-//         circuit.synthesize(&mut cs).expect("must work");
-//         cs.finalize();
-//         assert!(cs.is_satisfied()); 
-//     }    
-// }
  

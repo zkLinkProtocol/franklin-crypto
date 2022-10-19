@@ -1698,18 +1698,18 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         Ok(binary_decomposition)
     }
-    pub fn decompose_into_window_with_range_check<CS: ConstraintSystem<E>>(
-        &mut self,
-        cs: &mut CS,
-        limit: Option<usize>,
-    )->Result<Vec<Vec<Boolean>>, SynthesisError> {
-        let params = self.representation_params;
-        let limit = limit.unwrap_or(params.represented_field_modulus_bitlength);
-        self.reduce(cs)?;
+    // pub fn decompose_into_window_with_range_check<CS: ConstraintSystem<E>>(
+    //     &mut self,
+    //     cs: &mut CS,
+    //     limit: Option<usize>,
+    // )->Result<Vec<AllocatedNum>>, SynthesisError> {
+    //     let params = self.representation_params;
+    //     let limit = limit.unwrap_or(params.represented_field_modulus_bitlength);
+    //     self.reduce(cs)?;
 
 
-        todo!();
-    }  
+    //     todo!();
+    // }  
 }
 
 

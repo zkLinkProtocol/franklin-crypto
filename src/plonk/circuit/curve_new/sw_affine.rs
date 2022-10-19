@@ -1274,6 +1274,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         };
         let mut k1_abs = FieldElement::alloc_for_known_bitwidth(cs, k1_abs_wit, limit, scalar_rns_params, true)?;
         let mut k2_abs = FieldElement::alloc_for_known_bitwidth(cs, k2_abs_wit, limit, scalar_rns_params, true)?;
+
         let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
         let k2_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k2_flag_wit)?);
 
@@ -1447,22 +1448,17 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let mut acc = offset_generator.add_unequal(cs, &mut point_plus_point_endo)?;
         let mut num_doubles = 0;
 
-        // let blocks_for_cycle = (limit-1)/window;
-        // let last_block_wirh_remainder_bits = limit -1 - blocks_for_cycle*window; 
+        let rev_scalar1: Vec<Boolean> = k1_decomposition[1..].iter().map(|s| *s).rev().collect();
+        let rev_scalar2: Vec<Boolean> = k2_decomposition[1..].iter().map(|s| *s).rev().collect();
+        let bloks: Vec<Vec<Boolean>> = rev_scalar1.chunks(window).map(|s| s.into()).collect();
+        let bloks_2: Vec<Vec<Boolean>> = rev_scalar2.chunks(window).map(|s| s.into()).collect();
 
-        let bloks: Vec<Vec<Boolean>> = k1_decomposition[1..].chunks(window).map(|s| s.into()).rev().collect();
-        let bloks_2: Vec<Vec<Boolean>> = k2_decomposition[1..].chunks(window).map(|s| s.into()).rev().collect();
-
-        let bloks_whithout_last = &bloks[0..bloks.len()-1];
-        let bloks2_whithout_last = &bloks_2[0..bloks_2.len()-1];
+        let iter = bloks[0..].into_iter().zip(bloks_2[0..].into_iter());
 
         let address_width = (2 as u64).pow(window as u32) * (2 as u64).pow(window as u32);
 
         let mut memory = Memory::<'_, E, G, T >::new(address_width as usize, ram);
-        dbg!(12345);
         self.clone().precomputation_for_ram(cs, &mut point_endo, window, &mut memory);
-        // let iter = bloks.into_iter().zip(bloks_2.into_iter());
-        dbg!(12345);
         let shifts = compute_shifts::<E::Fr>();
         // We create addresses according to the following scheme: 
         // First, there is a simple numbering addres = 0 + 1, 0+2, 0+3 ... 0+n where n is bits of the window.
@@ -1472,7 +1468,8 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let mut minus_one = E::Fr::one();
         minus_one.negate();
 
-        for (bits1, bits2) in bloks_whithout_last.iter().zip(bloks2_whithout_last.iter()){
+        for (bits1, bits2) in iter{
+
             let mut lc = LinearCombination::zero();
             let mut i = window;
             for num_bit in 0..window{
@@ -2855,12 +2852,12 @@ mod test {
             // println!("num of gates for descending skew ladder with endo proj: {}", naive_mul_end - naive_mul_start);
             // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            // use plonk::circuit::curve_new::MemoryEnforcementStrategy::Waksman;
-            // let endo_mul_start = cs.get_current_step_number();
-            // let mut result = a.mul_by_scalar_descending_skew_ladder_with_endo_with_using_ram(cs, &mut scalar, 2, Waksman)?;
-            // let naive_mul_end = cs.get_current_step_number();
-            // println!("num of gates for ascending ladder proj: {}", naive_mul_end - endo_mul_start);
-            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            use plonk::circuit::curve_new::MemoryEnforcementStrategy::Waksman;
+            let endo_mul_start = cs.get_current_step_number();
+            let mut result = a.mul_by_scalar_descending_skew_ladder_with_endo_with_using_ram(cs, &mut scalar, 2, Waksman)?;
+            let naive_mul_end = cs.get_current_step_number();
+            println!("num of gates for ascending ladder proj: {}", naive_mul_end - endo_mul_start);
+            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
             // let b: G = rng.gen();
             // let scalar=  G::Scalar::from_str("1").unwrap();

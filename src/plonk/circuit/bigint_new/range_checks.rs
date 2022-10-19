@@ -153,7 +153,6 @@ pub fn constraint_bit_length_ext_with_strategy<E: Engine, CS: ConstraintSystem<E
         },
         RangeConstraintStrategy::WithBitwiseOpTable(_table_width) => {  
             let table = cs.get_table(BITWISE_LOGICAL_OPS_TABLE_NAME).expect("should found a valid table");
-            let default_granularity = (crate::log2_floor(table.size()) / 2) as usize;
             if granularity == 0 {         
                 enforce_range_check_using_bitop_table_exact(cs, var, num_bits, table, coarsely)
             } else {
@@ -618,7 +617,7 @@ pub fn enforce_range_check_using_bitop_table_non_exact<E: Engine, CS: Constraint
     lc.add_assign_variable_with_coeff(&var, minus_one);
     let mut offset = 0;
 
-    for chunk in chunks.into_iter() {
+    for chunk in chunks.iter() {
         let chunk_width = std::cmp::min(num_bits - offset, granularity);
         assert_ne!(chunk_width, 0);
         // new_acc * shift_d_next = prev_acc - a * shift_a - b * shift_b

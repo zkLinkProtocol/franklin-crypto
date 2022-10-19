@@ -2353,6 +2353,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         cs: &mut CS, scalar: &FieldElement<'a, E, G::Scalar>, window: usize, 
         params: &'a CurveCircuitParameters<E, G, T>
     ) -> Result<AffinePoint<'a, E, G, T>, SynthesisError> {
+        assert!(window >= 2);
         let columns3 = vec![
             PolyIdentifier::VariablesPolynomial(0), 
             PolyIdentifier::VariablesPolynomial(1), 
@@ -2384,10 +2385,10 @@ where <G as GenericCurveAffine>::Base: PrimeField
             },
             None => (None, None, None, None)
         };
-        let (mut k1_abs, k1_chunks) = FieldElement::alloc_for_known_bitwidth_with_custom_range_check_granularity(
+        let (k1_abs, k1_chunks) = FieldElement::alloc_for_known_bitwidth_with_custom_range_check_granularity(
             cs, k1_abs_wit, limit, scalar_rns_params, window
         )?;
-        let (mut k2_abs, k2_chunks) = FieldElement::alloc_for_known_bitwidth_with_custom_range_check_granularity(
+        let (k2_abs, k2_chunks) = FieldElement::alloc_for_known_bitwidth_with_custom_range_check_granularity(
             cs, k2_abs_wit, limit, scalar_rns_params, window
         )?;
         let k1_is_negative_flag = Boolean::Is(AllocatedBit::alloc(cs, k1_flag_wit)?);
@@ -2419,21 +2420,6 @@ where <G as GenericCurveAffine>::Base: PrimeField
             tmp.into_affine()
         };
 
-        let offset_generator = AffinePointExt::constant(
-            params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
-            params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
-            &params.base_field_rns_params
-        );
-        let mut acc = offset_generator.clone();
-
-        // select_y_limbs | limb_idx_selector | sign_k1 | sign_k0 | k1 | k0
-        let k1_offset = 0;
-        let k2_offset = window;
-        let sign_offset = window * 2;
-        let limb_idx_selector = sign_offset + 2;
-        let idx_width = crate::log2_floor(params.base_field_rns_params.num_binary_limbs / 2) as usize;
-        let x_or_y_flag = limb_idx_selector + idx_width;
-
         let mut lc = LinearCombination::zero();
         lc.add_assign_boolean_with_coeff(&k1_is_negative_flag, shifts[0]);
         lc.add_assign_boolean_with_coeff(&k2_is_negative_flag, shifts[1]);
@@ -2446,31 +2432,18 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let mut minus_one = E::Fr::one();
         minus_one.negate();
         
-        let mut num_of_doubles = 0;
-        let iter = k1_chunks.get_vars().iter().zip(k2_chunks.get_vars().iter()).rev().identify_first_last();
-        for (is_first, _is_last, (k1_chunk, k2_chunk)) in iter {
-            if is_first {
-                let tmp = limit % (1 << window);
-                let msl_window = if tmp != 0 { tmp } else { window };
-                
-                let mut tmp = generator_plus_generator_endo.into_projective();
-                for _ in 0..msl_window-1 {
-                    tmp.double();
-                }
-                let res = tmp.into_affine();
-                let pt = AffinePoint::constant(res, &params);
-                acc = acc.add_unequal_unchecked(cs, &AffinePointExt::from(pt))?; 
-            }
-            else {
-                num_of_doubles += window - 1; 
-                for _ in 0..window-1 {
-                    acc = acc.double(cs)?;
-                }
-            } 
+        // select_y_limbs | limb_idx_selector | sign_k1 | sign_k0 | k1 | k0
+        let k1_offset = 0;
+        let k2_offset = window;
+        let sign_offset = window * 2;
+        let limb_idx_selector_offset = sign_offset + 2;
+        let idx_width = crate::log2_floor(params.base_field_rns_params.num_binary_limbs / 2) as usize;
+        let x_or_y_flag_offset = limb_idx_selector_offset + idx_width;
 
+        let query_point = |cs: &mut CS, k1_chunk: &Num<E>, k2_chunk: &Num<E>| -> Result<Self, SynthesisError> {
             let mut lc = LinearCombination::zero();
-            lc.add_assign_variable_with_coeff(&k1_chunk, shifts[k1_offset]);
-            lc.add_assign_variable_with_coeff(&k2_chunk, shifts[k2_offset]);
+            lc.add_assign_number_with_coeff(&k1_chunk, shifts[k1_offset]);
+            lc.add_assign_number_with_coeff(&k2_chunk, shifts[k2_offset]);
             lc.add_assign_number_with_coeff(&sign_bits, shifts[sign_offset]);
             let base = lc.into_num(cs)?.get_variable();
 
@@ -2483,7 +2456,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
                     let mut prefix = u64_to_ff::<E::Fr>(idx as u64);
                     prefix.mul_assign(&shifts[idx_width]);
                     if x_y_flag {
-                        prefix.add_assign(&shifts[x_or_y_flag])
+                        prefix.add_assign(&shifts[x_or_y_flag_offset])
                     }
                     
                     let a = AllocatedNum::alloc(cs, || {
@@ -2528,8 +2501,40 @@ where <G as GenericCurveAffine>::Base: PrimeField
                *out = unsafe { FieldElement::alloc_from_limbs_unchecked(cs, &raw_limbs, base_rns_params, true)? };
             }
 
-            let to_add = unsafe { AffinePoint::from_xy_unchecked(x, y, params) };
-            acc = offset_generator.add_unequal_unchecked(cs, &AffinePointExt::from(to_add))?;
+            let res = unsafe { AffinePoint::from_xy_unchecked(x, y, params) };
+            Ok(res)
+        };
+        
+        let offset_generator = AffinePointExt::constant(
+            params.fp2_offset_generator_x_c0, params.fp2_offset_generator_x_c1,
+            params.fp2_offset_generator_y_c0, params.fp2_offset_generator_y_c1,
+            &params.base_field_rns_params
+        );
+        println!("HERE");
+        let mut acc = AffinePointExt::from(query_point(cs, &Num::<E>::zero(), &Num::<E>::zero())?);
+        let mut num_of_doubles = 0;
+        println!("THERE");
+
+        let iter = k1_chunks.get_vars().iter().zip(k2_chunks.get_vars().iter()).rev().identify_first_last();
+        for (is_first, _is_last, (k1_chunk, k2_chunk)) in iter {
+            if is_first {
+                let tmp = limit % (1 << window);
+                let msl_window = if tmp != 0 { tmp } else { window };
+                
+                for _ in 0..msl_window-2 {
+                    acc = acc.double(cs)?;
+                }
+                acc = acc.double_and_add_unchecked(cs, &offset_generator)?;
+            }
+            else {
+                num_of_doubles += window - 1; 
+                for _ in 0..window-1 {
+                    acc = acc.double(cs)?;
+                }
+            } 
+
+            let to_add = query_point(cs, &Num::Variable(*k1_chunk), &Num::Variable(*k2_chunk))?;
+            acc = acc.double_and_add_unchecked(cs, &AffinePointExt::from(to_add))?;
             num_of_doubles += 1;
         }
 
@@ -2541,13 +2546,39 @@ where <G as GenericCurveAffine>::Base: PrimeField
         // hence we use table to get point but then do: 
         // we additionally add linear combination of the form a * P + b * Q, where both a, b \in {-1, 0, 1}
         // and a = k1_is_negative * k1_parity_bit and similarly b = k2_s_negative * k2_parity_bit
+        // we say that P and Q are of the same sign of k1_is_negative and k2_is_negative are simultaneously
+        // set or reset
+        // we say that P exists if k1_parity_bit is set, similarly for Q
         // acc is unchanges if both parity_bits are unset
+        // in case acc is changed selection tree looks like following:
+        //                              
+        //                                                        |true --- P + Q
+        //                     |true--- P and Q of the same sign--|
+        //                     |                                  |false --- P - Q
+        // both P and Q exist--|
+        //                     |        
+        //                     |                                               |--- P
+        //                     |false: only one of them exists: select which --|                            |--Q
+        //                                                                     |--P and Q of the same sign--|
+        //                                                                                                  |-(-Q)
+        // after selection we do negation based on sign of P alone 
         let generator = AffinePoint::constant(generator, params);
         let generator_endo = AffinePoint::constant(generator_endo, params);
-        
+        let generator_plus_generator_endo = AffinePoint::constant(generator_plus_generator_endo, params);
+        let generator_minus_generator_endo = AffinePoint::constant(generator_minus_generator_endo, params);
 
+        let acc_is_changed = Boolean::or(cs, &k1_parity_bit, &k2_parity_bit)?; 
+        let both_exist = Boolean::and(cs, &k1_parity_bit, &k2_parity_bit)?;
+        let of_the_same_sign = Boolean::xor(cs, &k1_is_negative_flag, &k2_is_negative_flag)?.not();
 
-        let acc_is_changed = Boolean::and(cs, &k1_parity_bit, &k2_parity_bit)?; 
+        let tmp1 = AffinePoint::conditionally_select(
+            cs, &of_the_same_sign, &generator_plus_generator_endo, &generator_minus_generator_endo
+        )?;
+        let tmp2 = generator_endo.conditionally_negate(cs, &of_the_same_sign.not())?;
+        let tmp3 = AffinePoint::conditionally_select(cs, &k1_parity_bit, &generator, &tmp2)?;
+        let tmp4 = AffinePoint::conditionally_select(cs, &both_exist, &tmp1, &tmp3)?;
+        let tmp = tmp4.conditionally_negate(cs, &k1_is_negative_flag)?;
+
         let skew_acc = acc.add_unequal_unchecked(cs, &AffinePointExt::from(tmp))?;
         acc = AffinePointExt::conditionally_select(cs, &acc_is_changed, &skew_acc, &acc)?;
        

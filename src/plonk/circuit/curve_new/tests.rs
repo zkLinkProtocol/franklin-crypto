@@ -598,4 +598,42 @@ mod test {
         cs.finalize();
         assert!(cs.is_satisfied()); 
     }
+
+    // ---------------------------------------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------------------------------------
+    // testing constant generator by scalar multiplication
+    fn gen_by_scalar_mul_test_impl<E, CS, G: GenericCurveAffine + rand::Rand, T: Extension2Params<G::Base>>(
+        cs: &mut CS, params: &CurveCircuitParameters<E, G, T>, window: usize
+    ) 
+    where <G as GenericCurveAffine>::Base: PrimeField, E: Engine, CS: ConstraintSystem<E>
+    {
+        let mut rng = rand::thread_rng();
+        let scalar_wit : G::Scalar = rng.gen();
+        let mut tmp = G::one().into_projective();
+        tmp.mul_assign(scalar_wit);
+        let actual_result = tmp.into_affine();
+        
+        let scalar = FieldElement::alloc(cs, Some(scalar_wit), &params.scalar_field_rns_params).unwrap();
+        let mut actual_result = AffinePoint::constant(actual_result, params);
+
+        let counter_start = cs.get_current_step_number();
+        let mut result = AffinePoint::mul_generator_by_scalar(cs, &scalar, window, params).unwrap();
+        let counter_end = cs.get_current_step_number();
+        println!("num of gates for generator by scalar multiplication: {}", counter_end - counter_start);
+        AffinePoint::enforce_equal(cs, &mut result, &mut actual_result).unwrap();
+    }
+
+    #[test]
+    fn gen_by_scalar_mul_test_for_bn256() {
+        let mut cs = TrivialAssembly::<
+            bn256::Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
+        >::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let params = generate_optimal_circuit_params_for_bn256::<bn256::Bn256, _>(&mut cs, 80usize, 80usize);
+        gen_by_scalar_mul_test_impl(&mut cs, &params, 2);
+        assert!(cs.is_satisfied()); 
+    }
 }

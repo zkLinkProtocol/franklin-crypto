@@ -48,7 +48,7 @@ impl<E: Engine> GeneratorScalarMulTable<E>
         let num_elems_in_window = (2 as u64).pow(window as u32) as usize;
         assert_eq!(num_of_limbs % 2, 0);
         let num_of_limb_idxs = (num_of_limbs + 1) / 2;
-        let table_len = num_elems_in_window * num_elems_in_window * 4 * num_of_limb_idxs;
+        let table_len = num_elems_in_window * num_elems_in_window * 8 * num_of_limb_idxs;
        
         let mut column0 = Vec::with_capacity(table_len);
         let mut column1 = Vec::with_capacity(table_len);
@@ -81,7 +81,7 @@ impl<E: Engine> GeneratorScalarMulTable<E>
         };
 
         let split_into_limbs = |fr: G::Base| -> Vec<E::Fr> {
-            let mut fr_as_biguint = fe_to_biguint(&fr);
+            let fr_as_biguint = fe_to_biguint(&fr);
             let mut chunks = split_into_fixed_number_of_limbs(fr_as_biguint, binary_limb_width, num_of_limbs);
             chunks.drain(..).map(|x| biguint_to_fe(x)).collect()
         };
@@ -106,7 +106,7 @@ impl<E: Engine> GeneratorScalarMulTable<E>
             let gen_mul_k1 = skew_mul(point, point_negated, k1);
             
             let mut tmp = gen_mul_k0;
-            tmp.add_assign(&gen_mul_k0);
+            tmp.add_assign(&gen_mul_k1);
             let point = tmp.into_affine();
             let (x, y) = point.into_xy_unchecked();
             let x_limbs = split_into_limbs(x);
@@ -114,7 +114,6 @@ impl<E: Engine> GeneratorScalarMulTable<E>
 
             let base_prefix = (k0_is_neg as usize) + (k1_is_neg as usize) * 2;
             let base = k0 + k1 << window + base_prefix << ( 2 * window);
-            let idx_bitlength = crate::log2_floor(num_of_limb_idxs);
             
             let iter = x_limbs.chunks(2).zip(std::iter::repeat(0)).enumerate().chain(
                 y_limbs.chunks(2).zip(std::iter::repeat(1)).enumerate()

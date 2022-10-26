@@ -147,24 +147,83 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
     fn final_normalization<CS: ConstraintSystem<E>>(
         cs: &mut CS, mut wrapped_point: PointWrapper<'a, E, G, T>, mut scaled_offset: PointWrapper<'a, E, G, T>, 
-        num_of_doubles: usize, exception_free_version: bool 
+        num_of_doubles: usize, adj_offset_is_used: bool, exception_free_version: bool 
     ) -> Result<(AffinePoint<'a, E, G, T>, Boolean), SynthesisError> {
+        let params = wrapped_point.get_params();
         let gate_count_start = cs.get_current_step_number();
         for _ in 0..num_of_doubles {
             scaled_offset = scaled_offset.double(cs)?;
         }
         let gate_count_end = cs.get_current_step_number();
         assert_eq!(gate_count_end - gate_count_start, 0);
+        assert!(params.is_prime_order_curve);
 
-        let (acc, is_point_at_infty) = if exception_free_version {
+        let (acc, infty_flag_0) = if exception_free_version {
             wrapped_point.prudent_sub(cs, &mut scaled_offset)?
         } else {
             let res = wrapped_point.checked_sub(cs, &mut scaled_offset)?;
             (res, Boolean::constant(false))
         };
-        let result = acc.convert_to_affine_or_uninitialized(cs, is_point_at_infty.get_value().unwrap_or(false))?.0;
-        
-        Ok((result, is_point_at_infty))
+
+        let (acc, infty_flag) = if adj_offset_is_used {
+            // TODO: this should be rewritten and for now it only works for prime order curves
+            // it should be modified to work aver BLS as well
+            let is_defined_over_base_field = |point: &AffinePointExt<'a, E, G, T>| -> Option<bool> {
+                point.get_value().map(|(_x_c0, x_c1, _y_c0, y_c1)| x_c1.is_zero() && y_c1.is_zero())
+            };
+            
+            let adj_offset = AffinePointExt::constant(
+                params.fp2_pt_ord3_x_c0, params.fp2_pt_ord3_x_c1, 
+                params.fp2_pt_ord3_y_c0, params.fp2_pt_ord3_y_c1,
+                params
+            );
+
+            // adj_offset is a point of order 3, hence one of acc, acc + adj_offset, acc - adj belong to E(F_p)
+            let mut acc = acc.get_as_ext_point();
+            let need_to_negate_wit = acc.get_value().map(|(x_c0, x_c1, y_c0, y_c1)| {
+                let gate_count_start = cs.get_current_step_number();
+                let mut tmp = AffinePointExt::<E, G, T>::constant(x_c0, x_c1, y_c0, y_c1, params);
+                tmp = tmp.add_unequal_unchecked(cs, &adj_offset).expect("should synthesize");
+                let flag = is_defined_over_base_field(&tmp).expect("should be some");    
+                   
+                let gate_count_end = cs.get_current_step_number();
+                assert_eq!(gate_count_end - gate_count_start, 0);
+                !flag
+            });
+    
+            let need_to_negate = Boolean::Is(AllocatedBit::alloc(cs, need_to_negate_wit)?);
+            let mut to_add = adj_offset.conditionally_negate(cs, &need_to_negate)?;
+            let (modified_acc, possible_infty_flag_1) = if exception_free_version {
+                acc.prudent_sub(cs, &mut to_add)?
+            } else {
+                let res = acc.sub_unequal(cs, &mut to_add)?;
+                (res, Boolean::constant(false))
+            };
+            let cond_wit = is_defined_over_base_field(&modified_acc);
+            let cond = Boolean::Is(AllocatedBit::alloc(cs, cond_wit)?);
+            let res_ext = AffinePointExt::conditionally_select(cs, &cond, &modified_acc, &acc)?; 
+
+            let infty_flag_1 = Boolean::and(cs, &possible_infty_flag_1, &cond)?;
+            let infty_flag = Boolean::or(cs, &infty_flag_0, &infty_flag_1)?;
+
+            let mut final_x = res_ext.get_x();
+            let mut final_y = res_ext.get_y();
+
+            let mut zero = FieldElement::<E, G::Base>::zero(&params.base_field_rns_params);
+            final_x.c1 = FieldElement::conditionally_select(cs, &infty_flag, &zero, &final_x.c1)?;
+            final_y.c1 = FieldElement::conditionally_select(cs, &infty_flag, &zero, &final_x.c1)?;
+            FieldElement::enforce_equal(cs, &mut final_x.c1, &mut zero)?;
+            FieldElement::enforce_equal(cs, &mut final_y.c1, &mut zero)?;
+
+            (PointWrapper::AffineOverExtField(res_ext), infty_flag)
+        } else {
+            (acc, infty_flag_0)
+        };
+
+        let (result, _) = acc.convert_to_affine_or_uninitialized(
+            cs, infty_flag.get_value().unwrap_or(false)
+        )?; 
+        Ok((result, infty_flag))
     }
 }
 
@@ -477,6 +536,20 @@ where <G as GenericCurveAffine>::Base: PrimeField
         };
 
         Ok(res)
+    }
+
+    pub fn get_params(&self) -> &'a CurveCircuitParameters<E, G, T> {
+        match self {
+            PointWrapper::AffineOverBaseField(point) | PointWrapper::AffineOverBaseFieldInCofactor(point) => {
+                point.circuit_params
+            },
+            PointWrapper::AffineOverExtField(point_ext) => {
+                point_ext.circuit_params
+            },
+            PointWrapper::HomogeniousForm(point_proj) => {
+                point_proj.circuit_params
+            }
+        }
     }
 }
 
@@ -796,7 +869,7 @@ where <G as GenericCurveAffine>::Base: PrimeField {
 impl<'a, E: Engine, G: GenericCurveAffine, T> Selector<'a, E, G, T> for TreeSelector<'a, E, G, T> 
 where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
 {
-    fn new(geometry: MultiExpGeometry) -> Self {
+    fn new(_geometry: MultiExpGeometry) -> Self {
         TreeSelector {
             precompute: vec![]
         }
@@ -857,6 +930,10 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
 {
     pub fn get_initial(&self) -> (AffinePoint<'a, E, G, T>, Boolean, ProjectivePoint<'a, E, G, T>) {
         (self.initial_point_affine.clone(), self.initial_point_is_infty, self.initial_point_proj.clone())
+    }
+
+    pub fn postprocess<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
+        self.selector_impl.postprocess(cs)
     }
     
     pub fn new<CS: ConstraintSystem<E>>(
@@ -996,8 +1073,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
     #[track_caller]
     fn mul_by_scalar_impl_wth_accumulator<CS: ConstraintSystem<E>>(
-        &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, acc: PointWrapper<'a, E, G, T>, 
-        exception_free_version: bool
+        &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, mut acc: PointWrapper<'a, E, G, T> 
     ) -> Result<(PointWrapper<'a, E, G, T>, usize), SynthesisError> {
         if scalar.is_constant() {
             unimplemented!();
@@ -1078,29 +1154,28 @@ where <G as GenericCurveAffine>::Base: PrimeField
         &mut self, cs: &mut CS, scalar: &mut FieldElement<'a, E, G::Scalar>, exception_free_version: bool
     ) -> Result<(Self, Boolean), SynthesisError> {
         let params = self.circuit_params;
-        let mut offset_generator = Self::get_offset_generator(exception_free_version, params);
-        let (acc, num_of_doubles) = self.mul_by_scalar_impl_wth_accumulator(
-            cs, scalar, offset_generator, exception_free_version
-        )?;
-        Self::final_normalization(cs, acc, offset_generator, num_of_doubles, exception_free_version)
+        let offset_generator = Self::get_offset_generator(exception_free_version, params);
+        let (acc, num_of_doubles) = self.mul_by_scalar_impl_wth_accumulator(cs, scalar, offset_generator.clone())?;
+        Self::final_normalization(cs, acc, offset_generator, num_of_doubles, false, exception_free_version)
     } 
    
     pub fn multiexp_complete<CS: ConstraintSystem<E>>(
-        cs: &mut CS, scalars: &[FieldElement<'a, E, G::Scalar>], points: &[Self] 
+        cs: &mut CS, scalars: &mut [FieldElement<'a, E, G::Scalar>], points: &mut [Self] 
     ) -> Result<(Self, Boolean), SynthesisError> {
         Self::multiexp_impl(cs, scalars, points, true)
     }
 
     pub fn multiexp_non_complete<CS: ConstraintSystem<E>>(
-        cs: &mut CS, scalars: &[FieldElement<'a, E, G::Scalar>], points: &[Self] 
+        cs: &mut CS, scalars: &mut [FieldElement<'a, E, G::Scalar>], points: &mut [Self] 
     ) -> Result<Self, SynthesisError> {
-        let (point, is_infty) = Self::multiexp_impl(cs, scalars, points, false)?;
+        let (point, _is_infty) = Self::multiexp_impl(cs, scalars, points, false)?;
         Ok(point)
     }
 
     #[track_caller]
     fn multiexp_impl<CS: ConstraintSystem<E>>(
-        cs: &mut CS, scalars: &[FieldElement<'a, E, G::Scalar>], points: &[Self], exception_free_version: bool
+        cs: &mut CS, scalars: &mut [FieldElement<'a, E, G::Scalar>], points: &mut [Self], 
+        exception_free_version: bool
     ) -> Result<(AffinePoint<'a, E, G, T>, Boolean), SynthesisError> 
     {
         assert_eq!(scalars.len(), points.len());
@@ -1114,37 +1189,41 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
         while idx <= points.len() {
             let chunk_size = std::cmp::min(points.len() - idx, geometry.width);
+            let chunk_geometry = MultiExpGeometry {
+                strategy: geometry.strategy,
+                width: chunk_size,
+            };
             let (new_acc, num_of_doubles_in_chunk) = if chunk_size > 1 {
                 match geometry.strategy {
                     MultiexpStrategy::HashSetsBasedRam | MultiexpStrategy::WaksmanBasedRam => {
                         Self::multiexp_impl_chunk_processing::<CS, Memory<E, G, T>>(
-                            cs, &scalars[idx..idx+chunk_size], &points[idx..idx+chunk_size], acc, 
-                            exception_free_version, geometry
+                            cs, &mut scalars[idx..idx+chunk_size], &points[idx..idx+chunk_size], acc, 
+                            exception_free_version, chunk_geometry
                         )?
                     },
                     MultiexpStrategy::SelectionTree => {
                         Self::multiexp_impl_chunk_processing::<CS, TreeSelector<E, G, T>>(
-                            cs, &scalars[idx..idx+chunk_size], &points[idx..idx+chunk_size], acc, 
-                            exception_free_version, geometry
+                            cs, &mut scalars[idx..idx+chunk_size], &points[idx..idx+chunk_size], acc, 
+                            exception_free_version, chunk_geometry
                         )?
                     }
                 }
             } else {
-                points[idx].mul_by_scalar_impl_wth_accumulator(
-                    cs, &mut scalars[idx], acc, exception_free_version
-                )?
+                points[idx].mul_by_scalar_impl_wth_accumulator(cs, &mut scalars[idx], acc)?
             };
             acc = new_acc;
             num_of_doubles += num_of_doubles_in_chunk;
             idx += chunk_size;
         }
 
-        Self::final_normalization(cs, acc, offset_generator, num_of_doubles, exception_free_version)
+        Self::final_normalization(
+            cs, acc, offset_generator, num_of_doubles, exception_free_version, exception_free_version
+        )
     }
 
     #[track_caller]
     fn safe_conversion_to_ext<CS: ConstraintSystem<E>>(
-        cs: &mut CS, candidate: &Self, is_point_at_infty: Boolean
+        cs: &mut CS, candidate: &Self, is_point_at_infty: &Boolean
     ) -> Result<AffinePointExt<'a, E, G, T>, SynthesisError> {
         let params = candidate.circuit_params;
         let x_c0 = candidate.get_x();
@@ -1166,15 +1245,12 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
     #[track_caller]
     fn multiexp_impl_chunk_processing<CS: ConstraintSystem<E>, S: Selector<'a, E, G, T>>(
-        cs: &mut CS, scalars: &[FieldElement<'a, E, G::Scalar>], points: &[Self], acc: PointWrapper<'a, E, G, T>,
-        exception_free_version: bool, geometry: MultiExpGeometry
+        cs: &mut CS, scalars: &mut [FieldElement<'a, E, G::Scalar>], points: &[Self], 
+        mut acc: PointWrapper<'a, E, G, T>, exception_free_version: bool, geometry: MultiExpGeometry
     ) -> Result<(PointWrapper<'a, E, G, T>, usize), SynthesisError> 
     {
         assert_eq!(scalars.len(), points.len());
-        let window = scalars.len();
         let params = points[0].circuit_params;
-        let scalar_rns_params = &params.scalar_field_rns_params;
-        let base_rns_params = &params.base_field_rns_params;
                 
         struct Multizip<T>(Vec<T>);
         
@@ -1191,7 +1267,8 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let should_add_adj_generator = !params.is_prime_order_curve && exception_free_version;
         let mut points_unrolled = Vec::with_capacity(points.len() << 1);
         let mut scalars_unrolled = Vec::with_capacity(points.len() << 1);
-        for (is_first, _is_last, (scalar, point)) in scalars.iter().zip(points.iter()).identify_first_last() { 
+        let iter = scalars.iter_mut().zip(points.iter()).identify_first_last();
+        for (is_first, _is_last, (mut scalar, point)) in iter { 
             let aux_data = Self::compute_endo_aux_data(cs, point, &mut scalar)?;
             scalars_unrolled.push(aux_data.point_scalar_decomposition.into_iter().rev());
             scalars_unrolled.push(aux_data.point_endo_scalar_decomposition.into_iter().rev());
@@ -1207,92 +1284,48 @@ where <G as GenericCurveAffine>::Base: PrimeField
             points_unrolled.push(aux_data.point_endo);
         }
 
-        let mut combiner = Combiner::new(cs, &points_unrolled, geometry, exception_free_version)?;
-        let (initial, is_initial_point_at_infty, _) = combiner.get_initial();
-        if exception_free_version && params.is_prime_order_curve {
-            
-       
-        
-        // let to_add = AffinePointExt::conditionally_select(
-        //     cs, &is_point_at_infty, &self.adj_offset, &AffinePointExt::from(candidate)
-        // )?;
-        acc.double_and_add_unchecked(cs, &to_add)
+        let exception_free_combiner = exception_free_version && params.is_prime_order_curve;
+        let mut combiner = Combiner::<E, G, T, S>::new(cs, &points_unrolled, geometry, exception_free_combiner)?;
+        let (mut initial, is_initial_point_at_infty, _) = combiner.get_initial();
+        // I do not know how to get rid of this boilerplate code
+        let mut acc = if exception_free_combiner {
+            let to_add = Self::safe_conversion_to_ext(cs, &initial, &is_initial_point_at_infty)?;
+            let acc_as_ext = acc.get_as_ext_point();
+            let res = acc_as_ext.add_unequal_unchecked(cs, &to_add)?;
+            PointWrapper::AffineOverExtField(res)
         } else {
-            acc.add_mixed(cs, initial)
-        }
-        acc = acc.add_unequal_unchecked(cs, &offset_generator)?;
-
+            acc.add_mixed(cs, &mut initial)?
+        };
+       
         for (_, is_last, bits) in Multizip(scalars_unrolled).identify_first_last() {
             if !is_last {
-                let to_add = selector_tree.select(cs, &bits)?;
-                acc = acc.double_and_add_unchecked(cs, &to_add)?;
+                let (to_add, is_point_at_infty) = combiner.select(cs, &bits)?;
+                acc = if exception_free_combiner {
+                    let to_add = Self::safe_conversion_to_ext(cs, &to_add, &is_point_at_infty)?;
+                    let acc_as_ext = acc.get_as_ext_point();
+                    let res = acc_as_ext.double_and_add_unequal_unchecked(cs, &to_add)?;
+                    PointWrapper::AffineOverExtField(res)
+                } else {
+                    acc.double_and_add_mixed(cs, &mut initial)?
+                };
             }
             else {
-                let to_add = selector_tree.select_last(cs, &bits)?;
-                acc = acc.add_unequal_unchecked(cs, &to_add)?;
+                let (to_add, is_point_at_infty) = combiner.select_last(cs, &bits)?;
+                acc = if exception_free_combiner {
+                    let to_add = Self::safe_conversion_to_ext(cs, &to_add, &is_point_at_infty)?;
+                    let acc_as_ext = acc.get_as_ext_point();
+                    let res = acc_as_ext.add_unequal_unchecked(cs, &to_add)?;
+                    PointWrapper::AffineOverExtField(res)
+                } else {
+                    acc.add_mixed(cs, &mut initial)?
+                };
             }
         }
 
-        let gate_count_start = cs.get_current_step_number();
-        let num_of_doubles = limit - 1;
-        let mut scaled_offset = offset_generator;
-        for _ in 0..num_of_doubles {
-            scaled_offset = scaled_offset.double(cs)?;
-        }
-        let gate_count_end = cs.get_current_step_number();
-        assert_eq!(gate_count_end - gate_count_start, 0);
-        acc = acc.sub_unequal_unchecked(cs, &scaled_offset)?;
-
-        let is_defined_over_base_field = |point: &AffinePointExt<'a, E, G, T>| -> Option<bool> {
-            point.get_value().map(|(_x_c0, x_c1, _y_c0, y_c1)| x_c1.is_zero() && y_c1.is_zero())
-        };
-
-        println!("before last check");
-
-        // adj_offset is a point of order 3, hence one of acc, acc + adj_offset, acc - adj belong to E(F_p)
-        let need_to_negate_wit = acc.get_value().map(|(x_c0, x_c1, y_c0, y_c1)| {
-            let gate_count_start = cs.get_current_step_number();
-
-            let mut tmp = AffinePointExt::<E, G, T>::constant(x_c0, x_c1, y_c0, y_c1, base_rns_params);
-            tmp = tmp.add_unequal_unchecked(cs, &adj_offset).expect("should synthesize");
-            let flag = is_defined_over_base_field(&tmp).expect("should be some");    
-                
-            let gate_count_end = cs.get_current_step_number();
-            assert_eq!(gate_count_end - gate_count_start, 0);
-            !flag
-        });
-
-        println!("after last check");
-
-        let need_to_negate = Boolean::Is(AllocatedBit::alloc(cs, need_to_negate_wit)?);
-        let to_add = adj_offset.conditionally_negate(cs, &need_to_negate)?;
-        let modified_acc = acc.add_unequal_unchecked(cs, &to_add)?;
-        
-        let cond_wit = is_defined_over_base_field(&modified_acc);
-        let cond = Boolean::Is(AllocatedBit::alloc(cs, cond_wit)?);
-        let res_ext = AffinePointExt::conditionally_select(cs, &cond, &modified_acc, &acc)?; 
-
-        let mut final_x = res_ext.get_x();
-        let mut final_y = res_ext.get_y();
-        let final_value = final_x.c0.get_field_value().zip(final_y.c0.get_field_value()).map(|(x, y)| {
-            G::from_xy_checked(x, y).expect("should be on the curve")
-        }); 
-        let mut zero = FieldElement::<E, G::Base>::zero(base_rns_params);
-        FieldElement::enforce_equal(cs, &mut final_x.c1, &mut zero)?;
-        FieldElement::enforce_equal(cs, &mut final_y.c1, &mut zero)?;
-
-        println!("THE VERY FINAL VALUE: {}", final_value.unwrap());
-
-
-        let new = Self {
-            x: final_x.c0,
-            y: final_y.c0,
-            value: final_value,
-            is_in_subgroup: true,
-            circuit_params: params
-        };
-        Ok(new)
+        combiner.postprocess(cs)?;
+        Ok((acc, scalars.len() - 1))
     }
+}
 
 
          

@@ -10,8 +10,8 @@ mod test {
     };
     use rand::{XorShiftRng, SeedableRng, Rng};
     use bellman::plonk::better_better_cs::cs::*;
-    use crate::plonk::circuit::bigint_new::*;
-    use crate::plonk::circuit::curve_new::*;
+    use crate::plonk::circuit::bigint::*;
+    use crate::plonk::circuit::curve::*;
 
     use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
     use crate::bellman::worker::Worker;
@@ -59,7 +59,6 @@ mod test {
 
             *out = ProjectivePoint {
                 x, y, z,
-                is_in_subgroup: true,
                 circuit_params: &params,
                 value: Some(affine_point.clone()),
             };
@@ -104,9 +103,9 @@ mod test {
         let c_y_c1 = "5650743550923202600541315224154807569595826295523387795464783550769874508672";
         let c_coefs = [&c_x_c0, &c_x_c1, &c_y_c0, &c_y_c1];
 
-        let mut a = AffinePointExt::<Bn256, G1Affine, Bn256Extension2Params>::uninitialized(rns_params);
-        let mut b = AffinePointExt::<Bn256, G1Affine, Bn256Extension2Params>::uninitialized(rns_params);
-        let mut c = AffinePointExt::<Bn256, G1Affine, Bn256Extension2Params>::uninitialized(rns_params);
+        let mut a = AffinePointExt::<Bn256, G1Affine, Bn256Extension2Params>::uninitialized(&params);
+        let mut b = AffinePointExt::<Bn256, G1Affine, Bn256Extension2Params>::uninitialized(&params);
+        let mut c = AffinePointExt::<Bn256, G1Affine, Bn256Extension2Params>::uninitialized(&params);
                 
         let iter = std::iter::once(&mut a).chain(std::iter::once(&mut b)).chain(std::iter::once(&mut c)).zip(
             std::iter::once(&a_coefs).chain(std::iter::once(&b_coefs)).chain(std::iter::once(&c_coefs))
@@ -117,12 +116,12 @@ mod test {
             let x_c1 = Fq::from_str(coeffs[1]);
             let y_c0 = Fq::from_str(coeffs[2]);
             let y_c1 = Fq::from_str(coeffs[3]);
-            let point = AffinePointExt::alloc(&mut cs, x_c0, x_c1, y_c0, y_c1, rns_params).unwrap();
+            let point = AffinePointExt::alloc(&mut cs, x_c0, x_c1, y_c0, y_c1, &params).unwrap();
             *out = point;
         }
 
         let counter_start = cs.get_current_step_number();
-        let mut result = a.double_and_add_unchecked(&mut cs, &mut b).unwrap(); 
+        let mut result = a.double_and_add_unequal_unchecked(&mut cs, &mut b).unwrap(); 
         let counter_end = cs.get_current_step_number();
         println!("num of gates: {}", counter_end - counter_start);
 
@@ -174,7 +173,7 @@ mod test {
         let mut a_plus_b_computed = a.add_unequal(cs, &mut b).unwrap();
         let mut a_minus_b_computed = a.sub_unequal(cs, &mut b).unwrap();
         let mut a_doubled_computed = a.double(cs).unwrap();
-        let mut a_doubled_plus_b_computed = a.double_and_add(cs, &mut b).unwrap();
+        let mut a_doubled_plus_b_computed = a.double_and_add_unequal_unchecked(cs, &mut b).unwrap();
 
         AffinePoint::enforce_equal(cs, &mut a_plus_b_actual, &mut a_plus_b_computed).unwrap();
         AffinePoint::enforce_equal(cs, &mut a_minus_b_actual, &mut a_minus_b_computed).unwrap();
@@ -238,7 +237,6 @@ mod test {
 
             *out = ProjectivePoint {
                 x, y, z,
-                is_in_subgroup: true,
                 circuit_params: &params,
                 value: Some(affine_point.clone()),
             };
@@ -261,7 +259,7 @@ mod test {
         let offset_generator = AffinePointExt::constant(
             params.fp2_pt_ord3_x_c0, params.fp2_pt_ord3_x_c1, 
             params.fp2_pt_ord3_y_c0, params.fp2_pt_ord3_y_c1,
-            &params.base_field_rns_params
+            &params
         );
         let a_ext = offset_generator.add_unequal_unchecked(cs, &AffinePointExt::from(a.clone())).unwrap();
         let b_ext = offset_generator.add_unequal_unchecked(cs, &AffinePointExt::from(b.clone())).unwrap();
@@ -278,7 +276,6 @@ mod test {
             x: tmp.get_x().c0,
             y: tmp.get_y().c0,
             value: point,
-            is_in_subgroup: true,
             circuit_params: params
         }; 
         AffinePoint::enforce_equal(cs, &mut result_base, &mut a_plus_b).unwrap();
@@ -304,7 +301,6 @@ mod test {
             x: tmp.get_x().c0,
             y: tmp.get_y().c0,
             value: point,
-            is_in_subgroup: true,
             circuit_params: params
         }; 
         AffinePoint::enforce_equal(cs, &mut result_base, &mut a_plus_b).unwrap();
@@ -330,7 +326,6 @@ mod test {
             x: tmp.get_x().c0,
             y: tmp.get_y().c0,
             value: point,
-            is_in_subgroup: true,
             circuit_params: params
         }; 
         AffinePoint::enforce_equal(cs, &mut result_base, &mut a_doubled).unwrap();
@@ -345,7 +340,7 @@ mod test {
         ).unwrap();
 
         let counter_start = cs.get_current_step_number();
-        let result_ext = a_ext.double_and_add_unchecked(cs, &AffinePointExt::from(b)).unwrap(); 
+        let result_ext = a_ext.double_and_add_unequal_unchecked(cs, &AffinePointExt::from(b)).unwrap(); 
         let counter_end = cs.get_current_step_number();
         println!("num of gates for affine_ext double and add mixed: {}", counter_end - counter_start);
         let tmp = result_ext.add_unequal_unchecked(cs, &offset_generator).unwrap();
@@ -356,7 +351,6 @@ mod test {
             x: tmp.get_x().c0,
             y: tmp.get_y().c0,
             value: point,
-            is_in_subgroup: true,
             circuit_params: params
         }; 
         AffinePoint::enforce_equal(cs, &mut result_base, &mut a_doubled_plus_b).unwrap();
@@ -408,73 +402,15 @@ mod test {
             let mut actual_result = AffinePoint::alloc(cs, Some(result), &self.circuit_params)?;
 
             let counter_start = cs.get_current_step_number();
-            let mut result = a.mul_by_scalar_descending_ladder(cs, &mut scalar)?;
+            let (mut result, _) = a.mul_by_scalar_complete(cs, &mut scalar)?;
             let counter_end = cs.get_current_step_number();
-            println!("num of gates for descending ladder: {}", counter_end - counter_start);
+            println!("num of gates for complete scalar multiplication: {}", counter_end - counter_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
             let counter_start = cs.get_current_step_number();
-            let mut result = a.mul_by_scalar_descending_skew_ladder(cs, &mut scalar)?;
+            let mut result = a.mul_by_scalar_non_complete(cs, &mut scalar)?;
             let counter_end = cs.get_current_step_number();
-            println!("num of gates for descending skew ladder: {}", counter_end - counter_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
-            let counter_start = cs.get_current_step_number();
-            let mut result = a.mul_by_scalar_descending_skew_ladder_with_endo(cs, &mut scalar)?;
-            let counter_end = cs.get_current_step_number();
-            println!("num of gates for descending skew ladder with_endo: {}", counter_end - counter_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
-            let counter_start = cs.get_current_step_number();
-            let mut result = a.mul_by_scalar_descending_skew_ladder_with_base_ext(cs, &mut scalar)?;
-            let counter_end = cs.get_current_step_number();
-            println!("num of gates for descending skew ladder with base ext: {}", counter_end - counter_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
-            let counter_start = cs.get_current_step_number();
-            let mut result = a.mul_by_scalar_descending_skew_ladder_with_endo_and_base_ext(cs, &mut scalar)?;
-            let counter_end = cs.get_current_step_number();
-            println!(
-                "num of gates for descending skew ladder with endo and base ext: {}", counter_end - counter_start
-            );
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
-            let counter_start = cs.get_current_step_number();
-            let mut result = a.test_selector_tree(cs, &mut scalar)?;
-            let counter_end = cs.get_current_step_number();
-            println!(
-                "num of gates for descending skew ladder with endo and base ext (via tree selector): {}", 
-                counter_end - counter_start
-            );
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
-            
-            let counter_start = cs.get_current_step_number();
-            let result = a.mul_by_scalar_ascending_ladder_proj(cs, &mut scalar)?;
-            let mut result = unsafe { result.convert_to_affine(cs)? };
-            let counter_end = cs.get_current_step_number();
-            println!("num of gates for ascending ladder proj: {}", counter_end - counter_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
-            let counter_start = cs.get_current_step_number();
-            let result = a.mul_by_scalar_ascending_skew_ladder_proj(cs, &mut scalar)?;
-            let mut result = unsafe { result.convert_to_affine(cs)? };
-            let counter_end = cs.get_current_step_number();
-            println!("num of gates for ascending skew ladder proj: {}", counter_end - counter_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
-            let counter_start = cs.get_current_step_number();
-            let result = a.mul_by_scalar_descending_skew_ladder_proj(cs, &mut scalar)?;
-            let mut result = unsafe { result.convert_to_affine(cs)? };
-            let counter_end = cs.get_current_step_number();
-            println!("num of gates for descending skew ladder proj: {}", counter_end - counter_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
-            let counter_start = cs.get_current_step_number();
-            let result = a.mul_by_scalar_descending_skew_ladder_with_endo_proj(cs, &mut scalar)?;
-            let mut result = unsafe { result.convert_to_affine(cs)? };
-            let counter_end = cs.get_current_step_number();
-            println!("num of gates for descending skew ladder with endo proj: {}", counter_end - counter_start);
+            println!("num of gates for non-complete scalar multiplication: {}", counter_end - counter_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
             Ok(())
@@ -546,35 +482,15 @@ mod test {
             let mut actual_result = AffinePoint::alloc(cs, Some(result_wit), &self.circuit_params)?;
            
             let counter_start = cs.get_current_step_number();
-            let mut result = AffinePoint::safe_multiexp_affine(cs, &scalars, &points)?;
+            let (mut result, _) = AffinePoint::multiexp_complete(cs, &mut scalars, &mut points)?;
             let counter_end = cs.get_current_step_number();
-            println!("num of gates for affine multiexp var1: {}", counter_end - counter_start);
+            println!("num of gates for complete multiexp: {}", counter_end - counter_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
-            // let counter_start = cs.get_current_step_number();
-            // let mut result = AffinePoint::safe_multiexp_affine2(cs, &scalars, &points)?;
-            // let counter_end = cs.get_current_step_number();
-            // println!("num of gates for affine multiexp var2: {}", counter_end - counter_start);
-            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
             let counter_start = cs.get_current_step_number();
-            let mut result = AffinePoint::safe_multiexp_affine3(cs, &scalars, &points)?;
+            let mut result = AffinePoint::multiexp_non_complete(cs, &mut scalars, &mut points)?;
             let counter_end = cs.get_current_step_number();
-            println!("num of gates for affine multiexp var3: {}", counter_end - counter_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
-            // let counter_start = cs.get_current_step_number();
-            // let mut result = AffinePoint::safe_multiexp_affine4(cs, &scalars, &points)?;
-            // let counter_end = cs.get_current_step_number();
-            // println!("num of gates for affine multiexp var4: {}", counter_end - counter_start);
-            // AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
-
-            let counter_start = cs.get_current_step_number();
-            let result = AffinePoint::safe_multiexp_projective(cs, &scalars, &points)?;
-            let mut result = unsafe { result.convert_to_affine(cs)? };
-            let counter_end = cs.get_current_step_number();
-            println!("num of gates for proj multiexp: {}", counter_end - counter_start);
+            println!("num of gates for non-complete multiexp: {}", counter_end - counter_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
             Ok(())
@@ -596,44 +512,6 @@ mod test {
         let circuit = TestMultiexpCircuit { circuit_params, num_of_points: NUM_OF_POINTS };
         circuit.synthesize(&mut cs).expect("must work");
         cs.finalize();
-        assert!(cs.is_satisfied()); 
-    }
-
-    // ---------------------------------------------------------------------------------------------------------
-    // ---------------------------------------------------------------------------------------------------------
-    // ---------------------------------------------------------------------------------------------------------
-    // ---------------------------------------------------------------------------------------------------------
-    // ---------------------------------------------------------------------------------------------------------
-    // testing constant generator by scalar multiplication
-    fn gen_by_scalar_mul_test_impl<E, CS, G: GenericCurveAffine + rand::Rand, T: Extension2Params<G::Base>>(
-        cs: &mut CS, params: &CurveCircuitParameters<E, G, T>, window: usize
-    ) 
-    where <G as GenericCurveAffine>::Base: PrimeField, E: Engine, CS: ConstraintSystem<E>
-    {
-        let mut rng = rand::thread_rng();
-        let scalar_wit : G::Scalar = rng.gen();
-        let mut tmp = G::one().into_projective();
-        tmp.mul_assign(scalar_wit);
-        let actual_result = tmp.into_affine();
-        
-        let scalar = FieldElement::alloc(cs, Some(scalar_wit), &params.scalar_field_rns_params).unwrap();
-        let mut actual_result = AffinePoint::constant(actual_result, params);
-
-        let counter_start = cs.get_current_step_number();
-        let mut result = AffinePoint::mul_generator_by_scalar(cs, &scalar, window, params).unwrap();
-        let counter_end = cs.get_current_step_number();
-        println!("num of gates for generator by scalar multiplication: {}", counter_end - counter_start);
-        AffinePoint::enforce_equal(cs, &mut result, &mut actual_result).unwrap();
-    }
-
-    #[test]
-    fn gen_by_scalar_mul_test_for_bn256() {
-        let mut cs = TrivialAssembly::<
-            bn256::Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
-        >::new();
-        inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let params = generate_optimal_circuit_params_for_bn256::<bn256::Bn256, _>(&mut cs, 80usize, 80usize);
-        gen_by_scalar_mul_test_impl(&mut cs, &params, 4);
         assert!(cs.is_satisfied()); 
     }
 }

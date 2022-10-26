@@ -1138,16 +1138,17 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             return Ok(new);
         }
         
-        let mut new_binary_limbs = vec![];
-        for x in self.binary_limbs.iter() {
+        let mut new_binary_limbs = self.binary_limbs.clone();
+        {
+            let x = new_binary_limbs[0].clone();
             let new_term = x.term.conditionally_increment(cs, flag)?;
             let new_max_value = x.max_value.clone() + BigUint::one();
             let limb = Limb::<E>::new(new_term, new_max_value);
-            new_binary_limbs.push(limb);
+            new_binary_limbs[0] = limb;
         };
         let new_base_limb = self.base_field_limb.conditionally_increment(cs, flag)?;
         
-        let mut new = Self {
+        let new = Self {
             binary_limbs: new_binary_limbs,
             base_field_limb: new_base_limb,
             value: new_value,
@@ -1158,6 +1159,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         if cfg!(debug_assertions) {
             new.debug_check_value_coherency();
         }
+        
         Ok(new)
     }
 

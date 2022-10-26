@@ -245,95 +245,9 @@ pub fn enforce_range_check_using_naive_approach<E: Engine, CS: ConstraintSystem<
     };
     increment_total_gates_count(lc_gates);
 
-    let has_value = var.get_value().is_some();
-    let value = var.get_value().unwrap_or(E::Fr::zero());
-    
-    let bits : Vec<bool> = BitIterator::new(value.into_repr()).take(num_bits).collect();
-    let allocated_bits : Vec<AllocatedBit> = bits.into_iter().map(|bit| {
-        let t = if has_value { Some(bit) } else { None };
-        AllocatedBit::alloc(cs, t)
-    }).collect::<Result<Vec<_>, SynthesisError>>()?;
-
-    let mut minus_one = E::Fr::one();
-    minus_one.negate();
-
-    if num_bits <= 3 {
-        let mut lc = LinearCombination::zero();
-        let mut coef = E::Fr::one();
-        for bit in allocated_bits.iter() {
-            lc.add_assign_bit_with_coeff(bit, coef.clone());
-            coef.double();
-        }
-        lc.add_assign_variable_with_coeff(var, minus_one)
-    }
-    else {
-        let mut coef = E::Fr::one();
-        let mut idx = 0;
-        let mut is_first = true;
-        let mut total_is_added = false;
-        let mut acc = AllocatedNum::zero(cs);
-
-        while idx < allocated_bits.len() {
-            let non_first_slice_len = std::cmp::min(CS::Params::STATE_WIDTH - 1, allocated_bits.len() - idx); 
-            let slice_len = if is_first { CS::Params::STATE_WIDTH } else { non_first_slice_len };
-
-            let mut coefs : Vec<E::Fr> = (0..slice_len+1).scan(coef.clone(), |st, _| {
-                let res = st.clone(); st.double(); Some(res)
-            }).collect();
-            coef = coefs.pop().unwrap();
-
-            let (mut vars, mut vals): (Vec<_>, Vec<Option<_>>) = allocated_bits[idx..idx + slice_len].iter().map(|x| {
-                (x.get_variable(), x.get_value_as_field_element::<E>())
-            }).unzip(); 
-            assert_eq!(coefs.len(), vars.len());
-
-            while coefs.len() <= CS::Params::STATE_WIDTH - 2 {
-                if total_is_added {
-                    coefs.push(E::Fr::zero()); 
-                    vars.push(CS::get_dummy_variable()); 
-                    vals.push(Some(E::Fr::zero()));
-                }
-                else {
-                    total_is_added = true;
-                    coefs.push(minus_one.clone());
-                    vars.push(var.get_variable());
-                    vals.push(var.get_value());
-                }
-            }
-            if !is_first {
-                coefs.push(E::Fr::one());
-                vars.push(acc.get_variable());
-            }
-
-            acc = if total_is_added {
-                AllocatedNum::zero(cs)
-            }
-            else {
-                AllocatedNum::alloc(cs, || {
-                    let mut res = acc.get_value().grab()?;
-                    for (val, coef) in vals.iter().zip(coefs.iter()) {       
-                        let mut tmp = val.grab()?;
-                        tmp.mul_assign(&coef);
-                        res.add_assign(&tmp);
-                    }
-                    Ok(res)
-                })?
-            };
-            
-            let d_next_coef = if total_is_added { E::Fr::zero() } else { minus_one.clone() };
-            allocate_gate_with_linear_only_terms_in_reversed_order(cs, &vars[..], &coefs[..], &d_next_coef)?;
-
-            idx += slice_len;
-            is_first = false;
-        }
-
-        if !total_is_added {
-            let coefs = vec![E::Fr::zero(); CS::Params::STATE_WIDTH];
-            let mut vars = vec![CS::get_dummy_variable(); CS::Params::STATE_WIDTH];
-            *vars.last_mut().unwrap() = acc.get_variable();
-            allocate_gate_with_linear_only_terms_in_reversed_order(cs, &vars[..], &coefs[..], &E::Fr::zero())?;
-        }
-    }
+    let num = Num::Variable(var.clone());
+    let mut bits = num.into_bits_le(cs, Some(num_bits))?;
+    let allocated_bits = bits.drain(..).map(|x| *x.get_variable().unwrap()).collect();
 
     Ok(RangeCheckDecomposition {
         chunks_bitlength: 1,

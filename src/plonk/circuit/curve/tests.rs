@@ -83,7 +83,6 @@ mod test {
         >::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
         let params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, 80usize, 80usize);
-        let rns_params = &params.base_field_rns_params;
 
         let a_x_c0 = "11947046220310406338075336430452637192462772637241719407011734688739628070508";
         let a_x_c1 = "10557742219851096102260847081504953836102098067687282141689259525204118168143";
@@ -484,7 +483,17 @@ mod test {
             let counter_start = cs.get_current_step_number();
             let (mut result, _) = AffinePoint::multiexp_complete(cs, &mut scalars, &mut points)?;
             let counter_end = cs.get_current_step_number();
-            println!("num of gates for complete multiexp: {}", counter_end - counter_start);
+            println!("num of gates for complete multiexp for TreeSelector: {}", counter_end - counter_start);
+            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+
+            let counter_start = cs.get_current_step_number();
+            let strategy = MultiExpGeometry {
+                width: 4, strategy: MultiexpStrategy::WaksmanBasedRam
+            };
+            let (mut result, _) = AffinePoint::multiexp_complete_with_custom_geometry(
+                cs, &mut scalars, &mut points, strategy)?;
+            let counter_end = cs.get_current_step_number();
+            println!("num of gates for complete multiexp for Waksman: {}", counter_end - counter_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
             let counter_start = cs.get_current_step_number();

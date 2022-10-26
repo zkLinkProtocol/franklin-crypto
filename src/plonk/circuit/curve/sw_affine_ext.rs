@@ -236,12 +236,9 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as Gen
         }
         
         let other_x_minus_this_x = other.x.sub(cs, &self.x)?;
-        println!("diff: {:?}", other_x_minus_this_x.get_value().unwrap());
         let mut chain = Fp2Chain::new();
         chain.add_pos_term(&other.y).add_pos_term(&self.y);
-        println!("before problemo");
         let lambda = Fp2::div_with_chain(cs, chain, &other_x_minus_this_x)?;
-        println!("problemo");
         // lambda^2 + (-x' - x)
         let mut chain = Fp2Chain::new();
         chain.add_neg_term(&self.x).add_neg_term(&other.x);
@@ -408,14 +405,9 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as Gen
     pub fn prudent_sub<CS>(&mut self, cs: &mut CS, other: &mut Self) -> Result<(Self, Boolean), SynthesisError>
     where CS: ConstraintSystem<E> {
         let garbage_flag = Fp2::equals(cs, &mut self.x, &mut other.x)?;
-        println!("garbage flag: {}", garbage_flag.get_value().unwrap());
-        println!("after eq");
         let mut tmp = other.clone();
         tmp.x.c0 = tmp.x.c0.conditionally_increment(cs, &garbage_flag)?;
-        //tmp.x.c0 = tmp.x.c0.add(cs, &FieldElement::one(&self.circuit_params.base_field_rns_params))?;
-        println!("sss2");
         let result = self.sub_unequal_unchecked(cs, &tmp)?;
-        println!("sss");
         Ok((result, garbage_flag))
     }
 }

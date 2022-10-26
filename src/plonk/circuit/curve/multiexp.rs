@@ -214,7 +214,6 @@ where <G as GenericCurveAffine>::Base: PrimeField
             final_y.c1 = FieldElement::conditionally_select(cs, &infty_flag, &zero, &final_x.c1)?;
             FieldElement::enforce_equal(cs, &mut final_x.c1, &mut zero)?;
             FieldElement::enforce_equal(cs, &mut final_y.c1, &mut zero)?;
-
             (PointWrapper::AffineOverExtField(res_ext), infty_flag)
         } else {
             (acc, infty_flag_0)
@@ -653,6 +652,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
     }
 
     pub fn write(&mut self, addr: u64, point: AffinePoint<'a, E, G, T>) {
+        println!("addr: {}, width: {}", addr, self.address_width);
         assert!(log2_floor(addr as usize) as usize <= self.address_width);
         self.witness_map.insert(addr, point.get_value());
         let addr_as_num = Num::Constant(u64_to_ff(addr));
@@ -811,6 +811,7 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
     ) -> Result<(), SynthesisError> {
         for (addr, point) in precompute.into_iter() {
             let bitflipped_addr = !addr & ((1 << self.address_width) - 1);
+            println!("addr: {}, bitflip: {}", addr, bitflipped_addr);
             let point_negated = point.negate(cs)?;
             self.write(addr, point);
             self.write(bitflipped_addr, point_negated);
@@ -957,7 +958,7 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
         } else {
             PointWrapper::AffineOverBaseField(first_elem.clone())
         };
-        
+
         // using Selector tree makes sense only if there are more than 1 element
         let mut entries = entries.to_vec();
         let mut workpad : Vec<(u64, PointWrapper<'a, E, G, T>)> = vec![(0, initial)];
@@ -967,13 +968,14 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
             let mut new_working_pad = Vec::with_capacity(workpad.len() << 1);
             for (addr, acc) in workpad.iter_mut() {
                 let msb = get_bit_at_pos(*addr, pos);
+                println!("cur addr: {}", addr);
                 if msb { 
-                    new_working_pad.push((extend_addr(*addr, pos, !msb), acc.sub_mixed(cs, elem)?));
-                    new_working_pad.push((extend_addr(*addr, pos, msb), acc.add_mixed(cs, elem)?));   
+                    new_working_pad.push((extend_addr(*addr, pos, !msb), acc.add_mixed(cs, elem)?));
+                    new_working_pad.push((extend_addr(*addr, pos, msb), acc.sub_mixed(cs, elem)?));   
                 }
                 else {
-                    new_working_pad.push((extend_addr(*addr, pos, !msb), acc.add_mixed(cs, elem)?));   
-                    new_working_pad.push((extend_addr(*addr, pos, msb), acc.sub_mixed(cs, elem)?));
+                    new_working_pad.push((extend_addr(*addr, pos, !msb), acc.sub_mixed(cs, elem)?));   
+                    new_working_pad.push((extend_addr(*addr, pos, msb), acc.add_mixed(cs, elem)?));
                 }
             };
             pos += 1;
@@ -1162,32 +1164,48 @@ where <G as GenericCurveAffine>::Base: PrimeField
     pub fn multiexp_complete<CS: ConstraintSystem<E>>(
         cs: &mut CS, scalars: &mut [FieldElement<'a, E, G::Scalar>], points: &mut [Self] 
     ) -> Result<(Self, Boolean), SynthesisError> {
-        Self::multiexp_impl(cs, scalars, points, true)
+        let params = points[0].circuit_params;
+        let geometry = params.get_opt_multiexp_geometry();
+        Self::multiexp_impl(cs, scalars, points, geometry, true)
     }
 
     pub fn multiexp_non_complete<CS: ConstraintSystem<E>>(
         cs: &mut CS, scalars: &mut [FieldElement<'a, E, G::Scalar>], points: &mut [Self] 
     ) -> Result<Self, SynthesisError> {
-        let (point, _is_infty) = Self::multiexp_impl(cs, scalars, points, false)?;
+        let params = points[0].circuit_params;
+        let geometry = params.get_opt_multiexp_geometry();
+        let (point, _is_infty) = Self::multiexp_impl(cs, scalars, points, geometry, false)?;
+        Ok(point)
+    }
+
+    pub fn multiexp_complete_with_custom_geometry<CS: ConstraintSystem<E>>(
+        cs: &mut CS, scalars: &mut [FieldElement<'a, E, G::Scalar>], points: &mut [Self], gmtr: MultiExpGeometry 
+    ) -> Result<(Self, Boolean), SynthesisError> {
+        Self::multiexp_impl(cs, scalars, points, gmtr, true)
+    }
+
+    pub fn multiexp_non_complete_with_custom_geometry<CS: ConstraintSystem<E>>(
+        cs: &mut CS, scalars: &mut [FieldElement<'a, E, G::Scalar>], points: &mut [Self], gmtr: MultiExpGeometry 
+    ) -> Result<Self, SynthesisError> {
+        let (point, _is_infty) = Self::multiexp_impl(cs, scalars, points, gmtr, false)?;
         Ok(point)
     }
 
     #[track_caller]
     fn multiexp_impl<CS: ConstraintSystem<E>>(
         cs: &mut CS, scalars: &mut [FieldElement<'a, E, G::Scalar>], points: &mut [Self], 
-        exception_free_version: bool
+        geometry: MultiExpGeometry, exception_free_version: bool
     ) -> Result<(AffinePoint<'a, E, G, T>, Boolean), SynthesisError> 
     {
         assert_eq!(scalars.len(), points.len());
         let params = points[0].circuit_params;
-        let geometry = params.get_opt_multiexp_geometry();
         let offset_generator = Self::get_offset_generator(exception_free_version, params);
         
         let mut acc = offset_generator.clone();
         let mut idx = 0;
         let mut num_of_doubles = 0;
 
-        while idx <= points.len() {
+        while idx < points.len() {
             let chunk_size = std::cmp::min(points.len() - idx, geometry.width);
             let chunk_geometry = MultiExpGeometry {
                 strategy: geometry.strategy,
@@ -1299,31 +1317,33 @@ where <G as GenericCurveAffine>::Base: PrimeField
        
         for (_, is_last, bits) in Multizip(scalars_unrolled).identify_first_last() {
             if !is_last {
-                let (to_add, is_point_at_infty) = combiner.select(cs, &bits)?;
+                let (mut to_add, is_point_at_infty) = combiner.select(cs, &bits)?;
                 acc = if exception_free_combiner {
                     let to_add = Self::safe_conversion_to_ext(cs, &to_add, &is_point_at_infty)?;
                     let acc_as_ext = acc.get_as_ext_point();
                     let res = acc_as_ext.double_and_add_unequal_unchecked(cs, &to_add)?;
                     PointWrapper::AffineOverExtField(res)
                 } else {
-                    acc.double_and_add_mixed(cs, &mut initial)?
+                    acc.double_and_add_mixed(cs, &mut to_add)?
                 };
             }
             else {
-                let (to_add, is_point_at_infty) = combiner.select_last(cs, &bits)?;
+                let (mut to_add, is_point_at_infty) = combiner.select_last(cs, &bits)?;
                 acc = if exception_free_combiner {
                     let to_add = Self::safe_conversion_to_ext(cs, &to_add, &is_point_at_infty)?;
                     let acc_as_ext = acc.get_as_ext_point();
                     let res = acc_as_ext.add_unequal_unchecked(cs, &to_add)?;
                     PointWrapper::AffineOverExtField(res)
                 } else {
-                    acc.add_mixed(cs, &mut initial)?
+                    let acc_modified = acc.add_mixed(cs, &mut to_add)?;
+                    PointWrapper::conditionally_select(cs, &is_point_at_infty, &acc, &acc_modified)?
                 };
             }
         }
 
         combiner.postprocess(cs)?;
-        Ok((acc, scalars.len() - 1))
+        let limit = params.get_endomorphism_bitlen_limit();
+        Ok((acc, limit - 1))
     }
 }
 

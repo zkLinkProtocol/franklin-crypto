@@ -652,8 +652,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
     }
 
     pub fn write(&mut self, addr: u64, point: AffinePoint<'a, E, G, T>) {
-        println!("addr: {}, width: {}", addr, self.address_width);
-        assert!(log2_floor(addr as usize) as usize <= self.address_width);
+        assert!(crate::log2_floor(addr as usize) as usize <= self.address_width);
         self.witness_map.insert(addr, point.get_value());
         let addr_as_num = Num::Constant(u64_to_ff(addr));
         self.queries.push((addr_as_num, point));
@@ -748,16 +747,17 @@ where <G as GenericCurveAffine>::Base: PrimeField
     where CS: ConstraintSystem<E>
     {
         match self.permutation_enforcement_strategy {
-            MultiexpStrategy::WaksmanBasedRam  => {
+            MultiexpStrategy::WaksmanBasedRam => {
+                // better investigate Waksman code more
                 let switches = order_into_switches_set(cs, &self.permutation)?;
                 prove_permutation_of_nums_using_switches_witness(
-                    cs, &self.unsorted_packed_elems_0, &self.sorted_packed_elems_0, &switches
+                    cs, &self.sorted_packed_elems_0, &self.unsorted_packed_elems_0, &switches
                 )?;
                 prove_permutation_of_nums_using_switches_witness(
-                    cs, &self.unsorted_packed_elems_1, &self.sorted_packed_elems_1, &switches
+                    cs, &self.sorted_packed_elems_1, &self.unsorted_packed_elems_1, &switches
                 )
             },
-            MultiexpStrategy::HashSetsBasedRam  => {
+            MultiexpStrategy::HashSetsBasedRam => {
                 let hash_params = RescuePrimeParams::<E, RATE, WIDTH>::new_with_width4_custom_gate();
                 let mut state = [Num::<E>::zero(); WIDTH];
 
@@ -803,7 +803,7 @@ impl<'a, E: Engine, G: GenericCurveAffine, T> Selector<'a, E, G, T> for Memory<'
 where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
 {
     fn new(geometry: MultiExpGeometry) -> Self {
-        Self::new(geometry.width, geometry.strategy)
+        Self::new(geometry.width * 2, geometry.strategy)
     }
     
     fn absorb_precompute<CS: ConstraintSystem<E>>(
@@ -811,7 +811,6 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
     ) -> Result<(), SynthesisError> {
         for (addr, point) in precompute.into_iter() {
             let bitflipped_addr = !addr & ((1 << self.address_width) - 1);
-            println!("addr: {}, bitflip: {}", addr, bitflipped_addr);
             let point_negated = point.negate(cs)?;
             self.write(addr, point);
             self.write(bitflipped_addr, point_negated);
@@ -961,21 +960,20 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<G::Base>
 
         // using Selector tree makes sense only if there are more than 1 element
         let mut entries = entries.to_vec();
-        let mut workpad : Vec<(u64, PointWrapper<'a, E, G, T>)> = vec![(0, initial)];
+        let mut workpad : Vec<(u64, PointWrapper<'a, E, G, T>)> = vec![(1, initial)];
         let mut pos = 0;
 
         for (_is_first, _is_last, elem) in entries[1..].iter_mut().identify_first_last() {
             let mut new_working_pad = Vec::with_capacity(workpad.len() << 1);
             for (addr, acc) in workpad.iter_mut() {
                 let msb = get_bit_at_pos(*addr, pos);
-                println!("cur addr: {}", addr);
                 if msb { 
-                    new_working_pad.push((extend_addr(*addr, pos, !msb), acc.add_mixed(cs, elem)?));
-                    new_working_pad.push((extend_addr(*addr, pos, msb), acc.sub_mixed(cs, elem)?));   
+                    new_working_pad.push((extend_addr(*addr, pos, !msb), acc.sub_mixed(cs, elem)?));
+                    new_working_pad.push((extend_addr(*addr, pos, msb), acc.add_mixed(cs, elem)?));   
                 }
                 else {
-                    new_working_pad.push((extend_addr(*addr, pos, !msb), acc.sub_mixed(cs, elem)?));   
-                    new_working_pad.push((extend_addr(*addr, pos, msb), acc.add_mixed(cs, elem)?));
+                    new_working_pad.push((extend_addr(*addr, pos, !msb), acc.add_mixed(cs, elem)?));   
+                    new_working_pad.push((extend_addr(*addr, pos, msb), acc.sub_mixed(cs, elem)?));
                 }
             };
             pos += 1;

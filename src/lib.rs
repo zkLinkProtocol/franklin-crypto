@@ -53,7 +53,9 @@ pub mod generic_twisted_edwards;
 pub mod plonk;
 
 pub fn log2_floor(num: usize) -> u32 {
-    assert!(num > 0);
+    if num == 0 {
+        return 0;
+    }
 
     let mut pow = 0;
 

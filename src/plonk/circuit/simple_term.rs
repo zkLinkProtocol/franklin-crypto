@@ -793,7 +793,7 @@ impl<E: Engine> Term<E> {
             },
             _ => {}
         }
-        println!("in term inc");
+        
         let mut lc = LinearCombination::zero();
         lc.add_assign_term_with_coeff(&Self::from_boolean(flag), E::Fr::one());
         lc.add_assign_term(self);

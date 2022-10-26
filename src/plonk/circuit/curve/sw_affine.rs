@@ -58,6 +58,16 @@ pub enum MultiexpStrategy {
     HashSetsBasedRam
 }
 
+impl std::fmt::Display for MultiexpStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MultiexpStrategy::SelectionTree => write!(f, "selection table"),
+            MultiexpStrategy::WaksmanBasedRam => write!(f, "waksman based ram"),
+            MultiexpStrategy::HashSetsBasedRam => write!(f, "hash-sets based ram")
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MultiExpGeometry {
     pub strategy: MultiexpStrategy,

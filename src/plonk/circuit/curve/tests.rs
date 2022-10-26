@@ -443,7 +443,7 @@ mod test {
     where <G as GenericCurveAffine>::Base: PrimeField
     {
         circuit_params: CurveCircuitParameters<E, G, T>,
-        num_of_points: usize
+        max_num_of_points: usize
     }
     
     impl<E: Engine, G: GenericCurveAffine + rand::Rand, T> Circuit<E> for TestMultiexpCircuit<E, G, T> 
@@ -458,18 +458,21 @@ mod test {
     
         fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
             let mut rng = rand::thread_rng();
-            let mut points = Vec::with_capacity(self.num_of_points);
-            let mut scalars = Vec::with_capacity(self.num_of_points);
+            let mut points = Vec::with_capacity(self.max_num_of_points);
+            let mut scalars = Vec::with_capacity(self.max_num_of_points);
+            let mut partial_multiexps = Vec::with_capacity(self.max_num_of_points);
 
             let mut result_wit_proj = G::Projective::zero();
-            for _ in 0..self.num_of_points {
+            for _ in 0..self.max_num_of_points {
                 let scalar_wit : G::Scalar = rng.gen();
                 let point_wit : G = rng.gen();
 
                 let mut tmp = point_wit.into_projective();
                 tmp.mul_assign(scalar_wit);
                 result_wit_proj.add_assign(&tmp);
-
+                let wit = result_wit_proj.clone().into_affine();
+               partial_multiexps.push(AffinePoint::alloc(cs, Some(wit), &self.circuit_params)?);
+                
                 let point = AffinePoint::alloc(cs, Some(point_wit), &self.circuit_params)?;
                 let scalar = FieldElement::alloc(cs, Some(scalar_wit), &self.circuit_params.scalar_field_rns_params)?;
 
@@ -477,31 +480,40 @@ mod test {
                 scalars.push(scalar);
             }
 
-            let result_wit = result_wit_proj.into_affine();
-            let mut actual_result = AffinePoint::alloc(cs, Some(result_wit), &self.circuit_params)?;
-           
-            let counter_start = cs.get_current_step_number();
+            let strategy_iter = std::iter::once(MultiexpStrategy::SelectionTree).chain(
+                std::iter::once(MultiexpStrategy::WaksmanBasedRam)
+            ).chain(
+                std::iter::once(MultiexpStrategy::HashSetsBasedRam)
+            );
+            for (width, strategy) in itertools::iproduct!(2..(self.max_num_of_points+1), strategy_iter) {
+                let geometry = MultiExpGeometry { width, strategy };
+                let mut actual_result = partial_multiexps[width - 1].clone();
+
+                let counter_start = cs.get_current_step_number();
+                let (mut result, _) = AffinePoint::multiexp_complete_with_custom_geometry(
+                    cs, &mut scalars[0..width], &mut points[0..width], geometry
+                )?;
+                let counter_end = cs.get_current_step_number();
+                let num_of_gates = counter_end - counter_start;
+                println!("complete multiexp via {} for {} points takes {} gates", strategy, width, num_of_gates);
+                AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+
+                let counter_start = cs.get_current_step_number();
+                let mut result = AffinePoint::multiexp_non_complete_with_custom_geometry(
+                    cs, &mut scalars[0..width], &mut points[0..width], geometry
+                )?;
+                let counter_end = cs.get_current_step_number();
+                let num_of_gates = counter_end - counter_start;
+                println!("non-complete multiexp via {} for {} points takes {} gates", strategy, width, num_of_gates);
+                AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+            }
+
+            let mut actual_result = partial_multiexps.pop().unwrap();
             let (mut result, _) = AffinePoint::multiexp_complete(cs, &mut scalars, &mut points)?;
-            let counter_end = cs.get_current_step_number();
-            println!("num of gates for complete multiexp for TreeSelector: {}", counter_end - counter_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
-            let counter_start = cs.get_current_step_number();
-            let strategy = MultiExpGeometry {
-                width: 4, strategy: MultiexpStrategy::WaksmanBasedRam
-            };
-            let (mut result, _) = AffinePoint::multiexp_complete_with_custom_geometry(
-                cs, &mut scalars, &mut points, strategy)?;
-            let counter_end = cs.get_current_step_number();
-            println!("num of gates for complete multiexp for Waksman: {}", counter_end - counter_start);
-            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
-            let counter_start = cs.get_current_step_number();
             let mut result = AffinePoint::multiexp_non_complete(cs, &mut scalars, &mut points)?;
-            let counter_end = cs.get_current_step_number();
-            println!("num of gates for non-complete multiexp: {}", counter_end - counter_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-
+           
             Ok(())
         }
     }
@@ -510,7 +522,7 @@ mod test {
     fn test_multiexp_for_bn256() {
         use self::bn256::Bn256;
         const LIMB_SIZE: usize = 80;
-        const NUM_OF_POINTS: usize = 3;
+        const NUM_OF_POINTS: usize = 4;
 
         let mut cs = TrivialAssembly::<
             Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
@@ -518,7 +530,7 @@ mod test {
         inscribe_default_bitop_range_table(&mut cs).unwrap();
         let circuit_params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
 
-        let circuit = TestMultiexpCircuit { circuit_params, num_of_points: NUM_OF_POINTS };
+        let circuit = TestMultiexpCircuit { circuit_params, max_num_of_points: NUM_OF_POINTS };
         circuit.synthesize(&mut cs).expect("must work");
         cs.finalize();
         assert!(cs.is_satisfied()); 

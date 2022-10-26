@@ -177,7 +177,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         FieldElement::enforce_equal(cs, &mut this.c1, &mut other.c1)
     }
     
-    pub fn enforce_not_equal<CS>(cs: &mut CS, this: Self, other: Self) -> Result<(), SynthesisError> 
+    pub fn enforce_not_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         // if x = c0 + u * c1 is not equal y = d0 + u * d1 then at least one of c0 != d0 or c1 != d1 should hold

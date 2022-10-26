@@ -60,9 +60,8 @@ pub enum MultiexpStrategy {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MultiExpGeometry {
-    strategy: MultiexpStrategy,
-    width: usize,
-    height: usize
+    pub strategy: MultiexpStrategy,
+    pub width: usize,
 }
 
 
@@ -117,7 +116,7 @@ where <G as GenericCurveAffine>::Base: PrimeField {
         (dividend + (divisor.clone() >> 1)) / divisor
     }
 
-    pub fn get_opt_multiexp_geonetry(&self) -> MultiExpGeometry {
+    pub fn get_opt_multiexp_geometry(&self) -> MultiExpGeometry {
         self.opt_multiexp_geometry
     }
 
@@ -231,7 +230,7 @@ pub fn generate_optimal_circuit_params_for_bn256<E: Engine, CS: ConstraintSystem
     let b2 = BigUint::from_str("147946756881789319010696353538189108491").expect("should parse");
 
     let opt_multiexp_geometry = MultiExpGeometry { 
-        height: 1, width: 4, strategy: MultiexpStrategy::SelectionTree
+        width: 4, strategy: MultiexpStrategy::SelectionTree
     };
 
     CurveCircuitParameters {
@@ -291,7 +290,7 @@ pub fn generate_optimal_circuit_params_for_secp256k1<E: Engine, CS: ConstraintSy
     let b2 = BigUint::from_str("367917413016453100223835821029139468248").expect("should parse");
 
     let opt_multiexp_geometry = MultiExpGeometry { 
-        height: 1, width: 4, strategy: MultiexpStrategy::SelectionTree
+        width: 4, strategy: MultiexpStrategy::SelectionTree
     };
 
     CurveCircuitParameters {
@@ -352,7 +351,7 @@ pub fn generate_optimal_circuit_params_for_bls12<E: Engine, CS: ConstraintSystem
     let b2 = BigUint::from_str("228988810152649578064853576960394133504").expect("should parse");
 
     let opt_multiexp_geometry = MultiExpGeometry { 
-        height: 1, width: 4, strategy: MultiexpStrategy::SelectionTree
+        width: 4, strategy: MultiexpStrategy::SelectionTree
     };
 
     CurveCircuitParameters {
@@ -689,7 +688,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
     }
 
     #[track_caller]
-    pub fn sub_unequal_unchecked<CS>(&mut self, cs: &mut CS, other: &mut Self) -> Result<Self, SynthesisError> 
+    pub fn sub_unequal_unchecked<CS>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         match (self.get_value(), other.get_value()) {
@@ -951,6 +950,60 @@ where <G as GenericCurveAffine>::Base: PrimeField
         )?;
         
         Ok((self.x.clone(), parity_flag))
-    }    
+    }
+    
+    pub fn halving<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        let wit = self.get_value().map(|x| {
+            // if x = 2 * y and order of group is n - odd prime, then:
+            // (n-1)/2 * x = (n-1) * y = -y
+            let mut scalar = <G::Scalar as PrimeField>::char();
+            scalar.div2();
+            let mut res = x.mul(scalar).into_affine();
+            res.negate();
+            res
+        });
+
+        let halved = AffinePoint::alloc(cs, wit, self.circuit_params)?;
+        let mut initial = halved.double(cs)?;
+        AffinePoint::enforce_equal(cs, self, &mut initial)?;
+        
+        Ok(halved)
+    }
+    
+    // elliptic point addtion is not exception free: it is not possible if x = x'
+    // this function checks if x = x' and in this case it returns some garbage result and flag indicating
+    // that result is meaningless, if addtio is possible withput exception then this function simply does
+    // the operation and returned is_garbage flag is false
+    pub fn prudent_add<CS>(&mut self, cs: &mut CS, other: &mut Self) -> Result<(Self, Boolean), SynthesisError>
+    where CS: ConstraintSystem<E> {
+        let garbage_flag = FieldElement::equals(cs, &mut self.x, &mut other.x)?;
+        let mut tmp = other.clone();
+        tmp.x = tmp.get_x().conditionally_increment(cs, &garbage_flag)?;
+        tmp.value = tmp.get_value().map(|x| {
+            if garbage_flag.get_value().unwrap_or(false) {
+                G::zero()
+            } else {
+                x
+            }
+        });
+        let result = self.add_unequal_unchecked(cs, &tmp)?;
+        Ok((result, garbage_flag))
+    }
+
+    pub fn prudent_sub<CS>(&mut self, cs: &mut CS, other: &mut Self) -> Result<(Self, Boolean), SynthesisError>
+    where CS: ConstraintSystem<E> {
+        let garbage_flag = FieldElement::equals(cs, &mut self.x, &mut other.x)?;
+        let mut tmp = other.clone();
+        tmp.x = tmp.get_x().conditionally_increment(cs, &garbage_flag)?;
+        tmp.value = tmp.get_value().map(|x| {
+            if garbage_flag.get_value().unwrap_or(false) {
+                G::zero()
+            } else {
+                x
+            }
+        });
+        let result = self.sub_unequal_unchecked(cs, &tmp)?;
+        Ok((result, garbage_flag))
+    }
 }
 

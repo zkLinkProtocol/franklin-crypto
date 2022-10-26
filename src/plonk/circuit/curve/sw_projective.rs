@@ -556,6 +556,28 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let selected = Self { x, y, z, value, circuit_params };
         Ok(selected)
     }
+
+    pub fn halving<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        let default = AffinePoint::constant(G::one(), self.circuit_params);
+        let (mut affine_point, is_point_at_infty) = self.convert_to_affine_or_default(cs, &default)?;
+        let wit = affine_point.get_value().map(|x| {
+            // if x = 2 * y and order of group is n - odd prime, then:
+            // (n-1)/2 * x = (n-1) * y = -y
+            let mut scalar = <G::Scalar as PrimeField>::char();
+            scalar.div2();
+            let mut res = x.mul(scalar).into_affine();
+            res.negate();
+            res
+        });
+
+        let halved = AffinePoint::alloc(cs, wit, self.circuit_params)?;
+        let mut initial = halved.double(cs)?;
+        AffinePoint::enforce_equal(cs, &mut affine_point, &mut initial)?;
+
+        ProjectivePoint::conditionally_select(
+            cs, &is_point_at_infty, &ProjectivePoint::zero(self.circuit_params), &ProjectivePoint::from(halved)
+        )
+    }
 }
 
 

@@ -1128,6 +1128,39 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         self.add_with_reduction(cs, other, !self.representation_params.allow_individual_limb_overflow)
     }
 
+    pub fn conditionally_increment<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError>
+    where CS: ConstraintSystem<E> {
+        let params = self.representation_params;
+        let new_value = self.get_field_value().add(&flag.get_value().map(|x| if x {F::one()} else {F::zero()}));
+        
+        if self.is_constant() && flag.is_constant() {
+            let new = Self::constant(new_value.unwrap(), params);
+            return Ok(new);
+        }
+        
+        let mut new_binary_limbs = vec![];
+        for x in self.binary_limbs.iter() {
+            let new_term = x.term.conditionally_increment(cs, flag)?;
+            let new_max_value = x.max_value.clone() + BigUint::one();
+            let limb = Limb::<E>::new(new_term, new_max_value);
+            new_binary_limbs.push(limb);
+        };
+        let new_base_limb = self.base_field_limb.conditionally_increment(cs, flag)?;
+        
+        let mut new = Self {
+            binary_limbs: new_binary_limbs,
+            base_field_limb: new_base_limb,
+            value: new_value,
+            representation_params: params,
+            reduction_status: ReductionStatus::Unreduced
+        };
+
+        if cfg!(debug_assertions) {
+            new.debug_check_value_coherency();
+        }
+        Ok(new)
+    }
+
     pub fn scale_with_reduction<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, factor: u64, needs_reduction: bool
     ) -> Result<Self, SynthesisError>  

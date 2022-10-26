@@ -778,6 +778,31 @@ impl<E: Engine> Term<E> {
         Ok(new)
     }
 
+    pub fn conditionally_increment<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, flag: &Boolean
+    ) -> Result<Self, SynthesisError> {
+        match flag {
+            Boolean::Constant(c) => {
+                if *c {
+                    return Ok(self.clone());
+                } else {
+                    let mut tmp = self.clone();
+                    tmp.add_constant(&E::Fr::one());
+                    return Ok(tmp);
+                }
+            },
+            _ => {}
+        }
+
+        let mut lc = LinearCombination::zero();
+        lc.add_assign_term_with_coeff(&Self::from_boolean(flag), E::Fr::one());
+        lc.add_assign_term(self);
+        let res = lc.into_num(cs)?;
+
+        let new = Self::from_num(res);
+        Ok(new)
+    }
+
     pub fn inverse<CS: ConstraintSystem<E>>(
         &self,
         cs: &mut CS,

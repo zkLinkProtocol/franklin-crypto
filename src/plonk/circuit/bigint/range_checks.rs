@@ -196,6 +196,19 @@ pub fn constraint_bit_length<E: Engine, CS: ConstraintSystem<E>>(
     Ok(())
 }
 
+pub fn constraint_bit_length_for_num<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, num: &Num<E>, num_bits: usize
+) -> Result<(), SynthesisError> {
+    match num {
+        Num::Constant(fr) => {
+            let as_biguint = fe_to_biguint(fr);
+            assert!(as_biguint.bits() as usize <= num_bits);
+            Ok(())
+        },
+        Num::Variable(var) => constraint_bit_length(cs, var, num_bits)
+    }
+}
+
 
 pub fn allocate_gate_with_linear_only_terms_in_reversed_order<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, vars: &[Variable], coefs: &[E::Fr], d_next_coef: &E::Fr

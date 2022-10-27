@@ -458,6 +458,7 @@ mod test {
     
         fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
             let mut rng = rand::thread_rng();
+        
             let mut points = Vec::with_capacity(self.max_num_of_points);
             let mut scalars = Vec::with_capacity(self.max_num_of_points);
             let mut partial_multiexps = Vec::with_capacity(self.max_num_of_points);
@@ -471,7 +472,7 @@ mod test {
                 tmp.mul_assign(scalar_wit);
                 result_wit_proj.add_assign(&tmp);
                 let wit = result_wit_proj.clone().into_affine();
-               partial_multiexps.push(AffinePoint::alloc(cs, Some(wit), &self.circuit_params)?);
+                partial_multiexps.push(AffinePoint::alloc(cs, Some(wit), &self.circuit_params)?);
                 
                 let point = AffinePoint::alloc(cs, Some(point_wit), &self.circuit_params)?;
                 let scalar = FieldElement::alloc(cs, Some(scalar_wit), &self.circuit_params.scalar_field_rns_params)?;
@@ -513,7 +514,7 @@ mod test {
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
             let mut result = AffinePoint::multiexp_non_complete(cs, &mut scalars, &mut points)?;
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
-           
+        
             Ok(())
         }
     }
@@ -529,6 +530,24 @@ mod test {
         >::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
         let circuit_params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
+
+        let circuit = TestMultiexpCircuit { circuit_params, max_num_of_points: NUM_OF_POINTS };
+        circuit.synthesize(&mut cs).expect("must work");
+        cs.finalize();
+        assert!(cs.is_satisfied()); 
+    }
+
+    #[test]
+    fn test_multiexp_for_secp256k1() {
+        use self::bn256::Bn256;
+        const LIMB_SIZE: usize = 80;
+        const NUM_OF_POINTS: usize = 4;
+
+        let mut cs = TrivialAssembly::<
+            Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
+        >::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let circuit_params = generate_optimal_circuit_params_for_secp256k1::<Bn256, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
 
         let circuit = TestMultiexpCircuit { circuit_params, max_num_of_points: NUM_OF_POINTS };
         circuit.synthesize(&mut cs).expect("must work");

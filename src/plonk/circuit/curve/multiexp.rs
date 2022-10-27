@@ -194,9 +194,9 @@ where <G as GenericCurveAffine>::Base: PrimeField
             let need_to_negate = Boolean::Is(AllocatedBit::alloc(cs, need_to_negate_wit)?);
             let mut to_add = adj_offset.conditionally_negate(cs, &need_to_negate)?;
             let (modified_acc, possible_infty_flag_1) = if exception_free_version {
-                acc.prudent_sub(cs, &mut to_add)?
+                acc.prudent_add(cs, &mut to_add)?
             } else {
-                let res = acc.sub_unequal(cs, &mut to_add)?;
+                let res = acc.add_unequal(cs, &mut to_add)?;
                 (res, Boolean::constant(false))
             };
             let cond_wit = is_defined_over_base_field(&modified_acc);
@@ -1246,7 +1246,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let x_c1 = FieldElement::zero(&params.base_field_rns_params);
         let y_c0 = candidate.get_y();
         let aux_c1 = FieldElement::constant(
-            params.fp2_offset_generator_y_c1.clone(), &params.base_field_rns_params
+            params.fp2_pt_ord3_y_c1.clone(), &params.base_field_rns_params
         );
         let y_c1 = FieldElement::conditionally_select(
             cs, &is_point_at_infty, &aux_c1, &FieldElement::zero(&params.base_field_rns_params)

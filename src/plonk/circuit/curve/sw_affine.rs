@@ -49,7 +49,7 @@ use num_integer::Integer;
 use num_traits::{Zero, One};
 use std::str::FromStr;
 use crate::plonk::circuit::bigint::*;
-
+use plonk::circuit::curve::ProjectivePoint;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MultiexpStrategy {
@@ -447,7 +447,10 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let new = Self { x, y, value, circuit_params};
 
         if require_checks {
+            let before = cs.get_current_step_number();
             new.enforce_if_on_curve(cs)?;
+            let after = cs.get_current_step_number();
+            println!("before {}, after {}", before, after);
             new.enforce_if_in_subgroup(cs)?;
         }
         Ok((new, x_decomposition, y_decomposition))
@@ -1014,6 +1017,46 @@ where <G as GenericCurveAffine>::Base: PrimeField
         });
         let result = self.sub_unequal_unchecked(cs, &tmp)?;
         Ok((result, garbage_flag))
+    }
+
+    pub fn fast_subgroup_checks<CS>(self, cs: &mut CS)-> Result<Boolean, SynthesisError>
+    where CS: ConstraintSystem<E> {
+        let params = self.clone().circuit_params;
+        let base_rns_params = &params.base_field_rns_params;
+        let point_from_aff_to_proj = ProjectivePoint::from(self.clone());
+
+        use bellman::bls12_381::Fr;
+        let mut hamming_weight = BigUint::from_str("15132376222941642752").unwrap();
+        let tr = BigUint::from_str("3").unwrap();
+        // (z^2 − 1)/3
+        let mut scalar = (hamming_weight.clone() * hamming_weight.clone() - BigUint::one())/tr;
+
+        let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+        let endo_x = point_from_aff_to_proj.get_x().mul(cs, &beta)?;
+        let endo_exp2_x = endo_x.mul(cs, &beta)?;
+
+        let endo_point = ProjectivePoint::from_coordinates_unchecked(
+            endo_x, 
+            point_from_aff_to_proj.get_y(), 
+            point_from_aff_to_proj.get_z(), 
+            point_from_aff_to_proj.circuit_params
+        );
+        let endo_point_exp2 = ProjectivePoint::from_coordinates_unchecked(
+            endo_exp2_x, 
+            point_from_aff_to_proj.get_y(), 
+            point_from_aff_to_proj.get_z(), 
+            point_from_aff_to_proj.circuit_params
+        );
+
+
+        let mut equation = endo_point.double(cs)?;
+        equation.sub(cs, &point_from_aff_to_proj)?;
+        equation.sub(cs, &endo_point_exp2)?;
+
+
+
+
+        todo!();
     }
 }
 

@@ -435,6 +435,21 @@ where <G as GenericCurveAffine>::Base: PrimeField
         };
         Ok(new)
     }
+
+    pub fn double_and_add_const_scalar<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, scalar: Vec<u8>)-> Result<Self, SynthesisError>{
+
+        let params = self.circuit_params;
+        let mut res = Self::zero(params);
+        let mut temp = self.clone();
+        for bits in scalar.into_iter(){
+
+            if bits == 1{
+                res = res.add(cs, &temp)?;
+            }
+            temp = temp.double(cs)?;
+        }
+        Ok(res)
+    }
    
     #[track_caller]
     fn add_sub_mixed_impl<CS: ConstraintSystem<E>>(
@@ -577,6 +592,18 @@ where <G as GenericCurveAffine>::Base: PrimeField
         ProjectivePoint::conditionally_select(
             cs, &is_point_at_infty, &ProjectivePoint::zero(self.circuit_params), &ProjectivePoint::from(halved)
         )
+    }
+
+    pub fn equals<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<Boolean, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        let x_check = FieldElement::equals(cs, &mut this.x, &mut other.x)?;
+        let y_check = FieldElement::equals(cs, &mut this.y, &mut other.y)?;
+        let z_check = FieldElement::equals(cs, &mut this.z, &mut other.z)?;
+        let mut equals = Boolean::and(cs, &x_check, &y_check)?;
+        equals = Boolean::and(cs, &equals, &z_check)?;
+        
+        Ok(equals)
     }
 }
 

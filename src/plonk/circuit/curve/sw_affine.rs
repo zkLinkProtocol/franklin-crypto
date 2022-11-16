@@ -332,13 +332,11 @@ pub fn generate_optimal_circuit_params_for_bls12<E: Engine, CS: ConstraintSystem
     use super::secp256k1::fr::Fr as Fr;
 
     let fp2_offset_generator_x_c0 = Fq::from_str(
-        "1067264685030724708538788882656460381104931541603938723410358338973606906391679083715376977125266 \
-        347261808406513360"
+        "1067264685030724708538788882656460381104931541603938723410358338973606906391679083715376977125266347261808406513360"
     ).expect("should parse");
     let fp2_offset_generator_x_c1 = Fq::zero();
     let fp2_offset_generator_y_c0 = Fq::from_str(
-        "321012996715331830201056169306862715561405722782489933905452108492991173862920704991336014140647306 \
-        8435860637374216"
+        "3210129967153318302010561693068627155614057227824899339054521084929911738629207049913360141406473068435860637374216"
     ).expect("should parse");
     let fp2_offset_generator_y_c1 = Fq::zero();
     
@@ -1019,17 +1017,21 @@ where <G as GenericCurveAffine>::Base: PrimeField
         Ok((result, garbage_flag))
     }
 
+
+
+    // [(z^2 − 1)/3](2σ(P) − P − σ^2(P)) − σ^2(P) = inf
     pub fn fast_subgroup_checks<CS>(self, cs: &mut CS)-> Result<Boolean, SynthesisError>
     where CS: ConstraintSystem<E> {
         let params = self.clone().circuit_params;
         let base_rns_params = &params.base_field_rns_params;
         let point_from_aff_to_proj = ProjectivePoint::from(self.clone());
 
-        use bellman::bls12_381::Fr;
-        let mut hamming_weight = BigUint::from_str("15132376222941642752").unwrap();
+        let hamming_weight = BigUint::from_str("15132376222941642752").unwrap();
         let tr = BigUint::from_str("3").unwrap();
         // (z^2 − 1)/3
-        let mut scalar = (hamming_weight.clone() * hamming_weight.clone() - BigUint::one())/tr;
+        let scalar = (hamming_weight.clone() * hamming_weight.clone() - BigUint::one())/tr;
+
+        let scalar = scalar.to_bytes_le();
 
         let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
         let endo_x = point_from_aff_to_proj.get_x().mul(cs, &beta)?;
@@ -1052,11 +1054,12 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let mut equation = endo_point.double(cs)?;
         equation.sub(cs, &point_from_aff_to_proj)?;
         equation.sub(cs, &endo_point_exp2)?;
+        equation.double_and_add_const_scalar(cs, scalar)?;
+        equation.sub(cs, &endo_point_exp2)?;
 
+        let if_is = ProjectivePoint::equals(cs, &mut equation, &mut ProjectivePoint::zero(&params))?;
 
-
-
-        todo!();
+        Ok(if_is)
     }
 }
 

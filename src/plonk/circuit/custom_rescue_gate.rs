@@ -43,41 +43,47 @@ impl<E: Engine> GateInternal<E> for Rescue5CustomGate {
         false
     }
 
-    fn all_queried_polynomials(&self) -> Vec<PolynomialInConstraint> {
-        vec![
+    #[inline]
+    fn all_queried_polynomials(&self) -> &'static [PolynomialInConstraint] {
+        const ALL_QUERIED: [PolynomialInConstraint; 4] = [
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(0)),
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(1)),
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(2)),
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(3)),
-        ]
+        ];
+
+        &ALL_QUERIED
     }
 
-    fn setup_polynomials(&self) -> Vec<PolyIdentifier> {
-        vec![
-        ]
+    #[inline]
+    fn setup_polynomials(&self) -> &'static [PolyIdentifier] {
+        &[]
     }
 
-    fn variable_polynomials(&self) -> Vec<PolyIdentifier> {
-        vec![
+    #[inline]
+    fn variable_polynomials(&self) -> &'static [PolyIdentifier] {
+        const VARIABLE_POLYS: [PolyIdentifier; 4] = [
             PolyIdentifier::VariablesPolynomial(0),
             PolyIdentifier::VariablesPolynomial(1),
             PolyIdentifier::VariablesPolynomial(2),
             PolyIdentifier::VariablesPolynomial(3),
-        ]
+        ];
+        &VARIABLE_POLYS
     }
 
+    #[inline]
     fn benefits_from_linearization(&self) -> bool {
         false
     }
 
-    fn linearizes_over(&self) -> Vec<PolynomialInConstraint> {
-        vec![
-        ]
+    #[inline]
+    fn linearizes_over(&self) -> &'static [PolynomialInConstraint] {
+        &[]
     }
 
-    fn needs_opened_for_linearization(&self) -> Vec<PolynomialInConstraint> {
-        vec![
-        ]
+    #[inline]
+    fn needs_opened_for_linearization(&self) -> &'static [PolynomialInConstraint] {
+        &[]
     }
 
     fn num_quotient_terms(&self) -> usize {
@@ -137,7 +143,7 @@ impl<E: Engine> GateInternal<E> for Rescue5CustomGate {
 
         let coset_factor = E::Fr::multiplicative_generator();
        
-        for p in <Self as GateInternal<E>>::all_queried_polynomials(&self).into_iter() {
+        for &p in <Self as GateInternal<E>>::all_queried_polynomials(&self).into_iter() {
             ensure_in_map_or_create(&worker, 
                 p, 
                 domain_size, 

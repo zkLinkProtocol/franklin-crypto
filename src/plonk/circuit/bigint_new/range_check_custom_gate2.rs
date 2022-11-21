@@ -36,42 +36,43 @@ impl<E: Engine> GateInternal<E> for TwoBitDecompositionRangecheckCustomGate {
         4
     }
 
-    fn all_queried_polynomials(&self) -> Vec<PolynomialInConstraint> {
-        vec![
+    fn all_queried_polynomials(&self) -> &'static [PolynomialInConstraint] {
+        const polys : [PolynomialInConstraint; 5] = [
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(0)),
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(1)),
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(2)),
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(3)),
             PolynomialInConstraint::from_id_and_dilation(PolyIdentifier::VariablesPolynomial(3), 1),
-        ]
+        ];
+
+        &polys
     }
 
-    fn setup_polynomials(&self) -> Vec<PolyIdentifier> {
-        vec![
-        ]
+    fn setup_polynomials(&self) -> &'static [PolyIdentifier] {
+        &[]
     }
 
-    fn variable_polynomials(&self) -> Vec<PolyIdentifier> {
-        vec![
+    fn variable_polynomials(&self) -> &'static [PolyIdentifier] {
+        const polys : [PolyIdentifier;4] = [
             PolyIdentifier::VariablesPolynomial(0),
             PolyIdentifier::VariablesPolynomial(1),
             PolyIdentifier::VariablesPolynomial(2),
             PolyIdentifier::VariablesPolynomial(3),
-        ]
+        ];
+
+        &polys
     }
 
     fn benefits_from_linearization(&self) -> bool {
         false
     }
 
-    fn linearizes_over(&self) -> Vec<PolynomialInConstraint> {
-        vec![
-        ]
+    fn linearizes_over(&self) -> &'static [PolynomialInConstraint] {
+        &[]
     }
 
-    fn needs_opened_for_linearization(&self) -> Vec<PolynomialInConstraint> {
-        vec![
-        ]
+    fn needs_opened_for_linearization(&self) -> &'static [PolynomialInConstraint] {
+        &[]
     }
 
     fn num_quotient_terms(&self) -> usize {
@@ -148,7 +149,7 @@ impl<E: Engine> GateInternal<E> for TwoBitDecompositionRangecheckCustomGate {
 
         let coset_factor = E::Fr::multiplicative_generator();
        
-        for p in <Self as GateInternal<E>>::all_queried_polynomials(&self).into_iter() {
+        for &p in <Self as GateInternal<E>>::all_queried_polynomials(&self).into_iter() {
             ensure_in_map_or_create(&worker, 
                 p, 
                 domain_size, 

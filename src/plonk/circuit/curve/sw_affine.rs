@@ -1022,18 +1022,39 @@ where <G as GenericCurveAffine>::Base: PrimeField
     // [(z^2 − 1)/3](2σ(P) − P − σ^2(P)) − σ^2(P) = inf
     pub fn fast_subgroup_checks<CS>(self, cs: &mut CS)-> Result<Boolean, SynthesisError>
     where CS: ConstraintSystem<E> {
+        use bellman::bls12_381::Fr;
         let params = self.clone().circuit_params;
         let base_rns_params = &params.base_field_rns_params;
+        let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+
         let point_from_aff_to_proj = ProjectivePoint::from(self.clone());
 
         let hamming_weight = BigUint::from_str("15132376222941642752").unwrap();
         let tr = BigUint::from_str("3").unwrap();
         // (z^2 − 1)/3
-        let scalar = (hamming_weight.clone() * hamming_weight.clone() - BigUint::one())/tr;
+        let wit_scalar = (hamming_weight.clone() * hamming_weight.clone() - BigUint::one())/tr;
+        let mut point_wit = self.get_value().unwrap().into_projective();
+        let point_begin = point_wit;
+        point_wit.mul_assign(params.lambda);
+        let mut point_endo_wit = point_wit;
+        point_wit.double();
+        point_wit.sub_assign(&point_begin);
+        point_endo_wit.mul_assign(params.lambda);
+        point_wit.sub_assign(&point_endo_wit);
+        let scalar_ff = G::Scalar::from_str(&wit_scalar.to_str_radix(10)).unwrap();
+        point_wit.mul_assign(scalar_ff);
+        point_wit.sub_assign(&point_endo_wit);
 
-        let scalar = scalar.to_bytes_le();
+        let mut actual_result = ProjectivePoint::from(
+            AffinePoint::alloc(cs, Some(point_wit.into_affine()), &params).unwrap()
+        );
 
-        let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+        // lets create scalar for optimization with this number 228988810152649578064853576960394133504
+        let decimal = BigUint::from_str("228988810152649578064853576960394133504");
+
+        let scalar = from_dec_to_vecbool(decimal.unwrap());
+
+
         let endo_x = point_from_aff_to_proj.get_x().mul(cs, &beta)?;
         let endo_exp2_x = endo_x.mul(cs, &beta)?;
 
@@ -1054,12 +1075,32 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let mut equation = endo_point.double(cs)?;
         equation.sub(cs, &point_from_aff_to_proj)?;
         equation.sub(cs, &endo_point_exp2)?;
+        let reserv = equation.clone();
         equation.double_and_add_const_scalar(cs, scalar)?;
+        equation.sub(cs, &reserv)?;
         equation.sub(cs, &endo_point_exp2)?;
+
+        let mut gat_point = actual_result.double(cs)?;
+        gat_point.add(cs, &actual_result)?;
+
+        ProjectivePoint::enforce_equal(cs, &mut gat_point, &mut equation)?;
 
         let if_is = ProjectivePoint::equals(cs, &mut equation, &mut ProjectivePoint::zero(&params))?;
 
         Ok(if_is)
     }
 }
+pub fn from_dec_to_vecbool(decimal: BigUint)-> Vec<Option<bool>>{
+    let str: &str = &format!("{decimal:b}");
+    let char: Vec<char> = str.chars().collect::<Vec<_>>();
+    let mut vec_bool = vec![];
+
+    for i in char.iter(){
+        let bool = *i == '1';
+        vec_bool.push(Some(bool));
+    }
+    vec_bool
+
+}
+
 

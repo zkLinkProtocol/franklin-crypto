@@ -575,6 +575,30 @@ mod test {
         println!("{:?}", result);
 
     }
+    #[test]
+    fn const_test() {
+        use plonk::circuit::*;
+        use num_traits::{Zero, One};
+        use std::str::FromStr;
+        use num_bigint::BigUint;
+        use num_integer::Integer;
+
+        let hamming_weight = BigUint::from_str("15132376222941642752").unwrap();
+        let tr = BigUint::from_str("3").unwrap();
+        // (z^2 − 1)/3
+        let scalar = (hamming_weight.clone() * hamming_weight.clone() - BigUint::one())/tr;
+        // let a:i64 = 111001011011001000110000000000010101010101010111100001010101100000000000000000000000000000000001010101010101010101010101010101;
+        
+        let scalar_2 = (hamming_weight.clone() * hamming_weight.clone() - BigUint::one());
+        println!("{:?}", scalar_2);
+        // 228988810152649578064853576960394133503 
+        // bigendian
+        // 10101100010001011010010000000001000000000000000110100100000000100000000000000000000000000000000011111111111111111111111111111111
+        // silverman repr 1010110001000101101001000000000100000000000000011010010000000010000000000000000000000000000000010000000000000000000000000000000-1
+
+        //228988810152649578064853576960394133504
+
+    }
 
 
 }

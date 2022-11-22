@@ -436,14 +436,14 @@ where <G as GenericCurveAffine>::Base: PrimeField
         Ok(new)
     }
 
-    pub fn double_and_add_const_scalar<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, scalar: Vec<u8>)-> Result<Self, SynthesisError>{
+    pub fn double_and_add_const_scalar<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, scalar: Vec<Option<bool>>)-> Result<Self, SynthesisError>{
 
         let params = self.circuit_params;
         let mut res = Self::zero(params);
         let mut temp = self.clone();
-        for bits in scalar.into_iter(){
+        for bits in scalar.into_iter().map(|x| x.unwrap()){
 
-            if bits == 1{
+            if bits == true{
                 res = res.add(cs, &temp)?;
             }
             temp = temp.double(cs)?;

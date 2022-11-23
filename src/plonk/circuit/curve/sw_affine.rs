@@ -46,7 +46,7 @@ use super::super::boolean::{Boolean, AllocatedBit};
 use bellman::CurveAffine;
 use num_bigint::BigUint;
 use num_integer::Integer;
-use num_traits::{Zero, One};
+use num_traits::*;
 use std::str::FromStr;
 use crate::plonk::circuit::bigint::*;
 use plonk::circuit::curve::ProjectivePoint;
@@ -1016,38 +1016,32 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let result = self.sub_unequal_unchecked(cs, &tmp)?;
         Ok((result, garbage_flag))
     }
+    /*
+    Technique for checking that a point P exists within G1.
+    We use the LLL algorithm to find the subgroup check:
+    [(z^2 − 1)/3](2σ(P) − P − σ^2(P)) − σ^2(P) = inf
+    with using only trivial group operations and a scalar multiplication by (z^2 − 1)/3, 
+    which is half the size of q and has low Hamming weight.
 
-
-
-    // [(z^2 − 1)/3](2σ(P) − P − σ^2(P)) − σ^2(P) = inf
+    Sourse: https://eprint.iacr.org/2019/814.pdf
+    */
     pub fn fast_subgroup_checks<CS>(self, cs: &mut CS)-> Result<Boolean, SynthesisError>
     where CS: ConstraintSystem<E> {
-        use bellman::bls12_381::Fr;
+
         let params = self.clone().circuit_params;
         let base_rns_params = &params.base_field_rns_params;
-        let beta = FieldElement::constant(params.beta.clone(), base_rns_params);
+        let beta = FieldElement::constant(params.beta, base_rns_params);
 
         let point_from_aff_to_proj = ProjectivePoint::from(self.clone());
 
-        let hamming_weight = BigUint::from_str("15132376222941642752").unwrap();
-        let tr = BigUint::from_str("3").unwrap();
-        // (z^2 − 1)/3
-        let wit_scalar = (hamming_weight.clone() * hamming_weight.clone() - BigUint::one())/tr;
-        let mut point_wit = self.get_value().unwrap().into_projective();
-        let point_begin = point_wit;
-        point_wit.mul_assign(params.lambda);
-        let mut point_endo_wit = point_wit;
-        point_wit.double();
-        point_wit.sub_assign(&point_begin);
-        point_endo_wit.mul_assign(params.lambda);
-        point_wit.sub_assign(&point_endo_wit);
-        let scalar_ff = G::Scalar::from_str(&wit_scalar.to_str_radix(10)).unwrap();
-        point_wit.mul_assign(scalar_ff);
-        point_wit.sub_assign(&point_endo_wit);
+        // The value z = -0xd201000000010000 gives the largest qnand the lowest Hamming weight meeting these criteria.
+        // in our case, it is not necessary to take a negative constant
+        let z_parametr = BigUint::from_str("15132376222941642752").unwrap();
+        let three = BigUint::from_str("3").unwrap();
 
-        let mut actual_result = ProjectivePoint::from(
-            AffinePoint::alloc(cs, Some(point_wit.into_affine()), &params).unwrap()
-        );
+        // (z^2 − 1)/3
+        let wit_scalar = (pow(z_parametr, 2) - BigUint::one())/three;
+        let scalar_ff = G::Scalar::from_str(&wit_scalar.to_str_radix(10)).unwrap();
 
         // lets create scalar for optimization with this number 228988810152649578064853576960394133504
         let decimal = BigUint::from_str("228988810152649578064853576960394133504");
@@ -1072,20 +1066,29 @@ where <G as GenericCurveAffine>::Base: PrimeField
         );
 
 
+        //(2σ(P) − P − σ^2(P))
         let mut equation = endo_point.double(cs)?;
         equation.sub(cs, &point_from_aff_to_proj)?;
         equation.sub(cs, &endo_point_exp2)?;
         let reserv = equation.clone();
+
         equation.double_and_add_const_scalar(cs, scalar)?;
         equation.sub(cs, &reserv)?;
-        equation.sub(cs, &endo_point_exp2)?;
 
-        let mut gat_point = actual_result.double(cs)?;
-        gat_point.add(cs, &actual_result)?;
+        let mut witness = reserv.get_value().unwrap().into_projective();
+        witness.mul_assign(scalar_ff);
+        let mut actual_result = ProjectivePoint::from(
+            AffinePoint::alloc(cs, Some(witness.into_affine()), &params).unwrap()
+        );
+        let mut cur_point = actual_result.double(cs)?;
+        cur_point.add(cs, &actual_result)?;
+        ProjectivePoint::enforce_equal(cs, &mut cur_point, &mut equation)?;
 
-        ProjectivePoint::enforce_equal(cs, &mut gat_point, &mut equation)?;
+        // do not forget about − σ^2(P)
+        actual_result.sub(cs, &endo_point_exp2)?;
 
-        let if_is = ProjectivePoint::equals(cs, &mut equation, &mut ProjectivePoint::zero(&params))?;
+
+        let if_is = ProjectivePoint::equals(cs, &mut actual_result, &mut ProjectivePoint::zero(&params))?;
 
         Ok(if_is)
     }

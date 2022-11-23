@@ -1076,7 +1076,6 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let reserv = equation.clone();
 
         equation.double_and_add_const_scalar_for_ternaryexp(cs, scalar_with_minus_one)?;
-        equation.sub(cs, &reserv)?;
 
         let mut witness = reserv.get_value().unwrap().into_projective();
         witness.mul_assign(scalar_ff);

@@ -1043,10 +1043,13 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let wit_scalar = (pow(z_parametr, 2) - BigUint::one())/three;
         let scalar_ff = G::Scalar::from_str(&wit_scalar.to_str_radix(10)).unwrap();
 
-        // lets create scalar for optimization with this number 228988810152649578064853576960394133504
+        // lets create scalar for optimization with this number (z^2) ––– 228988810152649578064853576960394133504
         let decimal = BigUint::from_str("228988810152649578064853576960394133504");
-
         let scalar = from_dec_to_vecbool(decimal.unwrap());
+        let mut scalar_with_minus_one = TernaryExp::from_vec_bool_to_ternary(scalar);
+        // then dont forget z^2 − 1
+        let n = scalar_with_minus_one.len() - 1;
+        scalar_with_minus_one[n] = TernaryExp::MinusOne;
 
 
         let endo_x = point_from_aff_to_proj.get_x().mul(cs, &beta)?;
@@ -1072,7 +1075,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         equation.sub(cs, &endo_point_exp2)?;
         let reserv = equation.clone();
 
-        equation.double_and_add_const_scalar(cs, scalar)?;
+        equation.double_and_add_const_scalar_for_ternaryexp(cs, scalar_with_minus_one)?;
         equation.sub(cs, &reserv)?;
 
         let mut witness = reserv.get_value().unwrap().into_projective();
@@ -1091,6 +1094,26 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let if_is = ProjectivePoint::equals(cs, &mut actual_result, &mut ProjectivePoint::zero(&params))?;
 
         Ok(if_is)
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TernaryExp{
+    One,
+    Zero,
+    MinusOne,
+}
+impl TernaryExp {
+
+    pub fn from_vec_bool_to_ternary(array: Vec<Option<bool>>)-> Vec<Self>{
+        let mut new_vec = vec![];
+        for i in array.into_iter().map(|x| x.unwrap()){
+            if i == true{
+                new_vec.push(Self::One)
+            } else{
+                new_vec.push(Self::Zero)
+            }
+        }
+        new_vec
     }
 }
 pub fn from_dec_to_vecbool(decimal: BigUint)-> Vec<Option<bool>>{

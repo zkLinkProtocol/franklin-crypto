@@ -450,6 +450,23 @@ where <G as GenericCurveAffine>::Base: PrimeField
         }
         Ok(res)
     }
+    pub fn double_and_add_const_scalar_for_ternaryexp<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS, scalar: Vec<TernaryExp>)-> Result<Self, SynthesisError>{
+
+        let params = self.circuit_params;
+        let mut res = Self::zero(params);
+        let mut temp = self.clone();
+        for bits in scalar.into_iter(){
+
+            if bits == TernaryExp::One{
+                res = res.add(cs, &temp)?;
+            }
+            if bits == TernaryExp::MinusOne{
+                res = res.sub(cs, &temp)?;
+            }
+            temp = temp.double(cs)?;
+        }
+        Ok(res)
+    }
    
     #[track_caller]
     fn add_sub_mixed_impl<CS: ConstraintSystem<E>>(

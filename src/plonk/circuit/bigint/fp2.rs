@@ -147,7 +147,7 @@ impl<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> Fp2Chain<'a, E, F, T>
         self.elems_to_add.iter().chain(self.elems_to_sub.iter()).all(|x| x.is_constant())
     }
 
-    pub fn get_field_value(&self) -> (Option<F>, Option<F>) {
+    pub fn get_field_value_as_coordinates(&self) -> (Option<F>, Option<F>) {
         let (pos_c0, pos_c1) = self.elems_to_add.iter().fold((Some(F::zero()), Some(F::zero())), |acc, x| {
             (acc.0.add(&x.c0.get_field_value()), acc.1.add(&x.c1.get_field_value()))
         });
@@ -246,6 +246,12 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         let mut a = FieldElement::conditionally_select(cs, &selector, &this.c1, &this.c0)?;
         let mut b = FieldElement::conditionally_select(cs, &selector, &other.c1, &other.c0)?;
         FieldElement::enforce_not_equal(cs, &mut a, &mut b)
+    }
+
+    pub fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> {
+        let c0_is_zero = FieldElement::is_zero(&mut self.c0, cs)?; 
+        let c1_is_zero = FieldElement::is_zero(&mut self.c1, cs)?;
+        Boolean::and(cs, &c0_is_zero, &c1_is_zero) 
     }
      
     pub fn conditionally_select<CS: ConstraintSystem<E>>(
@@ -571,6 +577,12 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         let c1 = FieldElement::collapse_chain(cs, subchain)?;
 
         Ok(Self::from_coordinates(c0, c1))
+    }
+
+    pub fn from_boolean(flag: &Boolean, params: &RnsParameters<E, F>) -> Self {
+        let c0 = FieldElement::from_boolean(flag, params);
+        let c1 = FieldElement::zero(params);
+        Self::from_coordinates(c0, c1)
     }
 }
 

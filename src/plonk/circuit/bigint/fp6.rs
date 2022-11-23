@@ -170,6 +170,14 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         b = Fp2::conditionally_select(cs, &second_selector, &other.c2, &b)?;
         Fp2::enforce_not_equal(cs, &mut a, &mut b)
     }
+
+    pub fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> {
+        let c0_is_zero = Fp2::is_zero(&mut self.c0, cs)?; 
+        let c1_is_zero = Fp2::is_zero(&mut self.c1, cs)?;
+        let c2_is_zero = Fp2::is_zero(&mut self.c2, cs)?;
+        let parital_res = Boolean::and(cs, &c0_is_zero, &c1_is_zero)?;
+        Boolean::and(cs, &parital_res, &c2_is_zero) 
+    }
      
     pub fn conditionally_select<CS: ConstraintSystem<E>>(
         cs: &mut CS, flag: &Boolean, first: &Self, second: &Self
@@ -392,6 +400,23 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         let new_c1 = c_1.mul(cs,&frob_c1[power % 6] )?;
         let new_c2 = c_2.mul(cs,&frob_c2[power % 6] )?;
         Ok(Self::from_coordinates(new_c0, new_c1, new_c2))
+    }
+
+    pub fn collapse_chain<CS>(cs: &mut CS, chain: Fp2Chain<'a, E, F, T>) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        let subchain = chain.get_coordinate_subchain(0);
+        let c0 = FieldElement::collapse_chain(cs, subchain)?;
+        let subchain = chain.get_coordinate_subchain(1);
+        let c1 = FieldElement::collapse_chain(cs, subchain)?;
+
+        Ok(Self::from_coordinates(c0, c1))
+    }
+
+    pub fn from_boolean(flag: &Boolean, params: &RnsParameters<E, F>) -> Self {
+        let c0 = FieldElement::from_boolean(flag, params);
+        let c1 = FieldElement::zero(params);
+        Self::from_coordinates(c0, c1)
     }
 }
   

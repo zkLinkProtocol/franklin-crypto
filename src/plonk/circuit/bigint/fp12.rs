@@ -130,6 +130,12 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
         let mut b = Fp6::conditionally_select(cs, &selector, &other.c1, &other.c0)?;
         Fp6::enforce_not_equal(cs, &mut a, &mut b)
     }
+
+    pub fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> {
+        let c0_is_zero = Fp6::is_zero(&mut self.c0, cs)?; 
+        let c1_is_zero = Fp6::is_zero(&mut self.c1, cs)?;
+        Boolean::and(cs, &c0_is_zero, &c1_is_zero) 
+    }
      
     pub fn normalize_coordinates<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {    
         self.c0.normalize_coordinates(cs)?;

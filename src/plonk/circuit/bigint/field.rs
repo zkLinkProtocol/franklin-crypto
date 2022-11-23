@@ -311,6 +311,7 @@ impl<'a, E: Engine, F: PrimeField> PartialEq for FieldElement<'a, E, F>{
 }
 impl<'a, E: Engine, F: PrimeField> Eq for FieldElement<'a, E, F> {}
 
+
 impl<'a, E: Engine, F: PrimeField> std::fmt::Display for FieldElement<'a, E, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "FieldElement {{ ")?;
@@ -793,7 +794,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let x_is_raw_zero = Boolean::and(cs, &binary_limb_check, &base_field_limb_check)?;
 
         // check if x == F::char
-        let x_is_raw_modulus = if is_normalized {
+        let x_is_raw_modulus = if !is_normalized {
             let f_char_mod_fr_char = Num::Constant(params.f_char_mod_fr_char.clone());
             let f_char_mod_binary_shift = Num::Constant(params.f_char_mod_binary_shift.clone());
             let binary_limb_check = Num::equals(cs, &least_significant_binary_limb, &f_char_mod_binary_shift)?;
@@ -1854,6 +1855,18 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         assert!(chain.len() > 0);
         let params = chain.elems_to_add.get(0).unwrap_or_else(|| &chain.elems_to_sub[0]).representation_params;
         Self::collapse_chain_with_reduction(cs, chain, !params.allow_individual_limb_overflow)
+    }
+
+    pub fn from_boolean(flag: &Boolean, params: &RnsParameters<E, F>) -> Self {
+        let mut binary_limbs = vec![Limb::zero(); params.num_binary_limbs];
+        binary_limbs[0] = Limb::new(Term::from_boolean(flag), BigUint::one());
+        Self {
+            binary_limbs,
+            base_field_limb: Term::from_boolean(flag),
+            representation_params: params,
+            value: flag.get_value().map(|x| if x { F::one()} else { F::zero()}),
+            reduction_status: ReductionStatus::Normalized
+        }
     }
 }
 

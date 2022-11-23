@@ -323,24 +323,25 @@ pub fn generate_optimal_circuit_params_for_secp256k1<E: Engine, CS: ConstraintSy
 
 
 use crate::bellman::pairing::bls12_381::Bls12;
-type BLs12CircuitParameters<E> = CurveCircuitParameters<E, SecpPointAffine, Secp256K1Extension2Params>; 
+type BLs12CircuitParameters<E> = CurveCircuitParameters<E, <Bls12 as Engine>::G1Affine, BLS12Extension2Params>; 
 pub fn generate_optimal_circuit_params_for_bls12<E: Engine, CS: ConstraintSystem<E>>(
     cs: &mut CS, base_field_limb_size: usize, scalar_field_limb_size: usize
-) -> Secp256K1CircuitParameters<E>
+) -> BLs12CircuitParameters<E>
 {
-    use super::secp256k1::fq::Fq as Fq;
-    use super::secp256k1::fr::Fr as Fr;
+    type Fq = <<Bls12 as Engine>::G1Affine as GenericCurveAffine>::Base;
+    type Fr = <<Bls12 as Engine>::G1Affine as GenericCurveAffine>::Scalar;
+    println!("AAA");
 
     let fp2_offset_generator_x_c0 = Fq::from_str(
-        "1067264685030724708538788882656460381104931541603938723410358338973606906391679083715376977125266 \
-        347261808406513360"
+        "1067264685030724708538788882656460381104931541603938723410358338973606906391679083715376977125266347261808406513360"
     ).expect("should parse");
     let fp2_offset_generator_x_c1 = Fq::zero();
     let fp2_offset_generator_y_c0 = Fq::from_str(
-        "321012996715331830201056169306862715561405722782489933905452108492991173862920704991336014140647306 \
-        8435860637374216"
+        "3210129967153318302010561693068627155614057227824899339054521084929911738629207049913360141406473068435860637374216"
     ).expect("should parse");
     let fp2_offset_generator_y_c1 = Fq::zero();
+
+    println!("AAA");
     
     let fp2_pt_ord3_x_c0 = Fq::zero();
     let fp2_pt_ord3_x_c1 = Fq::zero();
@@ -355,6 +356,8 @@ pub fn generate_optimal_circuit_params_for_bls12<E: Engine, CS: ConstraintSystem
         "793479390729215512621379701633421447060886740281060493010456487427281649075476305620758731620350"
     ).expect("should parse");
 
+    println!("AAA");
+
     let a1 = BigUint::from_str("228988810152649578064853576960394133503").expect("should parse");
     let a2 = BigUint::one();
     let minus_b1 = BigUint::one();
@@ -363,6 +366,8 @@ pub fn generate_optimal_circuit_params_for_bls12<E: Engine, CS: ConstraintSystem
     let opt_multiexp_geometry = MultiExpGeometry { 
         width: 4, strategy: MultiexpStrategy::SelectionTree
     };
+
+    println!("AAB");
 
     CurveCircuitParameters {
         base_field_rns_params: RnsParameters::<E, Fq>::new_optimal(cs, base_field_limb_size),
@@ -378,7 +383,7 @@ pub fn generate_optimal_circuit_params_for_bls12<E: Engine, CS: ConstraintSystem
         fp2_pt_ord3_y_c1,
         lambda, beta, a1, a2, minus_b1, b2,
         opt_multiexp_geometry,
-        _marker: std::marker::PhantomData::<Secp256K1Extension2Params>
+        _marker: std::marker::PhantomData::<BLS12Extension2Params>
     }
 }
 

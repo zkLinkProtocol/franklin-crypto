@@ -6,9 +6,11 @@ use rand::*;
 
 pub mod fr;
 pub mod fq;
+pub mod fq2;
 
 use self::fr::*;
 use self::fq::*;
+use self::fq2::*;
 
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]

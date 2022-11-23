@@ -554,4 +554,22 @@ mod test {
         cs.finalize();
         assert!(cs.is_satisfied()); 
     }
+
+    #[test]
+    fn fast_subgroup_checks() {
+        use bellman::bls12_381::Bls12;
+        const LIMB_SIZE: usize = 80;
+        const NUM_OF_POINTS: usize = 4;
+
+        let mut cs = TrivialAssembly::<Bls12, Width4WithCustomGates, Width4MainGateWithDNext>::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let circuit_params = generate_optimal_circuit_params_for_bls12::<Bls12, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
+        let rns_params = &circuit_params.base_field_rns_params;
+
+        // lets take point in G1 
+        println!("HERE");
+        let x = FieldElement::constant(circuit_params.fp2_offset_generator_x_c0, &rns_params);
+        let y = FieldElement::constant(circuit_params.fp2_offset_generator_y_c0, &rns_params);
+        let point = unsafe{AffinePoint::from_xy_unchecked(x, y, &circuit_params)};
+    }
 }

@@ -31,8 +31,14 @@ pub mod field;
 pub use self::amplified_linear_combination::*;
 pub use self::field::*;
 
-pub mod quadratic_extension;
-pub use self::quadratic_extension::*;
+pub mod fp2;
+pub use self::fp2::*;
+
+pub mod fp6;
+pub use self::fp6::*;
+
+pub mod fp12;
+pub use self::fp12::*;
 
 
 pub const BITWISE_LOGICAL_OPS_TABLE_NAME: &'static str = "Table for bitwise logical ops";

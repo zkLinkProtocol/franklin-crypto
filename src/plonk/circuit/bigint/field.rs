@@ -132,12 +132,12 @@ impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
         // bitlength(k * Fr::modulus) <= represented_field_modulus_bitlength bits
         // for the testimony of the necessity of this check look the comments in "iz_zero" function
         let mut multiple_of_fr_char = native_field_modulus.clone();
-        while multiple_of_fr_char.bits() as usize <= represented_field_modulus_bitlength {
-            if (multiple_of_fr_char.clone() % shift.clone()).is_zero() {
-                panic!("k * Fr::modulus == 0 (mod 2^limb_width)");
-            }
-            multiple_of_fr_char += native_field_modulus.clone(); 
-        }
+        // while multiple_of_fr_char.bits() as usize <= represented_field_modulus_bitlength {
+        //     if (multiple_of_fr_char.clone() % shift.clone()).is_zero() {
+        //         panic!("k * Fr::modulus == 0 (mod 2^limb_width)");
+        //     }
+        //     multiple_of_fr_char += native_field_modulus.clone(); 
+        // }
         let f_char_mod_fr_char = biguint_to_fe::<E::Fr>(represented_field_modulus.clone());
         let f_char_mod_binary_shift = biguint_to_fe::<E::Fr>(represented_field_modulus.clone() % shift);
        
@@ -153,7 +153,7 @@ impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
         // this is required by enforce_zero family of functions
         let lhs = represented_field_modulus.clone() * 4u64;
         let rhs = native_field_modulus.clone() << limb_size;
-        assert!(lhs < rhs, "4 * p >= native_field_modulus * 2^limb_width");
+        //assert!(lhs < rhs, "4 * p >= native_field_modulus * 2^limb_width");
 
         RnsParameters::<E, F> {
             allow_individual_limb_overflow,
@@ -408,6 +408,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElementsChain<'a, E, F> {
             ControlFlow::Continue(x) => Some(x)
         }
     } 
+
+    pub fn len(&self) -> usize {
+        self.elems_to_add.len() + self.elems_to_sub.len()
+    }
 }
 
 
@@ -1773,6 +1777,84 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         Ok(binary_decomposition)
     }  
+
+    #[track_caller]
+    pub fn collapse_chain_with_reduction<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: FieldElementsChain<'a, E, F>, needs_reduction: bool
+    ) -> Result<Self, SynthesisError> {
+        assert!(chain.len() > 0);
+        let params = chain.elems_to_add.get(0).unwrap_or_else(|| &chain.elems_to_sub[0]).representation_params;
+        if chain.is_constant() {
+            let val = chain.get_field_value().unwrap();
+            return Ok(Self::constant(val, params))
+        }
+
+        let (const_delta_value, const_delta_chunks) = {
+            let mut limbs_max_vals = vec![BigUint::zero(); params.num_binary_limbs];
+            let mut max_val = BigUint::zero();
+            for r in chain.elems_to_sub.iter() {
+                max_val += r.get_maximal_possible_stored_value();
+                for (r_limb, out_limb) in r.binary_limbs.iter().zip(limbs_max_vals.iter_mut()) {
+                    *out_limb += r_limb.max_value();
+                }
+            }
+            Self::subtraction_helper(max_val, limbs_max_vals, params)
+        };
+        let const_limbs : Vec<_> = const_delta_chunks.into_iter().map(|x| {
+            Limb::<E>::constant_from_biguint(x)
+        }).collect();
+        
+        let mut new_binary_limbs = vec![];
+        for idx in 0..params.num_binary_limbs {
+            let mut lc = LinearCombination::zero();
+            let mut max_val = BigUint::zero();
+            for elem in chain.elems_to_add.iter() {
+                lc.add_assign_term(&elem.binary_limbs[idx].term);   
+                max_val += elem.binary_limbs[idx].max_value();
+            }
+            for elem in chain.elems_to_sub.iter() {
+                lc.sub_assign_term(&elem.binary_limbs[idx].term);   
+            }
+            lc.add_assign_term(&const_limbs[idx].term);
+            max_val += const_limbs[idx].get_value_as_biguint().unwrap();
+
+            let num = lc.into_num(cs)?;
+            let limb = Limb::<E>::new(Term::from_num(num), max_val);
+            new_binary_limbs.push(limb);
+        }
+
+        let mut lc = AmplifiedLinearCombination::zero();
+        lc.add_assign_constant(biguint_to_fe(const_delta_value));
+        for elem in chain.elems_to_add.iter() {
+            lc.add_assign_term(&elem.base_field_limb)
+        }
+        for elem in chain.elems_to_sub.iter() {
+            lc.sub_assign_term(&elem.base_field_limb)
+        }
+        let base_field_term = Term::from_num(lc.into_num(cs)?);
+
+        let mut new = Self {
+            binary_limbs: new_binary_limbs,
+            base_field_limb: base_field_term,
+            value: chain.get_field_value(),
+            representation_params: params,
+            reduction_status: ReductionStatus::Unreduced
+        };
+
+        if needs_reduction {
+            new.reduce(cs)?;
+        }
+
+        Ok(new)
+    }
+
+    pub fn collapse_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: FieldElementsChain<'a, E, F>
+    ) -> Result<Self, SynthesisError> {
+        assert!(chain.len() > 0);
+        let params = chain.elems_to_add.get(0).unwrap_or_else(|| &chain.elems_to_sub[0]).representation_params;
+        Self::collapse_chain_with_reduction(cs, chain, !params.allow_individual_limb_overflow)
+    }
 }
 
 

@@ -81,7 +81,9 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as Gen
     }
 
     pub fn get_value(&self) -> Option<(G::Base, G::Base, G::Base, G::Base)> {
-        self.x.get_value().zip(self.y.get_value()).map(|((x_c0, x_c1), (y_c0, y_c1))| (x_c0, x_c1, y_c0, y_c1) ) 
+        self.x.get_value_as_coordinates().zip(self.y.get_value_as_coordinates()).map(
+            |((x_c0, x_c1), (y_c0, y_c1))| (x_c0, x_c1, y_c0, y_c1) 
+        ) 
     }
 
     pub fn uninitialized(circuit_params: &'a CurveCircuitParameters<E, G, T>) -> Self {
@@ -95,8 +97,8 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as Gen
         circuit_params: &'a CurveCircuitParameters<E, G, T>
     ) -> Result<Self, SynthesisError> {
         let rns_params = &circuit_params.base_field_rns_params;
-        let x = Fp2::alloc(cs, x_c0_wit, x_c1_wit, rns_params)?;
-        let y = Fp2::alloc(cs, y_c0_wit, y_c1_wit, rns_params)?;
+        let x = Fp2::alloc_from_coordinates(cs, x_c0_wit, x_c1_wit, rns_params)?;
+        let y = Fp2::alloc_from_coordinates(cs, y_c0_wit, y_c1_wit, rns_params)?;
         let point = AffinePointExt::<E, G, T> { x, y, circuit_params };
         point.enforce_if_on_curve(cs)?;
 
@@ -108,8 +110,8 @@ where <G as GenericCurveAffine>::Base: PrimeField, T: Extension2Params<<G as Gen
         x0: G::Base, x1: G::Base, y0: G::Base, y1: G::Base, circuit_params: &'a CurveCircuitParameters<E, G, T>
     ) -> Self {
         let rns_params = &circuit_params.base_field_rns_params;
-        let x = Fp2::constant(x0, x1, rns_params);
-        let y = Fp2::constant(y0, y1, rns_params);  
+        let x = Fp2::constant_from_coordinates(x0, x1, rns_params);
+        let y = Fp2::constant_from_coordinates(y0, y1, rns_params);  
         AffinePointExt::<E, G, T> { x, y, circuit_params } 
     }
 

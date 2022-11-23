@@ -1043,13 +1043,17 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let wit_scalar = (pow(z_parametr, 2) - BigUint::one())/three;
         let scalar_ff = G::Scalar::from_str(&wit_scalar.to_str_radix(10)).unwrap();
 
-        // lets create scalar for optimization with this number (z^2) ––– 228988810152649578064853576960394133504
-        let decimal = BigUint::from_str("228988810152649578064853576960394133504");
-        let scalar = from_dec_to_vecbool(decimal.unwrap());
-        let mut scalar_with_minus_one = TernaryExp::from_vec_bool_to_ternary(scalar);
-        // then dont forget z^2 − 1
-        let n = scalar_with_minus_one.len() - 1;
-        scalar_with_minus_one[n] = TernaryExp::MinusOne;
+        let scalar_with_minus_one = [TernaryExp::One, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::One, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero,
+        TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::One, TernaryExp::One, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::One,
+        TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, 
+        TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::One,
+        TernaryExp::One, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero,
+        TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero,
+        TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero,
+        TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, 
+        TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero,
+        TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, 
+        TernaryExp::Zero, MinusOne];
 
 
         let endo_x = point_from_aff_to_proj.get_x().mul(cs, &beta)?;
@@ -1090,7 +1094,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         actual_result.sub(cs, &endo_point_exp2)?;
 
 
-        let if_is = ProjectivePoint::equals(cs, &mut actual_result, &mut ProjectivePoint::zero(&params))?;
+        let if_is = ProjectivePoint::equals(cs, &mut actual_result, &mut ProjectivePoint::Zero(&params))?;
 
         Ok(if_is)
     }

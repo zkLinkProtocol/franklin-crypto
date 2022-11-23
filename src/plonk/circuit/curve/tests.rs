@@ -598,6 +598,15 @@ mod test {
 
         //228988810152649578064853576960394133504
 
+        let decimal = BigUint::from_str("228988810152649578064853576960394133504");
+        let scalar = from_dec_to_vecbool(decimal.unwrap());
+        let mut scalar_with_minus_one = TernaryExp::from_vec_bool_to_ternary(scalar);
+        // then dont forget z^2 − 1
+        let n = scalar_with_minus_one.len() - 1;
+        scalar_with_minus_one[n] = TernaryExp::MinusOne;
+
+        println!("{:?}", scalar_with_minus_one);
+
     }
 
 

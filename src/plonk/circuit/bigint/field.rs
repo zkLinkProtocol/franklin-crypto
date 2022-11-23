@@ -1868,6 +1868,13 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             reduction_status: ReductionStatus::Normalized
         }
     }
+
+    pub fn enforce_chain_is_zero<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: FieldElementsChain<'a, E, F>, 
+    ) -> Result<(), SynthesisError> {
+        let params = chain.elems_to_add.get(0).unwrap_or_else(|| &chain.elems_to_sub[0]).representation_params;
+        Self::constraint_fma(cs, &Self::zero(params), &Self::zero(params), chain)
+    }
 }
 
 

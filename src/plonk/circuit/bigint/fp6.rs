@@ -1,5 +1,6 @@
 use super::*;
 use std::ops::Index;
+use crate::plonk::circuit::SomeArithmetizable;
 
 use crate::bellman::pairing::bn256::Fq as Bn256Fq;
 use crate::bellman::pairing::bn256::Fq2 as Bn256Fq2;
@@ -99,6 +100,58 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F> > From<Fp2<'a, E, F, T::
             _marker: std::marker::PhantomData::<T>
         }
     }    
+}
+
+
+pub struct Fp6Chain<'a, E: Engine, F: PrimeField, T: Extension6Params<F>> {
+    pub elems_to_add: Vec<Fp6<'a, E, F, T>>,
+    pub elems_to_sub: Vec<Fp6<'a, E, F, T>> 
+}
+
+impl<'a, E: Engine, F: PrimeField, T: Extension6Params<F>> Fp6Chain<'a, E, F, T> {
+    pub fn new() -> Self {
+        Fp6Chain::<E, F, T> {
+            elems_to_add: vec![],
+            elems_to_sub: vec![] 
+        }
+    }
+    
+    pub fn add_pos_term(&mut self, elem: &Fp6<'a, E, F, T>) -> &mut Self {
+        self.elems_to_add.push(elem.clone());
+        self
+    } 
+
+    pub fn add_neg_term(&mut self, elem: &Fp6<'a, E, F, T>) -> &mut Self {
+        self.elems_to_sub.push(elem.clone());
+        self
+    }
+
+    pub fn is_constant(&self) -> bool {
+        self.elems_to_add.iter().chain(self.elems_to_sub.iter()).all(|x| x.is_constant())
+    }
+
+    pub fn get_value(&self) -> Option<T::Witness> {
+        let pos = self.elems_to_add.iter().fold(Some(T::Witness::zero()), |acc, x| acc.add(&x.get_value()));
+        let neg = self.elems_to_sub.iter().fold(Some(T::Witness::zero()), |acc, x| acc.add(&x.get_value()));
+        pos.sub(&neg)
+    }
+
+    pub fn get_coordinate_subchain(&self, i: usize) -> Fp2Chain<'a, E, F, T::Ex2> {
+        let elems_to_add = self.elems_to_add.iter().map(|x| x[i].clone()).collect();
+        let elems_to_sub = self.elems_to_sub.iter().map(|x| x[i].clone()).collect();
+        Fp2Chain::<E, F, T::Ex2> {
+            elems_to_add,
+            elems_to_sub
+        }
+    }
+
+    pub fn negate(self) -> Self {
+        let Fp6Chain { elems_to_add, elems_to_sub } = self;
+        Fp6Chain {
+            elems_to_add: elems_to_sub,
+            elems_to_sub: elems_to_add
+        }
+    }  
 }
 
 
@@ -250,9 +303,14 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         Ok(Self::from_coordinates(new_c0, new_c1, new_c2))
     }
 
+    pub fn mul<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
+        Self::mul_with_chain(cs, self, other, Fp6Chain::new())
+    }
+
     #[track_caller]
-    pub fn mul<CS>(cs: &mut CS, first: &Self, second: &Self) -> Result<Self, SynthesisError> 
-    where CS: ConstraintSystem<E>
+    fn mul_with_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, first: &Self, second: &Self, chain: Fp6Chain<'a, E, F, T>
+    ) -> Result<Self, SynthesisError> 
     {
         // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.21
         // 1) v0 = a0 * b0
@@ -273,7 +331,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         let alpha = T::non_residue();
 
         // c0 = ((a1 + a2) * (b1 + b2) - v1 - v2) * \alpha + v0
-        let mut chain = Fp2Chain::new();
+        let mut chain = chain.get_coordinate_subchain(0);
         chain.add_neg_term(&v1).add_neg_term(&v2);
         let mut c0 = Fp2::mul_with_chain(cs, &tempa12, &tempb12, chain)?;
         let mut chain = Fp2Chain::new();
@@ -402,21 +460,22 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         Ok(Self::from_coordinates(new_c0, new_c1, new_c2))
     }
 
-    pub fn collapse_chain<CS>(cs: &mut CS, chain: Fp2Chain<'a, E, F, T>) -> Result<Self, SynthesisError> 
+    pub fn collapse_chain<CS>(cs: &mut CS, chain: Fp6Chain<'a, E, F, T>) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
-        let subchain = chain.get_coordinate_subchain(0);
-        let c0 = FieldElement::collapse_chain(cs, subchain)?;
-        let subchain = chain.get_coordinate_subchain(1);
-        let c1 = FieldElement::collapse_chain(cs, subchain)?;
-
-        Ok(Self::from_coordinates(c0, c1))
+        let mut coeffs = Vec::with_capacity(3); 
+        for i in 0..3 {
+            let subchain = chain.get_coordinate_subchain(0);
+            coeffs.push(Fp2::collapse_chain(cs, subchain)?);
+        }
+        Ok(Self::from_coordinates(coeffs.c0.clone(), coeffs.c1.clone(), coeffs.c2.clone()))
     }
 
     pub fn from_boolean(flag: &Boolean, params: &RnsParameters<E, F>) -> Self {
-        let c0 = FieldElement::from_boolean(flag, params);
-        let c1 = FieldElement::zero(params);
-        Self::from_coordinates(c0, c1)
+        let c0 = Fp2::from_boolean(flag, params);
+        let c1 = Fp2::zero(params);
+        let c2 = Fp2::zero(params);
+        Self::from_coordinates(c0, c1, c2)
     }
 }
   

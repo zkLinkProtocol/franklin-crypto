@@ -158,6 +158,12 @@ impl<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> Fp2Chain<'a, E, F, T>
         (pos_c0.sub(&neg_c0), pos_c1.sub(&neg_c1))
     }
 
+    pub fn get_field_value(&self) -> Option<T::Witness> {
+        let pos = self.elems_to_add.iter().fold(Some(T::Witness::zero()), |acc, x| acc.add(&x.get_value()));
+        let neg = self.elems_to_sub.iter().fold(Some(T::Witness::zero()), |acc, x| acc.add(&x.get_value()));
+        pos.sub(&neg)
+    }
+
     pub fn get_coordinate_subchain(&self, i: usize) -> FieldElementsChain<'a, E, F> {
         let elems_to_add = self.elems_to_add.iter().map(|x| x[i].clone()).collect();
         let elems_to_sub = self.elems_to_sub.iter().map(|x| x[i].clone()).collect();
@@ -449,7 +455,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
 
         // (a0 + u * a1) / (b0 + u * b1) = (a0 + u * a1) * (b0 - u * b1) / (b0^2 - \beta * b1^2) = 
         // = [1/(b0^2 - \beta * b1^2)] * [(a0 * b0 - \beta a1 * b1) + u * (a1 * b0 - a0 * b1)]
-        let (numerator_c0_wit, numerator_c1_wit)  = chain.get_field_value();
+        let (numerator_c0_wit, numerator_c1_wit)  = chain.get_field_value_as_coordinates();
         let (den_c0_wit, den_c1_wit) = (den.c0.get_field_value(), den.c1.get_field_value());
         let (res_c0_wit, res_c1_wit) = match (numerator_c0_wit, numerator_c1_wit, den_c0_wit, den_c1_wit) {
             (Some(a0), Some(a1), Some(b0), Some(b1)) => {
@@ -534,6 +540,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         }
     }
 
+    #[track_caller]
     pub fn mul_by_small_constant_with_chain<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, scalar: (u64, u64), chain: Fp2Chain<'a, E, F, T>
     ) -> Result<Self, SynthesisError> {
@@ -566,6 +573,31 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
     ) -> Result<Self, SynthesisError> {
         let chain = Fp2Chain::new();
         self.mul_by_small_constant_with_chain(cs, scalar, chain)
+    }
+
+    #[track_caller]
+    pub fn constraint_mul_by_small_constant_with_chain<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, scalar: (u64, u64), chain: Fp2Chain<'a, E, F, T>
+    ) -> Result<(), SynthesisError> {
+        assert!(T::is_default_impl());
+        let (s0, s1) = scalar;
+        // if our small constant is (s0, s1) then:
+        // for a = a0 + u * a1 and b = b0 + u * b1 compute a * b = c0 + u * c1 [\beta = u^2]
+        // 1) v0 = a0 * b0 = a0 * s0
+        // 2) v1 = a1 * b1 = a1 * s1
+        // 3) c0 = v0 + \beta * v1 = v0 - v1 = a0 * s0 - a1 * s1
+        // 4) c1 = (a0 + a1) * (b0 + b1) - v0 - v1 = a0 * (s0 + s1) + a1 * (s0 + s1) - a0 * s0 - a1 * s1
+        // hence: c1 = a0 * s1 + a1 * s0
+
+        let mut subchain = chain.get_coordinate_subchain(0); 
+        subchain.add_pos_term(&self.c0.scale(cs, s0)?);
+        subchain.add_neg_term(&self.c1.scale(cs, s1)?);
+        FieldElement::enforce_chain_is_zero(cs, subchain)?;
+        
+        let mut subchain = chain.get_coordinate_subchain(1);
+        subchain.add_pos_term(&self.c0.scale(cs, s1)?);
+        subchain.add_neg_term(&self.c1.scale(cs, s0)?);
+        FieldElement::enforce_chain_is_zero(cs, subchain)
     }
 
     pub fn collapse_chain<CS>(cs: &mut CS, chain: Fp2Chain<'a, E, F, T>) -> Result<Self, SynthesisError> 

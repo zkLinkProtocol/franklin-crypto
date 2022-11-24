@@ -303,12 +303,13 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         Ok(Self::from_coordinates(new_c0, new_c1, new_c2))
     }
 
-    pub fn mul<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
-        Self::mul_with_chain(cs, self, other, Fp6Chain::new())
+    pub fn mul<CS: ConstraintSystem<E>>(cs: &mut CS, first: &Self, second: &Self) -> Result<Self, SynthesisError> 
+    {
+        Self::mul_with_chain(cs, first, second, Fp6Chain::new())
     }
 
     #[track_caller]
-    fn mul_with_chain<CS: ConstraintSystem<E>>(
+    pub fn mul_with_chain<CS: ConstraintSystem<E>>(
         cs: &mut CS, first: &Self, second: &Self, chain: Fp6Chain<'a, E, F, T>
     ) -> Result<Self, SynthesisError> 
     {
@@ -350,6 +351,49 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         let c2 = Fp2::mul_with_chain(cs, &tempa02, &tempb02, chain)?;
 
         Ok(Self::from_coordinates(c0, c1, c2))
+    }
+
+    #[track_caller]
+    pub fn constraints_fma<CS: ConstraintSystem<E>>(
+        cs: &mut CS, first: &Self, second: &Self, chain: Fp6Chain<'a, E, F, T>
+    ) -> Result<(), SynthesisError> 
+    {
+        // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.21
+        // 1) v0 = a0 * b0
+        // 2) v1 = a1 * b1
+        // 3) v2 = a2 * b2
+        // 4) c0 = ((a1 + a2) * (b1 + b2) - v1 - v2) * \alpha + v0
+        // 5) c1 = (a0 + a1) * (b0 + b1) - v0 - v1 + \alpha * v2
+        // 6) c2 = (a0 + a2) * (b0 + b2) - v0 - v2 + v1
+        let v0 = first.c0.mul(cs, &second.c0)?;  
+        let v1 = first.c1.mul(cs, &second.c1)?; 
+        let v2 = first.c2.mul(cs, &second.c2)?;
+        let tempa01 = first.c0.add(cs, &first.c1)?;  //tempaij=ai+aj
+        let tempa12 = first.c1.add(cs, &first.c2)?;  
+        let tempa02 = first.c0.add(cs, &first.c2)?; 
+        let tempb01 = second.c0.add(cs, &second.c1)?; //tempbij=bi+bj
+        let tempb12 = second.c1.add(cs, &second.c2)?;  
+        let tempb02 = second.c0.add(cs, &second.c2)?;
+        let alpha = T::non_residue();
+
+        // c0 = ((a1 + a2) * (b1 + b2) - v1 - v2) * \alpha + v0
+        let mut chain = chain.get_coordinate_subchain(0);
+        chain.add_neg_term(&v1).add_neg_term(&v2);
+        let c0 = Fp2::mul_with_chain(cs, &tempa12, &tempb12, chain)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_pos_term(&v0);
+        Fp2::constraint_mul_by_small_constant_with_chain(cs, &c0, alpha, chain)?;
+        
+        // c1 = (a0 + a1) * (b0 + b1) - v0 - v1 + \alpha * v2
+        let scaled_v2 = v2.mul_by_small_constant(cs, alpha)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&v0).add_neg_term(&v1).add_pos_term(&scaled_v2);
+        Fp2::constraint_fma(cs,  &tempa01, &tempb01, chain)?;
+           
+        // c2 = (a0 + a2) * (b0 + b2) - v0 - v2 + v1
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&v0).add_neg_term(&v2).add_pos_term(&v1);
+        Fp2::constraint_fma(cs, &tempa02, &tempb02, chain)
     }
  
     pub fn square<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
@@ -395,9 +439,17 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         Self::div(cs, &mut num, self)
     }
 
-    pub fn div<CS: ConstraintSystem<E>>(cs: &mut CS, num: &mut Self, denom: &Self) -> Result<Self, SynthesisError> 
+    pub fn div<CS: ConstraintSystem<E>>(cs: &mut CS, num: &Self, denom: &Self) -> Result<Self, SynthesisError> {
+        let mut chain = Fp6Chain::new();
+        chain.add_pos_term(num);
+        Self::div_with_chain(cs, chain, denom)
+    }
+
+    pub fn div_with_chain<CS: ConstraintSystem<E> >(
+        cs: &mut CS, num: Fp6Chain<'a, E, F, T>, denom: &Self
+    ) -> Result<Self, SynthesisError> 
     {
-        let params = num.c0.c0.representation_params;
+        let params = denom.c0.c0.representation_params;
         let res_wit = match (num.get_value(), denom.get_value()) {
             (Some(num), Some(denom)) => {
                 let denom_inv = denom.inverse().unwrap();
@@ -408,11 +460,15 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
             _ => None
         };
         
-        let res = Self::alloc(cs, res_wit, params)?;
-        
-        // TODO: this could be optimized even further
-        let mut num_actual = Self::mul(cs, &res, &denom)?;
-        Self::enforce_equal(cs, &mut num_actual, num)?;
+        let res = if num.is_constant() && denom.is_constant() {
+            Self::constant(res_wit.unwrap(), params)
+        } else {
+            let res = Self::alloc(cs, res_wit, params)?;
+            let chain = num.negate();
+            Self::constraints_fma(cs, &res, denom, chain)?;
+            res
+        };
+
         Ok(res)
     }
 
@@ -427,7 +483,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
                 found_one = i;
             }
             if i {
-                res = Fp6::mul(cs, &res, &self)?;
+                res = Self::mul(cs, self, &res)?;
             }
         }
         Ok(res)
@@ -465,17 +521,29 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
     {
         let mut coeffs = Vec::with_capacity(3); 
         for i in 0..3 {
-            let subchain = chain.get_coordinate_subchain(0);
+            let subchain = chain.get_coordinate_subchain(i);
             coeffs.push(Fp2::collapse_chain(cs, subchain)?);
         }
-        Ok(Self::from_coordinates(coeffs.c0.clone(), coeffs.c1.clone(), coeffs.c2.clone()))
+        Ok(Self::from_coordinates(coeffs[0].clone(), coeffs[1].clone(), coeffs[2].clone()))
     }
 
-    pub fn from_boolean(flag: &Boolean, params: &RnsParameters<E, F>) -> Self {
+    pub fn from_boolean(flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
         let c0 = Fp2::from_boolean(flag, params);
         let c1 = Fp2::zero(params);
         let c2 = Fp2::zero(params);
         Self::from_coordinates(c0, c1, c2)
+    }
+
+    pub fn conditional_constant(value: T::Witness, flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
+        let c_arr = T::convert_from_structured_witness(value);
+        let c0 = Fp2::conditional_constant(c_arr[0], flag, params);
+        let c1 = Fp2::conditional_constant(c_arr[1], flag, params);
+        let c2 = Fp2::conditional_constant(c_arr[1], flag, params);
+        Self::from_coordinates(c0, c1, c2)
+    }
+
+    pub fn get_params(&self) -> &'a RnsParameters<E, F> {
+        self.c0.c0.representation_params
     }
 }
   

@@ -132,12 +132,12 @@ impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
         // bitlength(k * Fr::modulus) <= represented_field_modulus_bitlength bits
         // for the testimony of the necessity of this check look the comments in "iz_zero" function
         let mut multiple_of_fr_char = native_field_modulus.clone();
-        // while multiple_of_fr_char.bits() as usize <= represented_field_modulus_bitlength {
-        //     if (multiple_of_fr_char.clone() % shift.clone()).is_zero() {
-        //         panic!("k * Fr::modulus == 0 (mod 2^limb_width)");
-        //     }
-        //     multiple_of_fr_char += native_field_modulus.clone(); 
-        // }
+        while multiple_of_fr_char.bits() as usize <= represented_field_modulus_bitlength {
+            if (multiple_of_fr_char.clone() % shift.clone()).is_zero() {
+                panic!("k * Fr::modulus == 0 (mod 2^limb_width)");
+            }
+            multiple_of_fr_char += native_field_modulus.clone(); 
+        }
         let f_char_mod_fr_char = biguint_to_fe::<E::Fr>(represented_field_modulus.clone());
         let f_char_mod_binary_shift = biguint_to_fe::<E::Fr>(represented_field_modulus.clone() % shift);
        
@@ -153,7 +153,7 @@ impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
         // this is required by enforce_zero family of functions
         let lhs = represented_field_modulus.clone() * 4u64;
         let rhs = native_field_modulus.clone() << limb_size;
-        //assert!(lhs < rhs, "4 * p >= native_field_modulus * 2^limb_width");
+        assert!(lhs < rhs, "4 * p >= native_field_modulus * 2^limb_width");
 
         RnsParameters::<E, F> {
             allow_individual_limb_overflow,
@@ -1857,7 +1857,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Self::collapse_chain_with_reduction(cs, chain, !params.allow_individual_limb_overflow)
     }
 
-    pub fn from_boolean(flag: &Boolean, params: &RnsParameters<E, F>) -> Self {
+    pub fn from_boolean(flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
         let mut binary_limbs = vec![Limb::zero(); params.num_binary_limbs];
         binary_limbs[0] = Limb::new(Term::from_boolean(flag), BigUint::one());
         Self {
@@ -1865,6 +1865,28 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             base_field_limb: Term::from_boolean(flag),
             representation_params: params,
             value: flag.get_value().map(|x| if x { F::one()} else { F::zero()}),
+            reduction_status: ReductionStatus::Normalized
+        }
+    }
+
+    pub fn conditional_constant(value: F, flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
+        let unconditional_constant = Self::constant(value, params);
+        let binary_limbs = unconditional_constant.binary_limbs.iter().map(|cnst_limb| {
+            let val = cnst_limb.get_value().unwrap();
+            let max_value = cnst_limb.max_value();
+            let mut term = Term::from_boolean(flag);
+            term.scale(&val);
+            Limb { term, max_value }
+        }).collect();
+        let base_field_value = unconditional_constant.base_field_limb.get_constant_value();
+        let mut base_field_term = Term::from_boolean(flag);
+        base_field_term.scale(&base_field_value);
+
+        Self {
+            binary_limbs,
+            base_field_limb: base_field_term,
+            representation_params: params,
+            value: flag.get_value().map(|x| if x { value } else { F::zero()}),
             reduction_status: ReductionStatus::Normalized
         }
     }

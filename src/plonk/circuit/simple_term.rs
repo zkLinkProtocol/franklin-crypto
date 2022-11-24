@@ -327,25 +327,6 @@ impl<E: Engine> Term<E> {
 
                 return Ok(Self::from_constant(v))
             },
-            // (true, false) | (false, true) => {
-            //     let c = if this_is_constant {
-            //         self.get_constant_value()
-            //     } else {
-            //         other.get_constant_value()
-            //     };
-
-            //     let mut non_constant = if this_is_constant {
-            //         other.clone()
-            //     } else {
-            //         self.clone()
-            //     };
-
-            //     non_constant.add_constant(&c);
-
-            //     let num = non_constant.collapse_into_num(cs)?;
-
-            //     return Ok(Self::from_num(num));
-            // },
             (true, false) => {
                 let c = self.get_constant_value();
                 let mut res = other.clone();

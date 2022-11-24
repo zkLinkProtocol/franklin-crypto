@@ -9,9 +9,7 @@ use crate::bellman::pairing::bn256::Fq6 as Bn256Fq6;
 pub trait Extension12Params<F:PrimeField>: Clone {
     type Ex6: Extension6Params<F>;
     type Witness: Field;
-    const NON_RESIDUE: (u64, u64, u64);
   
-    fn non_residue() -> (u64,u64, u64) { Self::NON_RESIDUE.clone() }
     fn convert_to_structured_witness(
         c0: <Self::Ex6 as Extension6Params<F>>::Witness, 
         c1: <Self::Ex6 as Extension6Params<F>>::Witness, 
@@ -27,7 +25,6 @@ impl Extension12Params<Bn256Fq> for Bn256Extension12Params
 {
     type Ex6 = Bn256Extension6Params;
     type Witness = crate::bellman::pairing::bn256::Fq12;
-    const NON_RESIDUE: (u64, u64, u64) = (1, 0, 1);
 
     fn convert_to_structured_witness(c0: Bn256Fq6, c1: Bn256Fq6) -> Self::Witness 
     {
@@ -76,15 +73,15 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> Fp12Chain<'a, E, F, 
     pub fn get_coordinate_subchain(&self, i: usize) -> Fp6Chain<'a, E, F, T::Ex6> {
         let elems_to_add = self.elems_to_add.iter().map(|x| x[i].clone()).collect();
         let elems_to_sub = self.elems_to_sub.iter().map(|x| x[i].clone()).collect();
-        Fp2Chain::<E, F, T::Ext> {
+        Fp6Chain::<E, F, T::Ex6> {
             elems_to_add,
             elems_to_sub
         }
     }
 
     pub fn negate(self) -> Self {
-        let Fp2Chain { elems_to_add, elems_to_sub } = self;
-        Fp2Chain {
+        let Fp12Chain { elems_to_add, elems_to_sub } = self;
+        Fp12Chain {
             elems_to_add: elems_to_sub,
             elems_to_sub: elems_to_add
         }
@@ -175,8 +172,8 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
     where CS: ConstraintSystem<E>
     {
         let selector_wit = this.get_value().zip(other.get_value()).map(|(left, right)| {
-            let (c0, c1) = T::convert_from_structured_witness(left);
-            let (d0, d1) = T::convert_from_structured_witness(right);
+            let (_c0, c1) = T::convert_from_structured_witness(left);
+            let (_d0, d1) = T::convert_from_structured_witness(right);
             c1 != d1
         });
         let selector = Boolean::Is(AllocatedBit::alloc(cs, selector_wit)?);
@@ -190,10 +187,28 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
         let c1_is_zero = Fp6::is_zero(&mut self.c1, cs)?;
         Boolean::and(cs, &c0_is_zero, &c1_is_zero) 
     }
+
+    pub fn is_constant(&self) -> bool {
+        self.c0.is_constant() && self.c1.is_constant()
+    }
      
     pub fn normalize_coordinates<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {    
         self.c0.normalize_coordinates(cs)?;
         self.c1.normalize_coordinates(cs)
+    }
+
+    pub fn negate<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        let new_c0 = self.c0.negate(cs)?;
+        let new_c1 = self.c1.negate(cs)?;
+        Ok(Self::from_coordinates(new_c0, new_c1))
+    }
+
+    pub fn conditionally_negate<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E> 
+    {
+        let new_c0 = self.c0.conditionally_negate(cs, flag)?;
+        let new_c1 = self.c1.conditionally_negate(cs, flag)?;
+        Ok(Self::from_coordinates(new_c0, new_c1))
     }
 
     pub fn zero(params: &'a RnsParameters<E, F>) -> Self {
@@ -207,12 +222,6 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
     pub fn double<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
         let new_c0 = self.c0.double(cs)?;
         let new_c1 = self.c1.double(cs)?;
-        Ok(Self::from_coordinates(new_c0, new_c1))
-    }
-
-    pub fn negate<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        let new_c0 = self.c0.negate(cs)?;
-        let new_c1 = self.c1.negate(cs)?;
         Ok(Self::from_coordinates(new_c0, new_c1))
     }
 
@@ -246,9 +255,14 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
         Ok(result)
     }
 
+    pub fn mul<CS: ConstraintSystem<E>>(cs: &mut CS, first: &Self, second: &Self) -> Result<Self, SynthesisError> 
+    {
+        Self::mul_with_chain(cs, first, second, Fp12Chain::new())
+    }
+
     #[track_caller]
-    pub fn mul<CS: ConstraintSystem<E>>(
-        cs: &mut CS, first: &Self, second: &Self
+    pub fn mul_with_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, first: &Self, second: &Self, chain: Fp12Chain<'a, E, F, T>
     ) -> Result<Self, SynthesisError> {
         //Same as quadratic extension
         // 1) v0 = a0 * b0
@@ -258,12 +272,17 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
         let v0 = Fp6::mul(cs, &first.c0, &second.c0)?; 
         let v1 = Fp6::mul(cs, &first.c1, &second.c1)?;
         let v1_mul_t = Self::fp6_mul_subroutine(cs, &v1)?; 
-        let new_c0 = v0.add(cs, &v1)?; 
+        
+        let mut subchain = chain.get_coordinate_subchain(0);
+        subchain.add_pos_term(&v0).add_pos_term(&v1_mul_t);
+        let new_c0 = Fp6::collapse_chain(cs, subchain)?;
+        
         let a01 = first.c0.add(cs, &first.c1)?;
         let b01 = second.c0.add(cs, &second.c1)?;
-        let a01_mul_b01 = Fp6::mul(cs, &a01, &b01)?;  
-        let v01 = v0.add(cs, &v1)?;   
-        let new_c1 = a01_mul_b01.sub(cs, &v01)?; 
+        let mut subchain = chain.get_coordinate_subchain(1);
+        subchain.add_neg_term(&v0).add_neg_term(&v1);
+        let new_c1 = Fp6::mul_with_chain(cs, &a01, &b01, subchain)?;
+        
         Ok(Self::from_coordinates(new_c0, new_c1))
     }
     
@@ -325,7 +344,7 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
         let params = self.c0.c0.c0.representation_params;
         let mut frob_c1 = vec![];
         for i in 0..12 {
-            let mut r1 = Fp2::constant(<T::Ex6 as Extension6Params<F>>::FROBENIUS_COEFFS_FQ12_C1[i], params);
+            let r1 = Fp2::constant(<T::Ex6 as Extension6Params<F>>::FROBENIUS_COEFFS_FQ12_C1[i], params);
             frob_c1.push(r1);
         }
         let new_c0 = self.c0.frobenius_power_map(cs, power)?;    
@@ -348,10 +367,21 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
         Ok(Self::from_coordinates(c0, c1))
     }
 
-    pub fn from_boolean(flag: &Boolean, params: &RnsParameters<E, F>) -> Self {
+    pub fn from_boolean(flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
         let c0 = Fp6::from_boolean(flag, params);
         let c1 = Fp6::zero(params);
         Self::from_coordinates(c0, c1)
+    }
+
+    pub fn conditional_constant(value: T::Witness, flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
+        let (c0, c1) = T::convert_from_structured_witness(value);
+        let c0 = Fp6::conditional_constant(c0, flag, params);
+        let c1 = Fp6::conditional_constant(c1, flag, params);
+        Self::from_coordinates(c0, c1)
+    }
+
+    pub fn get_params(&self) -> &'a RnsParameters<E, F> {
+        self.c0.c0.c0.representation_params
     }
 }
 

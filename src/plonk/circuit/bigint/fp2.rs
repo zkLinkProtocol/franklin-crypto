@@ -577,7 +577,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
 
     #[track_caller]
     pub fn constraint_mul_by_small_constant_with_chain<CS: ConstraintSystem<E>>(
-        &self, cs: &mut CS, scalar: (u64, u64), chain: Fp2Chain<'a, E, F, T>
+        cs: &mut CS, elem: &Self, scalar: (u64, u64), chain: Fp2Chain<'a, E, F, T>
     ) -> Result<(), SynthesisError> {
         assert!(T::is_default_impl());
         let (s0, s1) = scalar;
@@ -590,13 +590,13 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         // hence: c1 = a0 * s1 + a1 * s0
 
         let mut subchain = chain.get_coordinate_subchain(0); 
-        subchain.add_pos_term(&self.c0.scale(cs, s0)?);
-        subchain.add_neg_term(&self.c1.scale(cs, s1)?);
+        subchain.add_pos_term(&elem.c0.scale(cs, s0)?);
+        subchain.add_neg_term(&elem.c1.scale(cs, s1)?);
         FieldElement::enforce_chain_is_zero(cs, subchain)?;
         
         let mut subchain = chain.get_coordinate_subchain(1);
-        subchain.add_pos_term(&self.c0.scale(cs, s1)?);
-        subchain.add_neg_term(&self.c1.scale(cs, s0)?);
+        subchain.add_pos_term(&elem.c0.scale(cs, s1)?);
+        subchain.add_neg_term(&elem.c1.scale(cs, s0)?);
         FieldElement::enforce_chain_is_zero(cs, subchain)
     }
 
@@ -611,9 +611,16 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         Ok(Self::from_coordinates(c0, c1))
     }
 
-    pub fn from_boolean(flag: &Boolean, params: &RnsParameters<E, F>) -> Self {
+    pub fn from_boolean(flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
         let c0 = FieldElement::from_boolean(flag, params);
         let c1 = FieldElement::zero(params);
+        Self::from_coordinates(c0, c1)
+    }
+
+    pub fn conditional_constant(value: T::Witness, flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
+        let (c0, c1) = T::convert_from_structured_witness(value);
+        let c0 = FieldElement::conditional_constant(c0, flag, params);
+        let c1 = FieldElement::conditional_constant(c1, flag, params);
         Self::from_coordinates(c0, c1)
     }
 }

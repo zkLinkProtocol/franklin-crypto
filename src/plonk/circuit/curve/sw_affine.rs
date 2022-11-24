@@ -50,6 +50,7 @@ use num_traits::*;
 use std::str::FromStr;
 use crate::plonk::circuit::bigint::*;
 use plonk::circuit::curve::ProjectivePoint;
+use plonk::circuit::utils::from_silverman_basis;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MultiexpStrategy {
@@ -1043,18 +1044,15 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let wit_scalar = (pow(z_parametr, 2) - BigUint::one())/three;
         let scalar_ff = G::Scalar::from_str(&wit_scalar.to_str_radix(10)).unwrap();
 
-        let scalar_with_minus_one = [TernaryExp::One, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::One, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero,
-        TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::One, TernaryExp::One, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::One,
-        TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, 
-        TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::One,
-        TernaryExp::One, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero,
-        TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero,
-        TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero,
-        TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::One, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, 
-        TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero,
-        TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, TernaryExp::Zero, 
-        TernaryExp::Zero, MinusOne];
+        let scalar_with_minus_one = [
+        1, 0, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+        0, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+        0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1];
 
+        assert_eq!(from_silverman_basis(scalar_with_minus_one.to_vec()), wit_scalar);
 
         let endo_x = point_from_aff_to_proj.get_x().mul(cs, &beta)?;
         let endo_exp2_x = endo_x.mul(cs, &beta)?;
@@ -1072,20 +1070,26 @@ where <G as GenericCurveAffine>::Base: PrimeField
             point_from_aff_to_proj.circuit_params
         );
 
-
         //(2σ(P) − P − σ^2(P))
         let mut equation = endo_point.double(cs)?;
         equation.sub(cs, &point_from_aff_to_proj)?;
         equation.sub(cs, &endo_point_exp2)?;
         let reserv = equation.clone();
 
-        equation.double_and_add_const_scalar_for_ternaryexp(cs, scalar_with_minus_one)?;
+        equation.double_and_add_const_scalar_for_ternaryexp(cs, scalar_with_minus_one.to_vec())?;
 
-        let mut witness = reserv.get_value().unwrap().into_projective();
-        witness.mul_assign(scalar_ff);
-        let mut actual_result = ProjectivePoint::from(
-            AffinePoint::alloc(cs, Some(witness.into_affine()), &params).unwrap()
-        );
+        if let Some(witness) = reserv.get_value(){
+            let witness = witness.into_projective();
+            witness.mul_assign(scalar_ff);
+            let mut actual_result = ProjectivePoint::from(
+                AffinePoint::alloc(cs, Some(witness.into_affine()), &params).unwrap()
+            );
+        } else{
+            let mut actual_result = ProjectivePoint::from(
+                AffinePoint::alloc(cs, None, &params).unwrap()
+            );
+        }
+
         let mut cur_point = actual_result.double(cs)?;
         cur_point.add(cs, &actual_result)?;
         ProjectivePoint::enforce_equal(cs, &mut cur_point, &mut equation)?;
@@ -1094,31 +1098,12 @@ where <G as GenericCurveAffine>::Base: PrimeField
         actual_result.sub(cs, &endo_point_exp2)?;
 
 
-        let if_is = ProjectivePoint::equals(cs, &mut actual_result, &mut ProjectivePoint::Zero(&params))?;
+        let if_is = ProjectivePoint::equals(cs, &mut actual_result, &mut ProjectivePoint::zero(&params))?;
 
         Ok(if_is)
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TernaryExp{
-    One,
-    Zero,
-    MinusOne,
-}
-impl TernaryExp {
 
-    pub fn from_vec_bool_to_ternary(array: Vec<Option<bool>>)-> Vec<Self>{
-        let mut new_vec = vec![];
-        for i in array.into_iter().map(|x| x.unwrap()){
-            if i == true{
-                new_vec.push(Self::One)
-            } else{
-                new_vec.push(Self::Zero)
-            }
-        }
-        new_vec
-    }
-}
 pub fn from_dec_to_vecbool(decimal: BigUint)-> Vec<Option<bool>>{
     let str: &str = &format!("{decimal:b}");
     let char: Vec<char> = str.chars().collect::<Vec<_>>();

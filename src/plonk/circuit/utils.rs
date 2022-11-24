@@ -1,3 +1,7 @@
+use itertools::rev;
+use num_bigint::BigUint;
+use num_traits::pow;
+
 use crate::bellman::pairing::ff::*;
 use crate::bellman::SynthesisError;
 
@@ -206,6 +210,22 @@ pub fn fe_to_lsb_first_bits<F: PrimeField>(el: &F) -> Vec<bool> {
     let mut result = fe_to_msb_first_bits(el);
     result.reverse();
 
+    result
+}
+// ternary representation {-1, 0, 1}     (little-endian)
+pub fn from_silverman_basis(scalar: Vec<i32>) -> BigUint{
+    use num_traits::{abs, {Zero, One}};
+    let mut result = BigUint::zero();
+    for (step, i) in scalar.into_iter().enumerate().rev(){
+
+        if  i == 1 || i==0{
+        let i = BigUint::from(i as u32);
+        result += BigUint::from(i * BigUint::from(1u64) << step);
+        } else {
+            let i = BigUint::from(abs(i) as u64);
+            result -= BigUint::from(i * BigUint::from(1u64) << step);
+        }
+    }
     result
 }
 

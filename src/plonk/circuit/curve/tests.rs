@@ -598,15 +598,29 @@ mod test {
 
         //228988810152649578064853576960394133504
 
-        let decimal = BigUint::from_str("228988810152649578064853576960394133504");
-        let scalar = from_dec_to_vecbool(decimal.unwrap());
-        let mut scalar_with_minus_one = TernaryExp::from_vec_bool_to_ternary(scalar);
-        // then dont forget z^2 − 1
-        let n = scalar_with_minus_one.len() - 1;
-        scalar_with_minus_one[n] = TernaryExp::MinusOne;
 
-        println!("{:?}", scalar_with_minus_one);
+    }
 
+    #[test]
+    fn test_silverman_basis(){
+        use plonk::circuit::BigUint;
+        use std::str::FromStr;
+        let decimal = BigUint::from_str("228988810152649578064853576960394133503").unwrap();
+        let mut scalar_with_minus_one = [
+            1, 0, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+            0, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+            0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1
+        ];
+        
+        scalar_with_minus_one.reverse();
+
+        use plonk::circuit::utils::from_silverman_basis;
+        let demential = from_silverman_basis(scalar_with_minus_one.to_vec());
+        assert_eq!(demential, decimal);
+            
     }
 
 

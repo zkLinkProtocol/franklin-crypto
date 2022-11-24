@@ -462,8 +462,12 @@ mod test {
             let mut points = Vec::with_capacity(self.max_num_of_points);
             let mut scalars = Vec::with_capacity(self.max_num_of_points);
             let mut partial_multiexps = Vec::with_capacity(self.max_num_of_points);
+            let mut partial_multiexps_zero = Vec::with_capacity(self.max_num_of_points);
+
+            let mut zero_scalars = Vec::with_capacity(self.max_num_of_points);
 
             let mut result_wit_proj = G::Projective::zero();
+            let mut result_zero_wit_proj = G::Projective::zero();
             for _ in 0..self.max_num_of_points {
                 let scalar_wit : G::Scalar = rng.gen();
                 let point_wit : G = rng.gen();
@@ -479,6 +483,18 @@ mod test {
 
                 points.push(point);
                 scalars.push(scalar);
+
+                // part with zero scalar 
+                let zero_scalar_wit = G::Scalar::from_str("0").unwrap();
+                let mut tmp = point_wit.into_projective();
+                tmp.mul_assign(zero_scalar_wit);
+                result_zero_wit_proj.add_assign(&tmp);
+                let wit = result_zero_wit_proj.clone().into_affine();
+                partial_multiexps_zero.push(AffinePoint::alloc(cs, Some(wit), &self.circuit_params)?);
+
+                let zero_scalar = FieldElement::alloc(cs, Some(zero_scalar_wit), &self.circuit_params.scalar_field_rns_params)?;
+
+                zero_scalars.push(zero_scalar);
             }
 
             let strategy_iter = std::iter::once(MultiexpStrategy::SelectionTree).chain(
@@ -489,6 +505,7 @@ mod test {
             for (width, strategy) in itertools::iproduct!(2..(self.max_num_of_points+1), strategy_iter) {
                 let geometry = MultiExpGeometry { width, strategy };
                 let mut actual_result = partial_multiexps[width - 1].clone();
+                let mut actual_result_for_zeroscalar = partial_multiexps_zero[width - 1].clone();
 
                 let counter_start = cs.get_current_step_number();
                 let (mut result, _) = AffinePoint::multiexp_complete_with_custom_geometry(
@@ -498,6 +515,15 @@ mod test {
                 let num_of_gates = counter_end - counter_start;
                 println!("complete multiexp via {} for {} points takes {} gates", strategy, width, num_of_gates);
                 AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+
+                let counter_start = cs.get_current_step_number();
+                let (mut result, _) = AffinePoint::multiexp_complete_with_custom_geometry(
+                    cs, &mut zero_scalars[0..width], &mut points[0..width], geometry
+                )?;
+                let counter_end = cs.get_current_step_number();
+                let num_of_gates = counter_end - counter_start;
+                println!("complete multiexp via {} for {} points takes {} gates", strategy, width, num_of_gates);
+                AffinePoint::enforce_equal(cs, &mut result, &mut actual_result_for_zeroscalar)?;
 
                 let counter_start = cs.get_current_step_number();
                 let mut result = AffinePoint::multiexp_non_complete_with_custom_geometry(

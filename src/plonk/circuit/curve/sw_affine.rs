@@ -1078,14 +1078,15 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
         equation.double_and_add_const_scalar_for_ternaryexp(cs, scalar_with_minus_one.to_vec())?;
 
+        let mut actual_result;
         if let Some(witness) = reserv.get_value(){
-            let witness = witness.into_projective();
+            let mut witness = witness.into_projective();
             witness.mul_assign(scalar_ff);
-            let mut actual_result = ProjectivePoint::from(
+            actual_result = ProjectivePoint::from(
                 AffinePoint::alloc(cs, Some(witness.into_affine()), &params).unwrap()
             );
         } else{
-            let mut actual_result = ProjectivePoint::from(
+            actual_result = ProjectivePoint::from(
                 AffinePoint::alloc(cs, None, &params).unwrap()
             );
         }
@@ -1095,7 +1096,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         ProjectivePoint::enforce_equal(cs, &mut cur_point, &mut equation)?;
 
         // do not forget about − σ^2(P)
-        actual_result.sub(cs, &endo_point_exp2)?;
+        actual_result = actual_result.sub(cs, &endo_point_exp2)?;
 
 
         let if_is = ProjectivePoint::equals(cs, &mut actual_result, &mut ProjectivePoint::zero(&params))?;

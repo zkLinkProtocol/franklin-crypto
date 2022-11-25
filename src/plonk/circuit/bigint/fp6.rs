@@ -527,6 +527,15 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         Ok(Self::from_coordinates(coeffs[0].clone(), coeffs[1].clone(), coeffs[2].clone()))
     }
 
+    pub fn enforce_chain_is_zero<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: Fp6Chain<'a, E, F, T>, 
+    ) -> Result<(), SynthesisError> {
+        for i in 0..3 {
+            Fp2::enforce_chain_is_zero(cs, chain.get_coordinate_subchain(i))?;
+        }
+        Ok(())
+    }
+
     pub fn from_boolean(flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
         let c0 = Fp2::from_boolean(flag, params);
         let c1 = Fp2::zero(params);

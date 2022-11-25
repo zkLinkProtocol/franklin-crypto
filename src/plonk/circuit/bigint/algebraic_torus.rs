@@ -1,6 +1,7 @@
 use super::*;
 use super::fp12::*;
 use super::fp6::*;
+use crate::plonk::circuit::SomeArithmetizable;
 
 
 // Let k be positve number (usually taken to be the embedding degree of the curve), 
@@ -25,6 +26,7 @@ use super::fp6::*;
 // note, that +1 is encoded as [0; true; true] and -1 is encoded as [0; false; true]
 // for all other elements have encodings of the form: [elem; is_negative; false]
 // TODO: probably better to make it more generic and work for any field in the towes and not only for Fp12
+#[derive(Clone, Debug)]
 pub struct TorusWrapper<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> {
     encoding: Fp6<'a, E, F, T::Ex6>,
     is_negative: Boolean, // if true the wrapper encodes element -x instead of x
@@ -89,6 +91,12 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
         T::Ex6::convert_to_structured_witness(fp2_zero, fp2_one, fp2_zero)
     }
 
+    fn compute_w() -> T::Witness {
+        let fp6_zero = <T::Ex6 as Extension6Params<F>>::Witness::zero();
+        let fp6_one = <T::Ex6 as Extension6Params<F>>::Witness::one();
+        T::convert_to_structured_witness(fp6_zero, fp6_one)
+    }
+
     pub fn mul<CS: ConstraintSystem<E>>(
         cs: &mut CS, left: &Self, right: &Self, is_safe_version: bool
     ) -> Result<Self, SynthesisError> {
@@ -122,7 +130,9 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
             // if g1 * g2 + \gamma = \gamma - g1^2 = 0 and hence g1 is the root of polynomial X^2 - \gamma = 0,
             // and hence this poly is not irreducible - contradiction with F_q^2 = F_q[w] / (w^2 - \gamma)
             // This means, we are completely safe here and no additional checks are requierd
-            let numerator = Fp6::mul_with_chain(cs, &left.encoding, &right.encoding)?;
+            let mut chain = Fp6Chain::new();
+            chain.add_pos_term(&Fp6::constant(gamma, params));
+            let numerator = Fp6::mul_with_chain(cs, &left.encoding, &right.encoding, chain)?;
             let denominator = left.encoding.add(cs, &right.encoding)?;
             let encoding = Fp6::div(cs, &numerator, &denominator)?;
             let is_negative = Boolean::xor(cs, &left.is_negative, &right.is_negative)?;
@@ -133,24 +143,68 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
         Ok(res)
     }
 
+    pub fn frobenius_power_map<CS>(&self, cs: &mut CS, power: usize) -> Result<Self, SynthesisError>
+    where CS: ConstraintSystem<E> 
+    {
+        // Frob_power_map(g, i) = g^{p^i} / \gamma^({p^i-1}/2)
+        // x = \gamma^({p^i-1}/2) = w^{p^i-1}
+        let params = self.encoding.get_params();
+        let numerator = self.encoding.frobenius_power_map(cs, power)?;
+        let w = Self::compute_w();
+        let denom_wit = {
+            let mut t = w.clone();
+            t.frobenius_map(power);
+            let w_inv = w.inverse().unwrap();
+            t.mul_assign(&w_inv);
+            let (c0, c1) = T::convert_from_structured_witness(t);
+            assert!(c1.is_zero());
+            c0
+        };
+
+        let denom = Fp6::constant(denom_wit, params);
+        let new_encoding = Fp6::div(cs, &numerator, &denom)?;
+
+        let mut result : TorusWrapper::<E, F, T> = self.clone();
+        result.encoding = new_encoding;
+        Ok(result)
+    } 
+
     pub fn square<CS>(&self, cs: &mut CS, is_safe_version: bool) -> Result<Self, SynthesisError>
     where CS: ConstraintSystem<E> {
         let params = self.encoding.get_params();
         let gamma = Self::compute_gamma();
-        let res = if is_safe_version {
-            // modified formula looks like (here flag = modify_formula_flag):
-            // res = 1/2 (g + [(flag *\gamma) / (g + 1)])
-            let modify_formula_flag = Boolean::and(cs, &left.is_exceptional, &right.is_exceptional)?;
+
+        // exception_free formula looks like (here flag := is_exceptional)
+        // res = 1/2 (g + [(\gamma * flag!) / (g + flag)])
+        // unsafe formula is : res = 1/2 (g + \gamma / g);
+        // we are going to do with them simultaneouly, rewriting the formula as: res = 1/2 (g + tmp)
+        // where tmp := (\gamma * flag!) / (g + flag) in the first case and tmp := \gamma / g in the second
+        let tmp = if is_safe_version {
+            let denom = self.encoding.add(cs, &Fp6::from_boolean(&self.is_exceptional, params))?;
+            Fp6::div(cs, &Fp6::conditional_constant(gamma, &self.is_exceptional.not(), params), &denom)?
         } else {
-            // res = 1/2 (g + \gamma / g);
-            // first we calculate x = \gamma / g and then calculate res = 1/2 (g + x) 
-            let x = Fp6::div(cs, )
-        }
+            Fp6::div(cs, &Fp6::constant(gamma, params), &self.encoding)?
+        };
+
+        let res_wit = self.encoding.get_value().add(&tmp.get_value()).map(|mut x| {
+            let mut inv_2 = <<T::Ex6 as Extension6Params<F>>::Witness as Field>::one();
+            inv_2.double();
+            inv_2 = inv_2.inverse().unwrap();
+            x.mul_assign(&inv_2);
+            x
+        });
+        let mut encoding = if self.encoding.is_constant() && tmp.is_constant() {
+            Fp6::constant(res_wit.unwrap(), params)
+        } else {
+            let res = Fp6::alloc(cs, res_wit, params)?;
+            let mut chain = Fp6Chain::new();
+            chain.add_pos_term(&self.encoding).add_pos_term(&tmp).add_neg_term(&res.double(cs)?);
+            Fp6::enforce_chain_is_zero(cs, chain)?;
+            res
+        };
+
+        let is_negative = Boolean::constant(false);
+        let is_exceptional = if is_safe_version { Fp6::is_zero(&mut encoding, cs)? } else { Boolean::constant(false) };
+        Ok(Self { encoding, is_negative, is_exceptional })
     }
 }
-    
-//     pub fn frobenius_power_map<CS>(&self, cs: &mut CS, is_safe_version: bool) -> Result<Self, SynthesisError>
-//     where CS: ConstraintSystem<E> {
-
-//     } 
-// }

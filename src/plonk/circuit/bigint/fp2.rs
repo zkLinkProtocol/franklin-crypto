@@ -611,6 +611,15 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         Ok(Self::from_coordinates(c0, c1))
     }
 
+    pub fn enforce_chain_is_zero<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: Fp2Chain<'a, E, F, T>, 
+    ) -> Result<(), SynthesisError> {
+        for i in 0..2 {
+            FieldElement::enforce_chain_is_zero(cs, chain.get_coordinate_subchain(i))?;
+        }
+        Ok(())
+    }
+
     pub fn from_boolean(flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
         let c0 = FieldElement::from_boolean(flag, params);
         let c1 = FieldElement::zero(params);

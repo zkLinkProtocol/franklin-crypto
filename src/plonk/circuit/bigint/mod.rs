@@ -43,6 +43,9 @@ pub use self::fp12::*;
 pub mod algebraic_torus;
 pub use self::algebraic_torus::*;
 
+pub mod pairing;
+pub use self::pairing::*;
+
 
 pub const BITWISE_LOGICAL_OPS_TABLE_NAME: &'static str = "Table for bitwise logical ops";
 pub const DEFAULT_RANGE_TABLE_GRANULARITY: usize = 8;
@@ -167,5 +170,3 @@ pub(crate) fn round_up(x: usize, granularity: usize) -> usize {
     let to_add = if rem == 0 { 0 } else { granularity - rem };
     x + to_add
 }
-
-

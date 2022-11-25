@@ -472,23 +472,6 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         Ok(res)
     }
 
-    fn pow<CS: ConstraintSystem<E>, S: AsRef<[u64]>>(&self, cs: &mut CS, exp: S) -> Result<Self,SynthesisError> {
-        let params = self.c0.c0.representation_params;
-        let mut res = Self::one(params);
-        let mut found_one = false;
-        for i in BitIterator::new(exp) {
-            if found_one {
-                res = res.square(cs)?;
-            } else {
-                found_one = i;
-            }
-            if i {
-                res = Self::mul(cs, self, &res)?;
-            }
-        }
-        Ok(res)
-    }
-   
     pub fn frobenius_power_map<CS>(&self, cs: &mut CS, power:usize)-> Result<Self,SynthesisError> 
     where CS: ConstraintSystem<E>
     {

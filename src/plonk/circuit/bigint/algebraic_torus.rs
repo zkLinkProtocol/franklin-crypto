@@ -1,3 +1,5 @@
+use num_bigint::BigUint;
+
 use super::*;
 use super::fp12::*;
 use super::fp6::*;
@@ -34,6 +36,18 @@ pub struct TorusWrapper<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> {
 }
 
 impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, F, T> {
+    pub fn new(encoding: Fp6<'a, E, F, T::Ex6>, is_negative: Boolean, is_exceptional: Boolean) -> Self {
+        TorusWrapper { encoding, is_negative, is_exceptional }
+    }
+
+    pub fn uninitialized(params: &'a RnsParameters<E, F>) -> Self {
+        TorusWrapper {
+            encoding: Fp6::<E, F, T::Ex6>::zero(params),
+            is_negative: Boolean::constant(false),
+            is_exceptional: Boolean::constant(false)
+        }
+    }
+
     pub fn compress<CS: ConstraintSystem<E>>(
         cs: &mut CS, elem: &mut Fp12<'a, E, F, T>, is_safe_version: bool
     ) -> Result<Self, SynthesisError> {
@@ -83,6 +97,11 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
             is_negative: self.is_negative.not(), 
             is_exceptional: self.is_exceptional
         }
+    }
+
+    pub fn conjugation(&self) -> Self {
+        // NOte: for elements on T2 conjugation coincides with inversion
+        self.inverse()
     }
 
     fn compute_gamma() -> <T::Ex6 as Extension6Params<F>>::Witness {
@@ -206,5 +225,24 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
         let is_negative = Boolean::constant(false);
         let is_exceptional = if is_safe_version { Fp6::is_zero(&mut encoding, cs)? } else { Boolean::constant(false) };
         Ok(Self { encoding, is_negative, is_exceptional })
+    }
+
+    fn pow<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, exp: &BigUint, is_safe_version: bool
+    ) -> Result<Self,SynthesisError> {
+        assert!(!exp.is_zero());
+        let params = self.encoding.get_params();
+        let mut res = self.clone();
+        let mut i = exp.bits() - 1;
+        
+        while i > 0 {
+            res = res.square(cs, is_safe_version)?;
+            i -= 1;
+            if exp.bit(i) {
+                res = Self::mul(cs, &res, self, is_safe_version)?;
+            }
+        }
+
+        Ok(res)
     }
 }

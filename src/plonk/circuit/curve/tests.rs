@@ -12,6 +12,7 @@ mod test {
     use bellman::plonk::better_better_cs::cs::*;
     use crate::plonk::circuit::bigint::*;
     use crate::plonk::circuit::curve::*;
+    use plonk::circuit::boolean::Boolean;
 
     use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
     use crate::bellman::worker::Worker;
@@ -395,6 +396,9 @@ mod test {
             let mut tmp = a.into_projective();
             tmp.mul_assign(scalar);
             let result = tmp.into_affine();
+
+            let zero_scalar_wit = G::Scalar::from_str("0").unwrap();
+            let mut zero_scalar = FieldElement::alloc(cs, Some(zero_scalar_wit), &self.circuit_params.scalar_field_rns_params)?;
             
             let mut a = AffinePoint::alloc(cs, Some(a), &self.circuit_params)?;
             let mut scalar = FieldElement::alloc(cs, Some(scalar), &self.circuit_params.scalar_field_rns_params)?;
@@ -405,6 +409,14 @@ mod test {
             let counter_end = cs.get_current_step_number();
             println!("num of gates for complete scalar multiplication: {}", counter_end - counter_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+
+            // testing when scalar is zero
+            let counter_start = cs.get_current_step_number();
+            let (_ , is_infinity) = a.mul_by_scalar_complete(cs, &mut zero_scalar)?;
+            let counter_end = cs.get_current_step_number();
+            println!("num of gates for complete scalar multiplication: {}", counter_end - counter_start);
+            Boolean::enforce_equal(cs, &is_infinity, &Boolean::Constant(true))?;
+
 
             let counter_start = cs.get_current_step_number();
             let mut result = a.mul_by_scalar_non_complete(cs, &mut scalar)?;
@@ -462,12 +474,9 @@ mod test {
             let mut points = Vec::with_capacity(self.max_num_of_points);
             let mut scalars = Vec::with_capacity(self.max_num_of_points);
             let mut partial_multiexps = Vec::with_capacity(self.max_num_of_points);
-            let mut partial_multiexps_zero = Vec::with_capacity(self.max_num_of_points);
-
             let mut zero_scalars = Vec::with_capacity(self.max_num_of_points);
 
             let mut result_wit_proj = G::Projective::zero();
-            let mut result_zero_wit_proj = G::Projective::zero();
             for _ in 0..self.max_num_of_points {
                 let scalar_wit : G::Scalar = rng.gen();
                 let point_wit : G = rng.gen();
@@ -486,16 +495,56 @@ mod test {
 
                 // part with zero scalar 
                 let zero_scalar_wit = G::Scalar::from_str("0").unwrap();
-                let mut tmp = point_wit.into_projective();
-                tmp.mul_assign(zero_scalar_wit);
-                result_zero_wit_proj.add_assign(&tmp);
-                let wit = result_zero_wit_proj.clone().into_affine();
-                partial_multiexps_zero.push(AffinePoint::alloc(cs, Some(wit), &self.circuit_params)?);
-
                 let zero_scalar = FieldElement::alloc(cs, Some(zero_scalar_wit), &self.circuit_params.scalar_field_rns_params)?;
 
                 zero_scalars.push(zero_scalar);
+
             }
+            
+                // different point that add up to zero
+                let point_initual : G = rng.gen();
+                let point_1 = point_initual.into_projective();
+                let scalar_for_2_p = G::Scalar::from_str("15062002").unwrap();
+                let mut point_2 = point_1.clone();
+                point_2.mul_assign(scalar_for_2_p);
+                let mut point_3 = point_1.clone();
+                let scalar_for_3_p = G::Scalar::from_str("1515").unwrap();
+                point_3.mul_assign(scalar_for_3_p);
+                let mut point_4 = point_1.clone();
+                let scalar_for_4_p = G::Scalar::from_str("15").unwrap();
+                point_4.mul_assign(scalar_for_4_p);
+
+                let point1 = AffinePoint::alloc(cs, Some(point_1.into_affine()), &self.circuit_params)?;
+                let point2 = AffinePoint::alloc(cs, Some(point_2.into_affine()), &self.circuit_params)?;
+                let point3 = AffinePoint::alloc(cs, Some(point_3.into_affine()), &self.circuit_params)?;
+                let point4 = AffinePoint::alloc(cs, Some(point_4.into_affine()), &self.circuit_params)?;
+
+                let mut point_array = vec![];
+                point_array.push(point1);
+                point_array.push(point2);
+                point_array.push(point3);
+                point_array.push(point4);
+
+                let mut scalar_array = vec![];
+
+                let mut scalar_for_wit = G::Scalar::from_str("15062002").unwrap();
+                scalar_for_wit.negate();
+                let scalar_for_wit =FieldElement::alloc(cs, Some(scalar_for_wit), &self.circuit_params.scalar_field_rns_params)?;
+                scalar_array.push(scalar_for_wit);
+
+                let scalar_for_wit = G::Scalar::from_str("1").unwrap();
+                let scalar_for_wit =FieldElement::alloc(cs, Some(scalar_for_wit), &self.circuit_params.scalar_field_rns_params)?;
+                scalar_array.push(scalar_for_wit);
+
+                let scalar_for_wit = G::Scalar::from_str("2").unwrap();
+                let scalar_for_wit =FieldElement::alloc(cs, Some(scalar_for_wit), &self.circuit_params.scalar_field_rns_params)?;
+                scalar_array.push(scalar_for_wit);
+
+                let mut scalar_for_wit = G::Scalar::from_str("202").unwrap();
+                scalar_for_wit.negate();
+                let scalar_for_wit =FieldElement::alloc(cs, Some(scalar_for_wit), &self.circuit_params.scalar_field_rns_params)?;
+                scalar_array.push(scalar_for_wit);
+
 
             let strategy_iter = std::iter::once(MultiexpStrategy::SelectionTree).chain(
                 std::iter::once(MultiexpStrategy::WaksmanBasedRam)
@@ -505,7 +554,6 @@ mod test {
             for (width, strategy) in itertools::iproduct!(2..(self.max_num_of_points+1), strategy_iter) {
                 let geometry = MultiExpGeometry { width, strategy };
                 let mut actual_result = partial_multiexps[width - 1].clone();
-                let mut actual_result_for_zeroscalar = partial_multiexps_zero[width - 1].clone();
 
                 let counter_start = cs.get_current_step_number();
                 let (mut result, _) = AffinePoint::multiexp_complete_with_custom_geometry(
@@ -517,13 +565,14 @@ mod test {
                 AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
                 let counter_start = cs.get_current_step_number();
-                let (mut result, _) = AffinePoint::multiexp_complete_with_custom_geometry(
+                let (_, is_infinity) = AffinePoint::multiexp_complete_with_custom_geometry(
                     cs, &mut zero_scalars[0..width], &mut points[0..width], geometry
                 )?;
                 let counter_end = cs.get_current_step_number();
                 let num_of_gates = counter_end - counter_start;
                 println!("complete multiexp via {} for {} points takes {} gates", strategy, width, num_of_gates);
-                AffinePoint::enforce_equal(cs, &mut result, &mut actual_result_for_zeroscalar)?;
+                Boolean::enforce_equal(cs, &is_infinity, &Boolean::Constant(true))?;
+
 
                 let counter_start = cs.get_current_step_number();
                 let mut result = AffinePoint::multiexp_non_complete_with_custom_geometry(
@@ -533,6 +582,16 @@ mod test {
                 let num_of_gates = counter_end - counter_start;
                 println!("non-complete multiexp via {} for {} points takes {} gates", strategy, width, num_of_gates);
                 AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+
+
+                let counter_start = cs.get_current_step_number();
+                let (mut result, is_infinity) = AffinePoint::multiexp_complete_with_custom_geometry(
+                    cs, &mut scalar_array[0..width], &mut point_array[0..width], geometry
+                )?;
+                let counter_end = cs.get_current_step_number();
+                let num_of_gates = counter_end - counter_start;
+                println!("complete multiexp via {} for {} points takes {} gates", strategy, width, num_of_gates);
+                Boolean::enforce_equal(cs, &is_infinity, &Boolean::Constant(true))?;
             }
 
             let mut actual_result = partial_multiexps.pop().unwrap();
@@ -599,31 +658,6 @@ mod test {
 
         let result = point.fast_subgroup_checks(&mut cs).unwrap();
         println!("{:?}", result);
-
-    }
-    #[test]
-    fn const_test() {
-        use plonk::circuit::*;
-        use num_traits::{Zero, One};
-        use std::str::FromStr;
-        use num_bigint::BigUint;
-        use num_integer::Integer;
-
-        let hamming_weight = BigUint::from_str("15132376222941642752").unwrap();
-        let tr = BigUint::from_str("3").unwrap();
-        // (z^2 − 1)/3
-        let scalar = (hamming_weight.clone() * hamming_weight.clone() - BigUint::one())/tr;
-        // let a:i64 = 111001011011001000110000000000010101010101010111100001010101100000000000000000000000000000000001010101010101010101010101010101;
-        
-        let scalar_2 = (hamming_weight.clone() * hamming_weight.clone() - BigUint::one());
-        println!("{:?}", scalar_2);
-        // 228988810152649578064853576960394133503 
-        // bigendian
-        // 10101100010001011010010000000001000000000000000110100100000000100000000000000000000000000000000011111111111111111111111111111111
-        // silverman repr 1010110001000101101001000000000100000000000000011010010000000010000000000000000000000000000000010000000000000000000000000000000-1
-
-        //228988810152649578064853576960394133504
-
 
     }
 

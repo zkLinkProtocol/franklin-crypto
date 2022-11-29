@@ -1,4 +1,5 @@
 use num_bigint::BigUint;
+use num_traits::Zero;
 
 use super::*;
 use super::fp12::*;
@@ -36,6 +37,10 @@ pub struct TorusWrapper<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> {
 }
 
 impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, F, T> {
+    pub fn get_params(&self) -> &'a RnsParameters<E, F> {
+        self.encoding.get_params()
+    }
+
     pub fn new(encoding: Fp6<'a, E, F, T::Ex6>, is_negative: Boolean, is_exceptional: Boolean) -> Self {
         TorusWrapper { encoding, is_negative, is_exceptional }
     }
@@ -227,7 +232,7 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
         Ok(Self { encoding, is_negative, is_exceptional })
     }
 
-    fn pow<CS: ConstraintSystem<E>>(
+    pub fn pow<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, exp: &BigUint, is_safe_version: bool
     ) -> Result<Self,SynthesisError> {
         assert!(!exp.is_zero());

@@ -16,4 +16,7 @@ pub use self::multiexp::*;
 pub mod ram_via_hashes;
 pub use self::ram_via_hashes::*;
 
+pub mod pairing;
+pub use self::pairing::*;
+
 pub mod tests;

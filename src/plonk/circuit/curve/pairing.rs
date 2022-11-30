@@ -53,7 +53,7 @@ where G::Base : PrimeField
         Ok(res)
     }
 
-    pub fn frobenius_power_map<CS: ConstraintSystem<E>>(
+    fn frobenius_power_map<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, power:usize
     )-> Result<Self, SynthesisError> {
         let x = self.x.frobenius_power_map(cs, power)?;
@@ -349,7 +349,7 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         let line_eval_1 = Self::add_and_eval(cs, &mut t, &q1, p)?;
         let line_eval_2 = Self::add_and_eval(cs, &mut t, &q2, p)?;
         f = Self::mul_by_sparse_034(cs, &f, &line_eval_1)?;
-        f = Self::mul_by_sparse_034(cs, &f, &line_eval_1)?;
+        f = Self::mul_by_sparse_034(cs, &f, &line_eval_2)?;
         let wrapped_f = Self::final_exp_easy_part(cs, &mut f, is_safe_version)?;
         self.final_exp_hard_part(cs, &wrapped_f, is_safe_version)
     }
@@ -417,6 +417,8 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         let zero = Fp2::zero(q.x.get_params()); 
         let fp6_x = Fp6::from_coordinates(tmp0, zero.clone(), zero.clone());
         let fp6_y = Fp6::from_coordinates(tmp3, tmp6, zero);
+
+        *q = PreparedPoint { x: new_x, y: new_y, z: new_z };
         Ok(Fp12::from_coordinates(fp6_x, fp6_y))
     }
 
@@ -430,12 +432,12 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         // High-Speed Software Implementation of the Optimal Ate Pairing over Barreto–Naehrig Curves" (alg. 27)
         // Q = (xq : yq : zq), R = (xr : yr : 1) and P = (xp, yp), T = Q + R = (xt: yt: zt)
         // 1) t2 = xq - xr
-        let t2 = q.x.sub(cs, &x.r)?;
-        // 2) t4 = 4 * t2^2
-        let mut t4 = t2.square(cs)?;
-        t4 = t4.scale(cs, 4)?;
+        let t2 = q.x.sub(cs, &r.x)?;
+        // 2) t3 = t2^2, t4 = 4 * t3
+        let t3 = t2.square(cs)?;
+        let t4 = t3.scale(cs, 4)?;
         // 3) t5 = t4 * t2
-        let t5 = t4.mul(cs, &t2);
+        let t5 = t4.mul(cs, &t2)?;
         // 4) t6 = 2 * (yq - yr)
         let mut t6 = q.y.sub(cs, &r.y)?;
         t6 = t6.double(cs)?;
@@ -444,11 +446,11 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         // 6) t7 = xr * t4
         let t7 = r.x.mul(cs, &t4)?;
         // 7) tx = t6^2 - t5 - 2 * t7
-        let mut chain = Fp2::new();
+        let mut chain = Fp2Chain::new();
         chain.add_neg_term(&t5).add_neg_term(&t7.double(cs)?);
         let tx = t6.square_with_chain(cs, chain)?;
         // 8) tz = t2^2 + 2 * t2 - t3
-        let mut chain = Fp2::new();
+        let mut chain = Fp2Chain::new();
         chain.add_neg_term(&t3).add_pos_term(&t2.double(cs)?);
         let tz = t2.square_with_chain(cs, chain)?;
         // 9) t10 = yq + tz
@@ -462,11 +464,68 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         // 12) ty = t8 - t0
         let ty = t8.sub(cs, &t0)?;
         // 13) t10 = t10^2 - yq^2 -tz^2
+        let qy_squared = q.y.square(cs)?;
+        let tz_squared = tz.square(cs)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&qy_squared).add_neg_term(&tz_squared);
+        let t10 = t10.square_with_chain(cs, chain)?;
         // 14) t9 = 2 * t9 - t10
-        // 15) t10 = 2 * new_z * yp
-        // 16) t6 = -t6
-        // 17) t1 = 2 * t6 * xp
+        let t9 = t9.double(cs)?.sub(cs, &t10)?;
+        // 15) t10 = 2 * tz * yp
+        let mut t10 = tz.mul_by_base_field(cs, &p.y)?;
+        t10 = t10.double(cs)?; 
+        // 17) t1 = - 2 * t6 * xp
+        let mut t1 = t6.mul_by_base_field(cs, &p.x)?;
+        t1 = t1.negate(cs)?;
+        t1 = t1.double(cs)?;
+        // 18) line_function := [t10, 0, 0, t1, t9, 0]
+        let zero = Fp2::zero(q.x.get_params()); 
+        let fp6_x = Fp6::from_coordinates(t10, zero.clone(), zero.clone());
+        let fp6_y = Fp6::from_coordinates(t1, t9, zero);
+
+        *q = PreparedPoint { x: tx, y: ty, z: tz };
+        Ok(Fp12::from_coordinates(fp6_x, fp6_y))
     } 
+}
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::plonk::circuit::Width4WithCustomGates;
+    use crate::bellman::plonk::better_better_cs::gates::selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext;
+    use rand::{XorShiftRng, SeedableRng, Rng};
+    use crate::bellman::plonk::better_better_cs::cs::*;
+    use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
+    use crate::bellman::worker::Worker;
+
+    #[test]
+    fn test_pairing_for_bn256_curve() {
+        const LIMB_SIZE: usize = 80;
+        const SAFE_VERSION: bool = true;
+
+        let mut cs = TrivialAssembly::<
+            Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
+        >::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let circuit_params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
+        let pairing_params = Bn256PairingParams::new(Bn256HardPartMethod::Devegili);
+
+        //let params = generate_optimal_circuit_params_for_bn\let mut rng = rand::thread_rng();
+        let mut rng = rand::thread_rng();
+        let p_wit: <Bn256 as Engine>::G1Affine = rng.gen();
+        let q_wit: <Bn256 as Engine>::G2Affine = rng.gen();
+        let pairing_wit = Bn256::pairing(p_wit, q_wit);
+        let (q_wit_x, q_wit_y) = q_wit.as_xy(); 
+
+        let p = AffinePoint::alloc(&mut cs, Some(p_wit), &circuit_params).unwrap();
+        let q_x = Fp2::alloc(&mut cs, Some(q_wit_x), &circuit_params.base_field_rns_params).unwrap();
+        let q_y = Fp2::alloc(&mut cs, Some(q_wit_y), &circuit_params.base_field_rns_params).unwrap();  
+        let q_z = Fp2::one(&circuit_params.base_field_rns_params);
+        let q = PreparedPoint::from_coordinates(q_x, q_y, q_z)?;
+        
+        let wrapped_pairing = pairing_params.pairing()
+    }
 }
 
 

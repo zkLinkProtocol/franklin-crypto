@@ -136,6 +136,10 @@ impl<'a, E:Engine, F:PrimeField, T:   Extension12Params<F> > From<Fp6<'a, E, F, 
 
 
 impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
+    pub fn get_base_field_coordinates(&self) -> Vec<FieldElement<'a, E, F>> {
+        (0..1).map(|i| self[i].get_base_field_coordinates()).flatten().collect()
+    }
+
     pub fn alloc<CS: ConstraintSystem<E>>(
         cs: &mut CS, wit: Option<T::Witness>, params: &'a RnsParameters<E, F>
     ) -> Result<Self, SynthesisError> {
@@ -332,7 +336,7 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
         Self::div(cs, &mut num, self)
     }
 
-    pub fn frobenius_power_map<CS: ConstraintSystem<E> >(
+    pub fn frobenius_power_map<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, power:usize
     )-> Result<Self, SynthesisError> {
         match power{

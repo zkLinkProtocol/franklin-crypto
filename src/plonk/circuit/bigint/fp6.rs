@@ -156,6 +156,10 @@ impl<'a, E: Engine, F: PrimeField, T: Extension6Params<F>> Fp6Chain<'a, E, F, T>
 
 
 impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
+    pub fn get_base_field_coordinates(&self) -> Vec<FieldElement<'a, E, F>> {
+        (0..2).map(|i| self[i].get_base_field_coordinates()).flatten().collect()
+    }
+
     pub fn alloc<CS: ConstraintSystem<E>>(
         cs: &mut CS, wit: Option<T::Witness>, params: &'a RnsParameters<E, F>
     ) -> Result<Self, SynthesisError> {

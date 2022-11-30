@@ -184,6 +184,10 @@ impl<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> Fp2Chain<'a, E, F, T>
 
 
 impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
+    pub fn get_base_field_coordinates(&self) -> Vec<FieldElement<'a, E, F>> {
+        vec![self.c0.clone(), self.c1.clone()]
+    }
+
     pub fn alloc_from_coordinates<CS: ConstraintSystem<E>>(
         cs: &mut CS, c0_wit: Option<F>, c1_wit: Option<F>, params: &'a RnsParameters<E, F>
     ) -> Result<Self, SynthesisError> {
@@ -631,6 +635,24 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         let c0 = FieldElement::conditional_constant(c0, flag, params);
         let c1 = FieldElement::conditional_constant(c1, flag, params);
         Self::from_coordinates(c0, c1)
+    }
+
+    pub fn mul_by_base_field<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, base_field_var: &FieldElement<'a, E, F>
+    ) -> Result<Self, SynthesisError> {
+        let new_c0 = self.c0.mul(cs, base_field_var)?;
+        let new_c1 = self.c1.mul(cs, base_field_var)?;
+        Ok(Self::from_coordinates(new_c0, new_c1))
+    }
+
+    pub fn scale<CS: ConstraintSystem<E>>(&self, cs: &mut CS, factor: u64) -> Result<Self, SynthesisError> {
+        let new_c0 = self.c0.scale(cs, factor)?;
+        let new_c1 = self.c1.scale(cs, factor)?;
+        Ok(Self::from_coordinates(new_c0, new_c1))
+    }
+
+    pub fn get_params(&self) -> &'a RnsParameters<E, F> {
+        self.c0.representation_params
     }
 }
 

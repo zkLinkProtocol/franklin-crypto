@@ -34,9 +34,11 @@ use super::boolean::{
 
 use super::simple_term::Term;
 
+const DEFAULT_SMALLVEC_CAPACITY: usize = 9;
+
 pub struct LinearCombination<E: Engine> {
     pub(crate) value: Option<E::Fr>,
-    pub(crate) terms: Vec<(E::Fr, Variable)>,
+    pub(crate) terms: smallvec::SmallVec<[(E::Fr, Variable); DEFAULT_SMALLVEC_CAPACITY]>,
     pub(crate) constant: E::Fr
 }
 
@@ -55,7 +57,7 @@ impl<E: Engine> From<AllocatedNum<E>> for LinearCombination<E> {
     fn from(num: AllocatedNum<E>) -> LinearCombination<E> {
         Self {
             value: num.value,
-            terms: vec![(E::Fr::one(), num.variable)],
+            terms: smallvec::smallvec![(E::Fr::one(), num.variable)],
             constant: E::Fr::zero()
         }
     }
@@ -70,7 +72,7 @@ impl<E: Engine> From<Num<E>> for LinearCombination<E> {
             Num::Constant(constant) => {
                 Self {
                     value: Some(constant),
-                    terms: vec![],
+                    terms: smallvec::smallvec![],
                     constant: constant
                 }
             }
@@ -92,7 +94,7 @@ impl<E: Engine> LinearCombination<E> {
     pub fn zero() -> Self {
         Self {
             value: Some(E::Fr::zero()),
-            terms: vec![],
+            terms: smallvec::smallvec![],
             constant: E::Fr::zero(),
         }
     }
@@ -148,7 +150,7 @@ impl<E: Engine> LinearCombination<E> {
 
         self.terms.extend_from_slice(&other.terms);
 
-        let terms = std::mem::replace(&mut self.terms, vec![]);
+        let terms = std::mem::replace(&mut self.terms, smallvec::smallvec![]);
 
         self.terms = Self::deduplicate_stable(terms);
 
@@ -412,8 +414,8 @@ impl<E: Engine> LinearCombination<E> {
     }
 
     fn deduplicate_stable(
-        terms: Vec<(E::Fr, Variable)>,
-    ) -> Vec<(E::Fr, Variable)> {
+        terms: smallvec::SmallVec<[(E::Fr, Variable); DEFAULT_SMALLVEC_CAPACITY]>,
+    ) -> smallvec::SmallVec<[(E::Fr, Variable); DEFAULT_SMALLVEC_CAPACITY]> {
         use std::collections::HashMap;
 
         if terms.len() <= 1 {
@@ -422,7 +424,7 @@ impl<E: Engine> LinearCombination<E> {
 
         let mut scratch: HashMap<Variable, usize> = HashMap::with_capacity(terms.len());
     
-        let mut deduped_vec: Vec<(E::Fr, Variable)> = Vec::with_capacity(terms.len());
+        let mut deduped_vec = smallvec::SmallVec::<[(E::Fr, Variable); DEFAULT_SMALLVEC_CAPACITY]>::new();
     
         for (coeff, var) in terms.into_iter() {
             if let Some(existing_index) = scratch.get(&var) {
@@ -457,7 +459,7 @@ impl<E: Engine> LinearCombination<E> {
 
     fn enforce_zero_using_next_step<CS: ConstraintSystem<E>>(
         cs: &mut CS,
-        terms: Vec<(E::Fr, Variable)>,
+        terms: smallvec::SmallVec<[(E::Fr, Variable); DEFAULT_SMALLVEC_CAPACITY]>,
         constant_term: E::Fr
     ) -> Result<(), SynthesisError> {
         // we assume that terms are deduplicated

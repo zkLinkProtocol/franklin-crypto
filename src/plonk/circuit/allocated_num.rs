@@ -1136,7 +1136,7 @@ impl<E: Engine> Num<E> {
     pub fn get_value_for_slice(
         els: &[Self]
     ) -> Option<Vec<E::Fr>> {
-        let mut result = vec![];
+        let mut result = Vec::with_capacity(els.len());
         for el in els.iter() {
             if let Some(value) = el.get_value() {
                 result.push(value);

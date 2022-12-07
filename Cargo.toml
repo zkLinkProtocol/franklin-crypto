@@ -32,6 +32,7 @@ lazy_static = "1.4"
 serde = {version = "1", features = ["derive"]}
 num-derive = "0.2"
 indexmap = "1.9"
+smallvec = "1.10"
 
 # bellman = { package = "bellman_ce", path = "../../bellman/plonk" }
 bellman = { package = "bellman_ce", git = "https://github.com/matter-labs/bellman", branch = "dev" }

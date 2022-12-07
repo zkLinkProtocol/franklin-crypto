@@ -519,7 +519,7 @@ pub fn u64_into_boolean_vec_le<E: Engine, CS: ConstraintSystem<E>>(
 pub fn le_bits_into_le_bytes(bits: Vec<Boolean>) -> Vec<Boolean> {
     assert_eq!(bits.len() % 8, 0);
 
-    let mut result = vec![];
+    let mut result = Vec::with_capacity((bits.len() + 7) / 8);
     for chunk in bits.chunks(8) {
         for b in chunk.iter().rev() {
             result.push(b.clone());

@@ -862,7 +862,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         
         let params = &self.representation_params;
         let upper_bound = match mode {
-            ReductionStatus::Loose => (BigUint::one() << params.represented_field_modulus.bits()),
+            ReductionStatus::Loose => BigUint::one() << params.represented_field_modulus.bits(),
             ReductionStatus::Normalized => params.represented_field_modulus.clone(),
             ReductionStatus::Unreduced => params.infty.clone(),
         };

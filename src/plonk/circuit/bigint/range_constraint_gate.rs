@@ -37,7 +37,7 @@ impl<E: Engine> GateInternal<E> for TwoBitDecompositionRangecheckCustomGate {
     }
 
     fn all_queried_polynomials(&self) -> &'static [PolynomialInConstraint] {
-        const polys: [PolynomialInConstraint; 5] = [
+        const POLYS: [PolynomialInConstraint; 5] = [
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(0)),
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(1)),
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(2)),
@@ -45,7 +45,7 @@ impl<E: Engine> GateInternal<E> for TwoBitDecompositionRangecheckCustomGate {
             PolynomialInConstraint::from_id_and_dilation(PolyIdentifier::VariablesPolynomial(3), 1),
         ];
 
-        &polys
+        &POLYS
     }
 
     fn setup_polynomials(&self) -> &'static [PolyIdentifier] {

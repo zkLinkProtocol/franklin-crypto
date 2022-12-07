@@ -44,14 +44,14 @@ impl<E: Engine> GateInternal<E> for Rescue5CustomGate {
     }
 
     fn all_queried_polynomials(&self) -> &'static [PolynomialInConstraint] {
-        const polys : [PolynomialInConstraint; 4] = [
+        const POLYS : [PolynomialInConstraint; 4] = [
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(0)),
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(1)),
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(2)),
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(3)),
         ];
 
-        &polys
+        &POLYS
     }
 
     fn setup_polynomials(&self) -> &'static [PolyIdentifier] {
@@ -59,14 +59,14 @@ impl<E: Engine> GateInternal<E> for Rescue5CustomGate {
     }
 
     fn variable_polynomials(&self) -> &'static [PolyIdentifier] {
-        const polys : [PolyIdentifier; 4] = [
+        const POLYS : [PolyIdentifier; 4] = [
             PolyIdentifier::VariablesPolynomial(0),
             PolyIdentifier::VariablesPolynomial(1),
             PolyIdentifier::VariablesPolynomial(2),
             PolyIdentifier::VariablesPolynomial(3),
         ];
 
-        &polys
+        &POLYS
     }
 
     fn benefits_from_linearization(&self) -> bool {

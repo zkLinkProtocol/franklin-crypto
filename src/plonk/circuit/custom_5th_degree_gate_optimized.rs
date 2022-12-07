@@ -46,13 +46,13 @@ impl<E: Engine> GateInternal<E> for Nonlinearity5CustomGate {
     }
 
     fn all_queried_polynomials(&self) -> &'static [PolynomialInConstraint] {
-        const polys: [PolynomialInConstraint; 3] = [
+        const POLYS: [PolynomialInConstraint; 3] = [
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(0)),
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(1)),
             PolynomialInConstraint::from_id(PolyIdentifier::VariablesPolynomial(2)),
         ];
 
-        &polys
+        &POLYS
     }
 
     fn setup_polynomials(&self) -> &'static [PolyIdentifier] {
@@ -60,13 +60,13 @@ impl<E: Engine> GateInternal<E> for Nonlinearity5CustomGate {
     }
 
     fn variable_polynomials(&self) -> &'static [PolyIdentifier] {
-        const polys: [PolyIdentifier; 3] = [
+        const POLYS: [PolyIdentifier; 3] = [
             PolyIdentifier::VariablesPolynomial(0),
             PolyIdentifier::VariablesPolynomial(1),
             PolyIdentifier::VariablesPolynomial(2),
         ];
 
-        &polys
+        &POLYS
     }
 
     fn benefits_from_linearization(&self) -> bool {

@@ -137,7 +137,7 @@ impl<'a, E:Engine, F:PrimeField, T:   Extension12Params<F> > From<Fp6<'a, E, F, 
 
 impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
     pub fn get_base_field_coordinates(&self) -> Vec<FieldElement<'a, E, F>> {
-        (0..1).map(|i| self[i].get_base_field_coordinates()).flatten().collect()
+        (0..2).map(|i| self[i].get_base_field_coordinates()).flatten().collect()
     }
 
     pub fn alloc<CS: ConstraintSystem<E>>(
@@ -241,7 +241,7 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
         Ok(Self::from_coordinates(new_c0, new_c1))
     }
 
-    fn fp6_mul_subroutine<CS: ConstraintSystem<E>>(
+    pub fn fp6_mul_subroutine<CS: ConstraintSystem<E>>(
         cs: &mut CS, element: &Fp6<'a, E, F, T::Ex6>
     ) -> Result<Fp6<'a, E, F, T::Ex6>, SynthesisError> {
         // we have the following tower of extensions:
@@ -300,12 +300,17 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
         let c1 = v.double(cs)?;
         let a0_minus_a1 = self.c0.sub(cs, &self.c1)?;
         let x = Self::fp6_mul_subroutine(cs, &self.c1)?;
-        let a0_minus_x = a0_minus_a1.sub(cs, &x)?;
+        let a0_minus_x = self.c0.sub(cs, &x)?;
         let y = Fp6::mul(cs, &a0_minus_a1, &a0_minus_x)?;
         let beta_v = Self::fp6_mul_subroutine(cs, &v)?;
         let mut c0 = y.add(cs, &v)?;
         c0 = c0.add(cs, &beta_v)?;
-        Ok(Self::from_coordinates(c0, c1))
+        
+        let res = Self::from_coordinates(c0, c1);
+        let mut tmp = self.get_value().unwrap();
+        tmp.square();
+        assert_eq!(res.get_value().unwrap(), tmp);
+        Ok(res)
     }
 
     #[track_caller]

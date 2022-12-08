@@ -514,33 +514,19 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
             return Ok(self.clone())
         } 
         else {
-            // we convert x^p = (c0 + i * c1)^p = c0 + i^p * c1 and we have four cases:
-            // c0 + c1 if p (mod 4) = 0
-            // c0 + i * c1 if p (mod 4) = 1
-            // c0 - c1 if p (mod 4) = 2
-            // c0 - i * c1 if p (mod 4) = 3
-            // as always we assume that non_residue = i = -1
             assert!(T::is_default_impl());
-            let char = fe_to_biguint(&F::from_repr(F::char()).unwrap());
-            let (new_c0, new_c1) = match (char % 4u32).to_u32().unwrap() {
-                0 => {
-                    let c0 = self.c0.add(cs, &self.c1)?;
-                    (c0, FieldElement::zero(self.c0.representation_params))
-                },
-                1 => {
-                    (self.c0.clone(), self.c1.clone())
-                },
-                2 => {
-                    let c0 = self.c0.sub(cs, &self.c1)?;
-                    (c0, FieldElement::zero(self.c0.representation_params))
-                },
-                3 => {
-                    let c1 = self.c1.negate(cs)?;
-                    (self.c0.clone(), c1)
-                },
-                _ => unreachable!(),
-            };
-            return Ok(Self::from_coordinates(new_c0, new_c1))
+            let new_c1 = self.c1.negate(cs)?;
+            let new_c0 = self.c0.clone();   
+            
+            let res = Self::from_coordinates(new_c0, new_c1);
+            let actual_value = self.get_value().map(|x| {
+                let mut tmp = x;
+                tmp.frobenius_map(power);
+                tmp
+            });
+            assert_eq!(res.get_value(), actual_value);
+
+            return Ok(res)
         }
     }
 
@@ -566,7 +552,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         
         let mut subchain = chain.get_coordinate_subchain(1);
         subchain.add_pos_term(&self.c0.scale(cs, s1)?);
-        subchain.add_neg_term(&self.c1.scale(cs, s0)?);
+        subchain.add_pos_term(&self.c1.scale(cs, s0)?);
         let c1 = FieldElement::collapse_chain(cs, subchain)?;
         
         Ok(Self::from_coordinates(c0, c1))
@@ -600,7 +586,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         
         let mut subchain = chain.get_coordinate_subchain(1);
         subchain.add_pos_term(&elem.c0.scale(cs, s1)?);
-        subchain.add_neg_term(&elem.c1.scale(cs, s0)?);
+        subchain.add_pos_term(&elem.c1.scale(cs, s0)?);
         FieldElement::enforce_chain_is_zero(cs, subchain)
     }
 

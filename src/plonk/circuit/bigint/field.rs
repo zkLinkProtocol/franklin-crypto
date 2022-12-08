@@ -22,7 +22,7 @@ use crate::plonk::circuit::SomeArithmetizable;
 // this variable is used in fma implementation: it is set to the maximal numver of bits on which 
 // new_of * shift + /sum_{i+j = k} a[i] * b[j] + \sum addition_elements[k] may overflow the limb width border
 // NB: this value is chosen more or less randomly - may be it is better to add some heuristics here
-const MAX_INTERMIDIATE_OVERFLOW_WIDTH : usize = 8;
+const MAX_INTERMIDIATE_OVERFLOW_WIDTH : usize = 32;
 
 // TODO: coarsely is completely unnecessary - get rid of it everywhere!
 // There is no problem to pay for one addtional constraint on exact allocation
@@ -1543,8 +1543,8 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // next with finding the RNS binary modulus - we perform an exhaustive check here: 
         // a * b + [chain_elems_to_add] < RNS composite_modulus = RNS_binary_modulus * RNS_native_modulus
         // q * p + [chain_elems_to_sub] < RNS composite_modulus
-        let mut rhs_max_value = quotient.get_maximal_possible_stored_value() * &params.represented_field_modulus;
-        rhs_max_value += chain.get_maximal_negative_stored_value(); 
+        let rhs_max_value = quotient.get_maximal_possible_stored_value() * &params.represented_field_modulus;
+        // rhs_max_value += chain.get_maximal_negative_stored_value(); 
         let max_value = BigUint::max(lhs_max_value, rhs_max_value);
 
         // now we need to select t - multiple of range check granularity to be large enough, so that:
@@ -1592,7 +1592,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             lc.add_assign_term(&input_carry);
             let right_border = std::cmp::min(left_border + limbs_per_cycle, rns_binary_modulus_width_in_limbs);
 
-            if cfg!(debug_assertions) {
+            {
                 // we optimistically assume that all intermidiate overflows do not exceed special
                 // apriori chosen constant - MAX_INTERMIDIATE_OVERFLOW_WIDTH
                 // however, we are a "validium" solution, so we are going to check that 

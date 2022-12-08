@@ -38,7 +38,7 @@ impl Extension6Params<Bn256Fq> for Bn256Extension6Params {
     type Ex2 = Bn256Extension2Params;
     type Witness = crate::bellman::pairing::bn256::Fq6;
 
-    const NON_RESIDUE: (u64, u64) = (1, 9);
+    const NON_RESIDUE: (u64, u64) = (9, 1);
     const FROBENIUS_COEFFS_C1: [Bn256Fq2; 6] = BN256_FROBENIUS_COEFF_FQ6_C1;
     const FROBENIUS_COEFFS_C2: [Bn256Fq2; 6] = BN256_FROBENIUS_COEFF_FQ6_C2;
     const FROBENIUS_COEFFS_FQ12_C1: [Bn256Fq2; 12] = BN256_FROBENIUS_COEFF_FQ12_C1;
@@ -157,7 +157,11 @@ impl<'a, E: Engine, F: PrimeField, T: Extension6Params<F>> Fp6Chain<'a, E, F, T>
 
 impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
     pub fn get_base_field_coordinates(&self) -> Vec<FieldElement<'a, E, F>> {
-        (0..2).map(|i| self[i].get_base_field_coordinates()).flatten().collect()
+        (0..3).map(|i| self[i].get_base_field_coordinates()).flatten().collect()
+    }
+
+    pub fn get_coordinates(&self) -> (Fp2<'a, E, F, T::Ex2>, Fp2<'a, E, F, T::Ex2>, Fp2<'a, E, F, T::Ex2>) {
+        (self.c0.clone(), self.c1.clone(), self.c2.clone())
     }
 
     pub fn alloc<CS: ConstraintSystem<E>>(
@@ -336,25 +340,26 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         let alpha = T::non_residue();
 
         // c0 = ((a1 + a2) * (b1 + b2) - v1 - v2) * \alpha + v0
-        let mut chain = chain.get_coordinate_subchain(0);
-        chain.add_neg_term(&v1).add_neg_term(&v2);
-        let mut c0 = Fp2::mul_with_chain(cs, &tempa12, &tempb12, chain)?;
-        let mut chain = Fp2Chain::new();
-        chain.add_pos_term(&v0);
-        c0 = c0.mul_by_small_constant_with_chain(cs, alpha, chain)?;
+        let mut sub_chain = Fp2Chain::new();
+        sub_chain.add_neg_term(&v1).add_neg_term(&v2);
+        let mut c0 = Fp2::mul_with_chain(cs, &tempa12, &tempb12, sub_chain)?;
+        let mut sub_chain = chain.get_coordinate_subchain(0);
+        sub_chain.add_pos_term(&v0);
+        c0 = c0.mul_by_small_constant_with_chain(cs, alpha, sub_chain)?;
         
         // c1 = (a0 + a1) * (b0 + b1) - v0 - v1 + \alpha * v2
         let scaled_v2 = v2.mul_by_small_constant(cs, alpha)?;
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&v0).add_neg_term(&v1).add_pos_term(&scaled_v2);
-        let c1 = Fp2::mul_with_chain(cs, &tempa01, &tempb01, chain)?;
+        let mut sub_chain = chain.get_coordinate_subchain(1);
+        sub_chain.add_neg_term(&v0).add_neg_term(&v1).add_pos_term(&scaled_v2);
+        let c1 = Fp2::mul_with_chain(cs, &tempa01, &tempb01, sub_chain)?;
            
         // c2 = (a0 + a2) * (b0 + b2) - v0 - v2 + v1
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&v0).add_neg_term(&v2).add_pos_term(&v1);
-        let c2 = Fp2::mul_with_chain(cs, &tempa02, &tempb02, chain)?;
+        let mut sub_chain = chain.get_coordinate_subchain(2);
+        sub_chain.add_neg_term(&v0).add_neg_term(&v2).add_pos_term(&v1);
+        let c2 = Fp2::mul_with_chain(cs, &tempa02, &tempb02, sub_chain)?;
 
-        Ok(Self::from_coordinates(c0, c1, c2))
+        let res = Self::from_coordinates(c0, c1, c2);
+        Ok(res)
     }
 
     #[track_caller]
@@ -381,23 +386,23 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         let alpha = T::non_residue();
 
         // c0 = ((a1 + a2) * (b1 + b2) - v1 - v2) * \alpha + v0
-        let mut chain = chain.get_coordinate_subchain(0);
-        chain.add_neg_term(&v1).add_neg_term(&v2);
-        let c0 = Fp2::mul_with_chain(cs, &tempa12, &tempb12, chain)?;
-        let mut chain = Fp2Chain::new();
-        chain.add_pos_term(&v0);
-        Fp2::constraint_mul_by_small_constant_with_chain(cs, &c0, alpha, chain)?;
+        let mut subchain = Fp2Chain::new();
+        subchain.add_neg_term(&v1).add_neg_term(&v2);
+        let c0 = Fp2::mul_with_chain(cs, &tempa12, &tempb12, subchain)?;
+        let mut subchain = chain.get_coordinate_subchain(0);
+        subchain.add_pos_term(&v0);
+        Fp2::constraint_mul_by_small_constant_with_chain(cs, &c0, alpha, subchain)?;
         
         // c1 = (a0 + a1) * (b0 + b1) - v0 - v1 + \alpha * v2
         let scaled_v2 = v2.mul_by_small_constant(cs, alpha)?;
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&v0).add_neg_term(&v1).add_pos_term(&scaled_v2);
-        Fp2::constraint_fma(cs,  &tempa01, &tempb01, chain)?;
+        let mut subchain = chain.get_coordinate_subchain(1);
+        subchain.add_neg_term(&v0).add_neg_term(&v1).add_pos_term(&scaled_v2);
+        Fp2::constraint_fma(cs,  &tempa01, &tempb01, subchain)?;
            
         // c2 = (a0 + a2) * (b0 + b2) - v0 - v2 + v1
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&v0).add_neg_term(&v2).add_pos_term(&v1);
-        Fp2::constraint_fma(cs, &tempa02, &tempb02, chain)
+        let mut subchain = chain.get_coordinate_subchain(2);
+        subchain.add_neg_term(&v0).add_neg_term(&v2).add_pos_term(&v1);
+        Fp2::constraint_fma(cs, &tempa02, &tempb02, subchain)
     }
  
     pub fn square<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
@@ -487,20 +492,23 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         }
 
         let params= self.c0.c0.representation_params;
-        let mut frob_c1 = vec![];
-        let mut frob_c2 = vec![];
-        for _ in 0..6 {
-            let r1 = Fp2::constant(T::FROBENIUS_COEFFS_C1[0], params);
-            let r2 = Fp2::constant(T::FROBENIUS_COEFFS_C2[0], params);
-            frob_c1.push(r1);
-            frob_c2.push(r2);
-        }
+        let frob_c1 = Fp2::constant(T::FROBENIUS_COEFFS_C1[power % 6], params);
+        let frob_c2 =  Fp2::constant(T::FROBENIUS_COEFFS_C2[power % 6], params);
         let new_c0 = self.c0.frobenius_power_map(cs, power)?;
-        let c_1 = self.c1.frobenius_power_map(cs, power)?;
-        let c_2 = self.c2.frobenius_power_map(cs, power)?;
-        let new_c1 = c_1.mul(cs,&frob_c1[power % 6] )?;
-        let new_c2 = c_2.mul(cs,&frob_c2[power % 6] )?;
-        Ok(Self::from_coordinates(new_c0, new_c1, new_c2))
+        let mut new_c1 = self.c1.frobenius_power_map(cs, power)?;
+        let mut new_c2 = self.c2.frobenius_power_map(cs, power)?;
+        new_c1 = new_c1.mul(cs, &frob_c1)?;
+        new_c2 = new_c2.mul(cs, &frob_c2)?;
+        
+        let res = Self::from_coordinates(new_c0, new_c1, new_c2);
+        let actual_value = self.get_value().map(|x| {
+            let mut tmp = x;
+            tmp.frobenius_map(power);
+            tmp
+        });
+        assert_eq!(res.get_value(), actual_value);
+
+        Ok(res)
     }
 
     pub fn collapse_chain<CS>(cs: &mut CS, chain: Fp6Chain<'a, E, F, T>) -> Result<Self, SynthesisError> 
@@ -534,12 +542,58 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         let c_arr = T::convert_from_structured_witness(value);
         let c0 = Fp2::conditional_constant(c_arr[0], flag, params);
         let c1 = Fp2::conditional_constant(c_arr[1], flag, params);
-        let c2 = Fp2::conditional_constant(c_arr[1], flag, params);
+        let c2 = Fp2::conditional_constant(c_arr[2], flag, params);
         Self::from_coordinates(c0, c1, c2)
     }
 
     pub fn get_params(&self) -> &'a RnsParameters<E, F> {
         self.c0.c0.representation_params
+    }
+}
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::bellman::pairing::bn256::*;
+    use crate::bellman::pairing::bn256::fq6::Fq6 as Bn256Fq6;
+    use crate::plonk::circuit::curve::*;
+    use crate::plonk::circuit::Width4WithCustomGates;
+    use crate::bellman::plonk::better_better_cs::gates::selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext;
+    use rand::{XorShiftRng, SeedableRng, Rng};
+    use crate::bellman::plonk::better_better_cs::cs::*;
+    use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
+    use crate::bellman::worker::Worker;
+
+    #[test]
+    fn test_fp6_arithmetic_for_bn256_curve() {
+        const LIMB_SIZE: usize = 80;
+
+        let mut cs = TrivialAssembly::<
+            Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
+        >::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let circuit_params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
+
+        let mut rng = rand::thread_rng();
+        let a_wit: Bn256Fq6 = rng.gen();
+        let b_wit: Bn256Fq6 = rng.gen();
+        let mut res_wit = a_wit.clone();
+        res_wit.mul_assign(&b_wit);
+
+        let a = Fp6::<_, _, Bn256Extension6Params>::alloc(
+            &mut cs, Some(a_wit), &circuit_params.base_field_rns_params
+        ).unwrap();
+        let b = Fp6::alloc(&mut cs, Some(b_wit), &circuit_params.base_field_rns_params).unwrap();  
+        let mut actual_res = Fp6::alloc(&mut cs, Some(res_wit), &circuit_params.base_field_rns_params).unwrap();  
+        
+        let counter_start = cs.get_current_step_number();
+        let mut res = Fp6::mul(&mut cs, &a, &b).unwrap();
+        let counter_end = cs.get_current_step_number();
+        println!("num of gates: {}", counter_end - counter_start);
+        
+        Fp6::enforce_equal(&mut cs, &mut res, &mut actual_res).unwrap();
+        assert!(cs.is_satisfied()); 
     }
 }
   

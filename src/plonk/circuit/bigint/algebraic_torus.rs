@@ -33,23 +33,44 @@ use crate::plonk::circuit::SomeArithmetizable;
 pub struct TorusWrapper<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> {
     encoding: Fp6<'a, E, F, T::Ex6>,
     is_negative: Boolean, // if true the wrapper encodes element -x instead of x
-    is_exceptional: Boolean // true for encodings of {+1, -1}
+    is_exceptional: Boolean, // true for encodings of {+1, -1}
+    pub value: Option<T::Witness>,
 }
 
 impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, F, T> {
+    fn debug_check_value_coherency(&self) {
+        // decompress:
+        // g -> (g + w)/(g - w)
+        let mut tmp = <T::Ex6 as Extension6Params<F>>::Witness::one();
+        let mut res = T::convert_to_structured_witness(self.encoding.get_value().unwrap(), tmp);
+        tmp.negate();
+        let denom = T::convert_to_structured_witness(self.encoding.get_value().unwrap(), tmp);
+        let denom_inverse = denom.inverse().unwrap();
+        res.mul_assign(&denom_inverse);
+        if self.is_negative.get_value().unwrap() {
+            res.negate();
+        }
+        assert_eq!(res, self.value.unwrap());
+    }
+    
     pub fn get_params(&self) -> &'a RnsParameters<E, F> {
         self.encoding.get_params()
     }
 
-    pub fn new(encoding: Fp6<'a, E, F, T::Ex6>, is_negative: Boolean, is_exceptional: Boolean) -> Self {
-        TorusWrapper { encoding, is_negative, is_exceptional }
+    pub fn new(
+        encoding: Fp6<'a, E, F, T::Ex6>, is_negative: Boolean, is_exceptional: Boolean, value: Option<T::Witness>
+    ) -> Self {
+        let res = TorusWrapper { encoding, is_negative, is_exceptional, value };
+        res.debug_check_value_coherency();
+        res
     }
 
     pub fn uninitialized(params: &'a RnsParameters<E, F>) -> Self {
         TorusWrapper {
             encoding: Fp6::<E, F, T::Ex6>::zero(params),
             is_negative: Boolean::constant(false),
-            is_exceptional: Boolean::constant(false)
+            is_exceptional: Boolean::constant(false),
+            value: None
         }
     }
 
@@ -69,7 +90,7 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
             let denom = elem.c1.add(cs, &Fp6::from_boolean(&is_exceptional, params))?;
             let encoding = Fp6::div_with_chain(cs, num, &denom)?;
 
-            Self { encoding, is_negative: c0_is_one, is_exceptional}
+            Self { encoding, is_negative: c0_is_one, is_exceptional, value: elem.get_value() }
         } else {
             // m -> (1 + m_0) / m1 = g is constrained as g * m1 = 1 + m0;
             // if m = -1, then m1 = 0, 1 + m0 = 0 and hence g would be unconstrained variable: g * 0 = 0
@@ -78,9 +99,13 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
             let tmp = elem.c0.add(cs, &Fp6::one(params))?;
             let encoding = Fp6::div(cs, &tmp, &elem.c0)?;
             
-            Self { encoding, is_negative: Boolean::constant(false), is_exceptional: Boolean::constant(false)}
+            Self { 
+                encoding, is_negative: Boolean::constant(false), 
+                is_exceptional: Boolean::constant(false), value: elem.get_value()
+            }
         };
 
+        res.debug_check_value_coherency();
         Ok(res)
     }
 
@@ -96,17 +121,18 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
         candidate.conditionally_negate(cs, &self.is_negative)
     }
 
-    pub fn inverse(&self) -> Self {
-        Self { 
-            encoding: self.encoding.clone(), 
-            is_negative: self.is_negative.not(), 
-            is_exceptional: self.is_exceptional
-        }
+    pub fn inverse<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        Ok(Self { 
+            encoding: self.encoding.negate(cs)?, 
+            is_negative: self.is_negative, 
+            is_exceptional: self.is_exceptional,
+            value: self.value.map(|x| x.inverse().unwrap())
+        })
     }
 
-    pub fn conjugation(&self) -> Self {
+    pub fn conjugation<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
         // NOte: for elements on T2 conjugation coincides with inversion
-        self.inverse()
+        self.inverse(cs)
     }
 
     fn compute_gamma() -> <T::Ex6 as Extension6Params<F>>::Witness {
@@ -126,13 +152,13 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
     ) -> Result<Self, SynthesisError> {
         let params = left.encoding.get_params();
         let gamma = Self::compute_gamma();
+        let value = left.value.mul(&right.value);
         let res = if is_safe_version {
             // modified formula looks like (here flag = modify_formula_flag):
             // g = (g1 * g2 + !flag * \gamma) / (g1 + g2 + flag)
             let modify_formula_flag = Boolean::and(cs, &left.is_exceptional, &right.is_exceptional)?;
-            let masked_gamma = Fp6::conditional_constant(gamma, &modify_formula_flag, params);
+            let masked_gamma = Fp6::conditional_constant(gamma, &modify_formula_flag.not(), params);
             let flag_as_fe = Fp6::from_boolean(&modify_formula_flag, params);
-            
             let mut chain = Fp6Chain::new();
             chain.add_pos_term(&masked_gamma);
             let numerator = Fp6::mul_with_chain(cs, &left.encoding, &right.encoding, chain)?;
@@ -144,7 +170,7 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
 
             let is_negative = Boolean::xor(cs, &left.is_negative, &right.is_negative)?;
             let is_exceptional = Fp6::is_zero(&mut encoding, cs)?;
-            Self { encoding, is_negative, is_exceptional }
+            Self { encoding, is_negative, is_exceptional, value }
         }
         else {
             // g = (g1 * g2 + \gamma) / (g1 + g2)
@@ -161,9 +187,10 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
             let encoding = Fp6::div(cs, &numerator, &denominator)?;
             let is_negative = Boolean::xor(cs, &left.is_negative, &right.is_negative)?;
             let is_exceptional = Boolean::constant(false);
-            Self { encoding, is_negative, is_exceptional }
+            Self { encoding, is_negative, is_exceptional, value }
         };
 
+        res.debug_check_value_coherency();
         Ok(res)
     }
 
@@ -175,21 +202,28 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
         let params = self.encoding.get_params();
         let numerator = self.encoding.frobenius_power_map(cs, power)?;
         let w = Self::compute_w();
-        let denom_wit = {
+        let cnst = {
             let mut t = w.clone();
             t.frobenius_map(power);
             let w_inv = w.inverse().unwrap();
             t.mul_assign(&w_inv);
             let (c0, c1) = T::convert_from_structured_witness(t);
             assert!(c1.is_zero());
-            c0
+            c0.inverse().unwrap()
         };
 
-        let denom = Fp6::constant(denom_wit, params);
-        let new_encoding = Fp6::div(cs, &numerator, &denom)?;
+        let cnst_circ = Fp6::constant(cnst, params);
+        let new_encoding = Fp6::mul(cs, &numerator, &cnst_circ)?;
 
         let mut result : TorusWrapper::<E, F, T> = self.clone();
         result.encoding = new_encoding;
+        result.value = self.value.map(|x| {
+            let mut tmp = x;
+            tmp.frobenius_map(power);
+            tmp
+        });
+        
+        result.debug_check_value_coherency();
         Ok(result)
     } 
 
@@ -197,6 +231,7 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
     where CS: ConstraintSystem<E> {
         let params = self.encoding.get_params();
         let gamma = Self::compute_gamma();
+        let value = self.value.mul(&self.value);
 
         // exception_free formula looks like (here flag := is_exceptional)
         // res = 1/2 (g + [(\gamma * flag!) / (g + flag)])
@@ -229,14 +264,16 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
 
         let is_negative = Boolean::constant(false);
         let is_exceptional = if is_safe_version { Fp6::is_zero(&mut encoding, cs)? } else { Boolean::constant(false) };
-        Ok(Self { encoding, is_negative, is_exceptional })
+        let res = Self { encoding, is_negative, is_exceptional, value };
+
+        res.debug_check_value_coherency();
+        Ok(res)
     }
 
     pub fn pow<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, exp: &BigUint, is_safe_version: bool
     ) -> Result<Self,SynthesisError> {
         assert!(!exp.is_zero());
-        let params = self.encoding.get_params();
         let mut res = self.clone();
         let mut i = exp.bits() - 1;
         
@@ -247,7 +284,9 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
                 res = Self::mul(cs, &res, self, is_safe_version)?;
             }
         }
+        res.value = self.value.map(|x| x.pow(exp.to_u64_digits()));
 
+        res.debug_check_value_coherency();
         Ok(res)
     }
 }

@@ -36,6 +36,7 @@ use crate::bellman::plonk::better_better_cs::cs::{
 };
 
 use crate::plonk::circuit::Assignment;
+use crate::plonk::circuit::curve::ProjectivePoint;
 use crate::plonk::circuit::hashes_with_tables::utils::{IdentifyFirstLast, u64_to_ff};
 
 use super::super::allocated_num::{AllocatedNum, Num};
@@ -84,6 +85,14 @@ pub struct ScalarDecomposition {
 }
 
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CurveType {
+    BN256,
+    BLS12_381,
+    SECP256K1
+}
+
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CurveCircuitParameters<E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
 where <G as GenericCurveAffine>::Base: PrimeField 
@@ -117,7 +126,8 @@ where <G as GenericCurveAffine>::Base: PrimeField
     pub minus_b1: BigUint,
     pub b2: BigUint,
 
-    pub opt_multiexp_geometry: MultiExpGeometry
+    pub opt_multiexp_geometry: MultiExpGeometry,
+    pub curve_type: CurveType
 }
 
 impl<E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> CurveCircuitParameters<E, G, T> 
@@ -257,6 +267,7 @@ pub fn generate_optimal_circuit_params_for_bn256<E: Engine, CS: ConstraintSystem
         fp2_pt_ord3_y_c1,
         lambda, beta, a1, a2, minus_b1, b2,
         opt_multiexp_geometry,
+        curve_type: CurveType::BN256,
         _marker: std::marker::PhantomData::<Bn256Extension2Params>
     }
 }
@@ -317,6 +328,7 @@ pub fn generate_optimal_circuit_params_for_secp256k1<E: Engine, CS: ConstraintSy
         fp2_pt_ord3_y_c1,
         lambda, beta, a1, a2, minus_b1, b2,
         opt_multiexp_geometry,
+        curve_type: CurveType::SECP256K1,
         _marker: std::marker::PhantomData::<Secp256K1Extension2Params>
     }
 }
@@ -383,6 +395,7 @@ pub fn generate_optimal_circuit_params_for_bls12<E: Engine, CS: ConstraintSystem
         fp2_pt_ord3_y_c1,
         lambda, beta, a1, a2, minus_b1, b2,
         opt_multiexp_geometry,
+        curve_type: CurveType::BLS12_381,
         _marker: std::marker::PhantomData::<BLS12Extension2Params>
     }
 }
@@ -453,7 +466,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
         if require_checks {
             new.enforce_if_on_curve(cs)?;
-            new.enforce_if_in_subgroup(cs)?;
+            //new.enforce_if_in_subgroup(cs)?;
         }
         Ok((new, x_decomposition, y_decomposition))
     }
@@ -622,15 +635,11 @@ where <G as GenericCurveAffine>::Base: PrimeField
     }
 
     #[track_caller]
-    pub fn enforce_if_in_subgroup<CS: ConstraintSystem<E>>(&self, _cs: &mut CS) -> Result<(), SynthesisError> {
-        if !self.circuit_params.is_prime_order_curve {
-            // okay, first we should check if P is not a point of order 3:
-            // if so, it is okay to mix with that point
-            // we could also use https://hackmd.io/@yelhousni/bls12_subgroup_check
-            // https://eprint.iacr.org/2019/814.pdf
-            unimplemented!();
-        }
-        Ok(())
+    pub fn endo<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        let base_rns_params = &self.x.representation_params;
+        let beta = FieldElement::constant(self.circuit_params.beta, base_rns_params);
+        let endo_x = self.get_x().mul(cs, &beta)?;
+        Ok(unsafe { Self::from_xy_unchecked(endo_x, self.get_y(), self.circuit_params) })
     }
 
     #[track_caller]

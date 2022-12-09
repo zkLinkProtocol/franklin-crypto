@@ -357,19 +357,19 @@ impl<E: Engine> Bn256PairingParams<E> {
     // 5) a = a * b       11) t0 = frob(f)     17) t0 = t0^2       23) t0 = t1^2           29) f = t0 * a
     // 6) a = a * f       12) t1 = t0 * f      18) b = b * t0      24) t0 = t0 * t1
     fn devegili_method() -> (Vec<Ops>, usize) {
-        let (f, a, b, tmp, t0, t1) = (0, 1, 2, 3, 4, 5);
+        let (f, f2, a, b, tmp, t0, t1) = (0, 1, 2, 3, 4, 5, 6);
         let ops_chain = vec![
-            /*1*/ Ops::ExpByX(a, f), /*2*/ Ops::Square(b, a), /*3*/ Ops::Square(tmp, f), Ops::Mul(a, b, tmp), 
+            /*1*/ Ops::ExpByX(a, f), /*2*/ Ops::Square(b, a), /*3*/ Ops::Square(f2, f), Ops::Mul(a, b, f2), 
             /*4*/ Ops::Square(a, a), /*5*/ Ops::Mul(a, a, b),  /*6*/ Ops::Mul(a, a, f), /*7*/ Ops::Conj(a, a),
             /*8*/ Ops::Frob(b, a, 1), /*9*/ Ops::Mul(b, a, b), /*10*/ Ops::Mul(a, a, b), /*11*/ Ops::Frob(t0, f, 1),
             /*12*/ Ops::Mul(t1, t0, f), /*13*/ Ops::Square(tmp, t1), Ops::Square(tmp, tmp), Ops::Square(tmp, tmp),
-            Ops::Mul(tmp, tmp, t1), /*14*/ Ops::Mul(a, t1, a), /*15*/ Ops::Square(tmp, f), Ops::Square(t1, tmp),
+            Ops::Mul(t1, tmp, t1), /*14*/ Ops::Mul(a, t1, a), /*15*/ Ops::Square(t1, f2),
             /*16*/ Ops::Mul(a, a, t1), /*17*/ Ops::Square(t0, t0), /*18*/ Ops::Mul(b, b, t0), /*19*/ Ops::Frob(t0, f, 2),
             /*20*/ Ops::Mul(b, b, t0), /*21*/ Ops::ExpByX(t0, b), /*22*/ Ops::Square(t1, t0), /*23*/ Ops::Square(t0, t1),
             /*24*/ Ops::Mul(t0, t0, t1), /*25*/ Ops::ExpByX(t0, t0), /*26*/ Ops::Mul(t0, t0, b), /*27*/ Ops::Mul(a, t0, a),
             /*28*/ Ops::Frob(t0, f, 3), /*29*/ Ops::Mul(f, t0, a)
         ];
-        (ops_chain, 6)
+        (ops_chain, 7)
     }
 
     // This is Fuentes-Castaneda method:
@@ -765,14 +765,58 @@ mod test {
         >::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
         let circuit_params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
-        let pairing_params = Bn256PairingParams::<Bn256>::new(Bn256HardPartMethod::Naive);
+        let pairing_params = Bn256PairingParams::<Bn256>::new(Bn256HardPartMethod::FuentesCastaneda);
 
         //let params = generate_optimal_circuit_params_for_bn\let mut rng = rand::thread_rng();
         let mut rng = rand::thread_rng();
         let p_wit: <Bn256 as Engine>::G1Affine = rng.gen();
         let q_wit: <Bn256 as Engine>::G2Affine = rng.gen();
-        let res_wit = Bn256::pairing(p_wit, q_wit);
+        let mut res_wit = Bn256::pairing(p_wit, q_wit);
         //let pairing_res_wit = Bn256::pairing(p_wit, q_wit);
+        // for Fuentes Castaneda we should additionally raise the result to the power
+        // m = = 2x * (6*x^2 + 3 * x + 1)
+        let mut lhs = BigUint::from(BN_U);
+        lhs = lhs * 2u64;
+        let mut rhs = BigUint::from(BN_U);
+        rhs = rhs.clone() * rhs.clone() * 6u64 + rhs.clone() * 3u64 + 1u64;
+        let x = lhs * rhs;
+        res_wit = res_wit.pow(&x.to_u64_digits());
+        // let res_wit = {
+        //     let mut f = res_wit;
+        //     let x = BN_U;
+
+        //     fn exp_by_x(f: &mut Fq12, x: u64) {
+        //         *f = f.pow(&[x]);
+        //     }
+            
+        //     let mut f_by_x = f.clone();
+        //     exp_by_x(&mut f_by_x, x);
+
+        //     let mut f_by_2_x = f_by_x.clone();
+        //     f_by_2_x.square();
+
+        //     let mut f_by_6_x =  f_by_2_x.clone();
+        //     f_by_6_x.square();
+        //     f_by_6_x.square();
+        //     f_by_2_x.conjugate();
+        //     f_by_6_x.mul_assign(&f_by_2_x);
+
+        //     let mut a = f_by_6_x.clone();
+        //     exp_by_x(&mut a, x);
+        //     let mut b = a.clone();
+        //     exp_by_x(&mut b, x);
+
+        //     let mut res = f_by_6_x.clone();
+        //     res.mul_assign(&a);
+        //     res.mul_assign(&b);
+        //     f_by_x.conjugate();
+        //     res.mul_assign(&f_by_x);
+        //     f.conjugate();
+        //     res.mul_assign(&f);
+        //     f
+        // };
+
+
         let (q_wit_x, q_wit_y) = bellman::CurveAffine::as_xy(&q_wit); 
 
         let p = AffinePoint::alloc(&mut cs, Some(p_wit), &circuit_params).unwrap();

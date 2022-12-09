@@ -508,6 +508,18 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         });
         assert_eq!(res.get_value(), actual_value);
 
+        // TODO: get rid of this
+        self.get_value().map(|x| {
+            let mut tmp = x;
+            tmp.frobenius_map(2);
+            tmp.frobenius_map(1);
+            let mut qr = x;
+            qr.frobenius_map(3);
+            assert_eq!(tmp, qr);
+            println!("INSIDE");
+            qr
+        });
+
         Ok(res)
     }
 

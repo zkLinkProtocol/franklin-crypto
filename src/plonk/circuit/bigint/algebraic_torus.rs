@@ -52,6 +52,15 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
         }
         assert_eq!(res, self.value.unwrap());
     }
+
+    pub fn one(params: &'a RnsParameters<E, F>) -> Self {
+        TorusWrapper {
+            encoding: Fp6::zero(params),
+            is_negative: Boolean::constant(false), 
+            is_exceptional: Boolean::constant(true), 
+            value: Some(T::Witness::one()),
+        }
+    }
     
     pub fn get_params(&self) -> &'a RnsParameters<E, F> {
         self.encoding.get_params()

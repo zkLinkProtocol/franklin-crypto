@@ -19,4 +19,7 @@ pub use self::ram_via_hashes::*;
 pub mod pairing;
 pub use self::pairing::*;
 
+pub mod pairing_experiements;
+pub use self::pairing_experiements::*;
+
 pub mod tests;

@@ -10,6 +10,7 @@ use crate::bellman::plonk::better_better_cs::cs::ConstraintSystem;
 use crate::plonk::circuit::PrimeField;
 use crate::plonk::circuit::boolean::Boolean;
 use crate::bellman::Field;
+use crate::plonk::circuit::hashes_with_tables::utils::IdentifyFirstLast;
 
 use std::str::FromStr;
 
@@ -70,6 +71,7 @@ where G::Base : PrimeField
     fn get_miller_loop_scalar_decomposition() -> Vec<i64>; 
     fn get_x() -> BigUint;
     fn get_hard_part_ops_chain(&self) -> (Vec<Ops>, usize);
+    fn get_hard_part_generator() -> T::Witness;
     
     // require: Q \in E(Fq2) and P \in E(Fq),
     // ensure: T = 2Q and l_Q,Q(P) \in Fq12 , where l_Q,Q is tangent line to the curve at Q
@@ -90,7 +92,7 @@ where G::Base : PrimeField
 
     fn final_exp_easy_part<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS, elem: &mut Fp12<'a, E, G::Base, T>, is_safe_version: bool
-    ) -> Result<TorusWrapper<'a, E, G::Base, T>, SynthesisError> {
+    ) -> Result<(TorusWrapper<'a, E, G::Base, T>, Boolean), SynthesisError> {
         // easy part: result = f^((q^6-1)*(q^2+1))
         // we use that one-time torus compression cost can be absorbed directly in the easy part computation as follows:
         // let m = m0 + w * m1 \in Fp12 be the Miller loop result, then:
@@ -98,8 +100,23 @@ where G::Base : PrimeField
         // = (−m0/m1 + w)/(−m0/m1 − w) = Dec(-m0/m1)
         // hence: Enc(m^{(p^6-1)(p^2+1)}) = Enc(Dec(-m0/m1)^{p^2+1}) = (-m0/m1)^{p^2+1} = [[(-m0/m1)^{p^2) * (-m0/m1)]]
         // where all multiplications and power-maps inside [[ ]] are treated as operations on T2
+        let params = elem.get_params();
 
+        // we need to implement custom conversion m = m0 + w * m1 \in Fp12 -> -m0/m1 \in T2
+        // if m1 == 0 \them m actually belongs to \Fp6, and hence m^{p^6−1} = 1
+        // in this case we replace m by generator of order d = hard_part_exp
+        let (elem, is_exceptional) = if is_safe_version {
+            let is_exceptional = Fp6::is_zero(&mut elem.c1, cs)?;
+            let new_c1 = Fp6::conditionally_select(cs, &is_exceptional, &Fp6::one(params), &elem.c1)?;
+            let elem = Fp12::from_coordinates(elem.c0.clone(), new_c1);
+            (elem, is_exceptional)
+        } else {
+            (elem.clone(), Boolean::Constant(false))
+        };
+        
         // actual value of compressed element is (m0 − w*m1)/(m0 + w*m1)
+        // the result of Miller loop belongs to Fp12* and hence is never zero, 
+        // hence m0 and m1 can't be zero simultaneously
         let value = elem.get_value().map(|x| {
             let (c0, mut c1) = T::convert_from_structured_witness(x);
             c1.negate();
@@ -109,40 +126,16 @@ where G::Base : PrimeField
             res
         });
 
-        let value2 = elem.get_value().map(|x| {
-            let mut res = x;
-            res.frobenius_map(6);
-            let x_inv = x.inverse().unwrap();
-            res.mul_assign(&x_inv);
-            res
-        });
-        assert_eq!(value, value2);
-
-        // we need to implement custom conversion m = m0 + w * m1 \in Fp12 -> -m0/m1 \in T2
-        let params = elem.get_params();
-        let x = if is_safe_version {
-            // if m1 == 0 \them m actually belongs to \Fp6, and hence m^{p^6−1} = 1
-            // modified formula is res = (!flag * m0) / (m1 + flag)
-            let is_exceptional = Fp6::is_zero(&mut elem.c1, cs)?;
-            let numer = Fp6::conditionally_select(cs, &is_exceptional, &Fp6::zero(params), &elem.c0)?;
-            let denom = elem.c1.add(cs, &Fp6::from_boolean(&is_exceptional, params))?;
-            let mut encoding = Fp6::div(cs, &numer, &denom)?;
-            encoding = encoding.negate(cs)?;
-            TorusWrapper::new(encoding, Boolean::Constant(false), is_exceptional, value)
-        } else {
-            // the result of Miller loop belongs to Fp12* and hence is never zero, 
-            // hence m0 and m1 can't be zero simultaneously
-            let mut encoding = Fp6::div(cs, &elem.c0, &elem.c1)?;
-            encoding = encoding.negate(cs)?;
-            TorusWrapper::new(encoding, Boolean::Constant(false), Boolean::Constant(false), value)
-        };
-
+        let mut encoding = Fp6::div(cs, &elem.c0, &elem.c1)?;
+        encoding = encoding.negate(cs)?;
+        let x = TorusWrapper::new(encoding, value);
+        
         // now compute x^{p^2} * x
-        let y = x.frobenius_power_map(cs, 2)?;
-        let res = TorusWrapper::mul(cs, &y, &x, is_safe_version)?;
-
-        println!("easy part value: {}", res.value.unwrap());
-        Ok(res)
+        let mut y = x.frobenius_power_map(cs, 2)?;
+        let mut candidate = TorusWrapper::mul(cs, &mut y, &x, is_safe_version)?;
+        let (res, enc_is_zero) = candidate.replace_by_constant_if_trivial(cs, Self::get_hard_part_generator())?;
+        let is_trivial = Boolean::or(cs, &is_exceptional, &enc_is_zero)?;
+        Ok((res, is_trivial))
     }
 
     fn final_exp_hard_part<'a, CS: ConstraintSystem<E>>(
@@ -153,18 +146,19 @@ where G::Base : PrimeField
         let x = Self::get_x();
         let mut scratchpad = vec![TorusWrapper::<'a, E, G::Base, T>::uninitialized(params); num_of_variables];
         scratchpad[0] = elem.clone();
-        for op in ops_chain.into_iter() {
+        for (_is_first, is_last, op) in ops_chain.into_iter().identify_first_last() {
+            let may_cause_exp = is_safe_version && is_last;
             match op {
                 Ops::ExpByX(out_idx, in_idx) => {
-                    scratchpad[out_idx] = TorusWrapper::pow(&scratchpad[in_idx], cs, &x, is_safe_version)?;
+                    scratchpad[out_idx] = TorusWrapper::pow(&mut scratchpad[in_idx], cs, &x, may_cause_exp)?;
                 },
                 Ops::Mul(out_idx, left_idx, right_idx) => {
                     scratchpad[out_idx] = TorusWrapper::mul(
-                        cs, &scratchpad[left_idx], &scratchpad[right_idx], is_safe_version
+                        cs, &scratchpad[left_idx], &scratchpad[right_idx], may_cause_exp 
                     )?;
                 },
                 Ops::Square(out_idx, in_idx) => {
-                    scratchpad[out_idx] = scratchpad[in_idx].square(cs, is_safe_version)?;
+                    scratchpad[out_idx] = scratchpad[in_idx].square(cs, may_cause_exp)?;
                 },
                 Ops::Conj(out_idx, in_idx) => {
                     scratchpad[out_idx] = scratchpad[in_idx].conjugation(cs)?;
@@ -314,9 +308,9 @@ where G::Base : PrimeField
         // by Jean-Luc Beuchat et. al. (Algorithm 1)
         let (mut f, mut t) = Self::miller_loop(cs, p, q)?;
         f = Self::miller_loop_postprocess(cs, &p, &q, &mut t, &f)?;
-        let wrapped_f = Self::final_exp_easy_part(cs, &mut f, is_safe_version)?;
-        self.final_exp_hard_part(cs, &wrapped_f, is_safe_version)
-        //Ok(TorusWrapper::uninitialized(&p.circuit_params.base_field_rns_params))
+        let (wrapped_f, is_trivial) = Self::final_exp_easy_part(cs, &mut f, is_safe_version)?;
+        let candidate = self.final_exp_hard_part(cs, &wrapped_f, is_safe_version)?;
+        candidate.mask(cs, &is_trivial.not())
     }
 }
 
@@ -424,6 +418,10 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         BigUint::from_str("4965661367192848881").expect("should parse")
     }
 
+    fn get_hard_part_generator() -> crate::bellman::pairing::bn256::Fq12 {
+        crate::bellman::pairing::bn256::Fq12::one()
+    }
+
     fn get_hard_part_ops_chain(&self) -> (Vec<Ops>, usize) {
         match self.hard_part_method {
             Bn256HardPartMethod::Devegili => Self::devegili_method(),
@@ -526,13 +524,6 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         to_add: &PreparedPoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>,
         p: &AffinePoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>
     ) -> Result<Fp12<'a, E, <Bn256 as Engine>::Fq, Bn256Extension12Params>, SynthesisError> {
-        use bellman::GenericCurveProjective;
-        let mut old_q = <Bn256 as Engine>::G2::from_xyz_unchecked(
-            acc.x.get_value().unwrap(), acc.y.get_value().unwrap(), acc.z.get_value().unwrap()
-        );
-        let mut old_r = <Bn256 as Engine>::G2::from_xyz_unchecked(
-            to_add.x.get_value().unwrap(), to_add.y.get_value().unwrap(), to_add.z.get_value().unwrap()
-        );
         // also is airthmetic in jacobian coordinates exception free?
         // TODO: invetigate comparison between this approach and using formulas from projective curve crate
         // High-Speed Software Implementation of the Optimal Ate Pairing over Barreto–Naehrig Curves" (alg. 27)
@@ -550,7 +541,7 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         let tmp = q.y.add(cs, &r.z)?;
         let mut chain = Fp2Chain::new();
         chain.add_neg_term(&z_r_squared).add_neg_term(&y_q_squared);
-        let mut t1 = tmp.square_with_chain(cs, chain)?;
+        let t1 = tmp.square_with_chain(cs, chain)?;
 
         let mut chain = Fp2Chain::new();
         chain.add_neg_term(&r.x);
@@ -609,12 +600,6 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         let fp6_x = Fp6::from_coordinates(t10, zero.clone(), zero.clone());
         let fp6_y = Fp6::from_coordinates(t1, t9, zero);
 
-        let mut new_q = <Bn256 as Engine>::G2::from_xyz_unchecked(
-            tx.get_value().unwrap(), ty.get_value().unwrap(), tz.get_value().unwrap()
-        );
-        old_q.add_assign(&old_r);
-        assert_eq!(old_q, new_q);
-
         *acc = PreparedPoint { x: tx, y: ty, z: tz };
         Ok(Fp12::from_coordinates(fp6_x, fp6_y))
     } 
@@ -670,7 +655,6 @@ mod test {
         >::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
         let circuit_params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
-        let pairing_params = Bn256PairingParams::<Bn256>::new(Bn256HardPartMethod::FuentesCastaneda);
 
         //let params = generate_optimal_circuit_params_for_bn\let mut rng = rand::thread_rng();
         let mut rng = rand::thread_rng();
@@ -725,7 +709,7 @@ mod test {
         let mut actual_exp = Fp12::alloc(&mut cs, exp_wit, &circuit_params.base_field_rns_params).unwrap();
         
         let counter_start = cs.get_current_step_number();
-        let mut wrapped = Bn256PairingParams::final_exp_easy_part(&mut cs, &mut f, SAFE_VERSION).unwrap();
+        let (mut wrapped, _) = Bn256PairingParams::final_exp_easy_part(&mut cs, &mut f, SAFE_VERSION).unwrap();
         wrapped = pairing_params.final_exp_hard_part(&mut cs, &wrapped, SAFE_VERSION).unwrap();
         let mut exp = wrapped.decompress(&mut cs).unwrap();
         let counter_end = cs.get_current_step_number();
@@ -743,7 +727,7 @@ mod test {
     fn test_pairing_for_bn256_curve() {
         const LIMB_SIZE: usize = 80;
         const SAFE_VERSION: bool = false;
-        const METHOD : Bn256HardPartMethod = Bn256HardPartMethod::Naive;
+        const METHOD : Bn256HardPartMethod = Bn256HardPartMethod::FuentesCastaneda;
 
         let mut cs = TrivialAssembly::<
             Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext

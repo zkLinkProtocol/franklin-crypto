@@ -16,11 +16,20 @@ class X:
 
 p = 21888242871839275222246405745257275088696311157297823662689037894645226208583
 x = 4965661367192848881
+# this is x ternary decomposition:
+x_decomposition = [
+    1, 0, 0, 0, 1, 0, 1, 0, 0, -1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1,
+    0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 1
+]
 r = 21888242871839275222246405745257275088548364400416034343698204186575808495617
 d = p^4 - p^2 + 1
+group_order = p^12 - 1
+assert(gcd(group_order / d , d) == 1)
 # for Fuentes Castaneda we should additionally raise the result to the power
 m = 2 * x * (6*x^2 + 3 * x + 1)
 assert(d % r == 0)
+
+#gcd(group_order / d, d)
 
 class Bn256HardPartMethod(Enum):
     Devegili = 0,
@@ -71,6 +80,24 @@ else:
         X(Ops.Mul, t0, t1, y1), X(Ops.Mul, t1, t1, y0), X(Ops.Square, t0, t0, nil), X(Ops.Mul, f, t0, t1)
     ]
     
+    
+def exp_by_x(val):
+    res = val
+    for bit in x_decomposition[1:]:
+        res = res * 2
+        if d % res == 0 :
+            print "Error"
+        if bit == 1:
+            res = res + val
+            if d % res == 0 :
+                print "Error"
+        if bit == -1:
+            res = res - val
+            if d % res == 0 :
+                print "Error"
+    return res
+
+    
         
 def check():
     scratchpad = [0 for i in xrange(num_of_vars)]
@@ -80,7 +107,7 @@ def check():
     for (idx, item) in enumerate(ops_chain):
         out = item.out
         if item.op == Ops.ExpByX:
-            scratchpad[out] = scratchpad[item.first_in] * x
+            scratchpad[out] =  exp_by_x(scratchpad[item.first_in])
         elif item.op == Ops.Mul:
             scratchpad[out] = scratchpad[item.first_in] + scratchpad[item.second_in]
         elif item.op == Ops.Square:
@@ -101,5 +128,7 @@ def check():
     
 
 check()
+
+
 
 

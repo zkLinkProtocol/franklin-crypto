@@ -152,6 +152,21 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
     pub fn from_coordinates(c0: Fp6<'a, E, F, T::Ex6>, c1: Fp6<'a, E, F, T::Ex6>) -> Self {
         Fp12 { c0, c1,  _marker: std::marker::PhantomData::<T> }
     }
+
+    pub fn constant(value: T::Witness, params: &'a RnsParameters<E, F>) -> Self {
+        let x = T::convert_from_structured_witness(value);
+        Self::from_coordinates(
+            Fp6::constant(x.0, params), Fp6::constant(x.1, params)
+        )
+    }
+
+    pub fn conditionally_select<CS: ConstraintSystem<E>>(
+        cs: &mut CS, flag: &Boolean, first: &Self, second: &Self
+    ) -> Result<Self, SynthesisError> {
+        let new_c0 = Fp6::conditionally_select(cs, flag, &first.c0, &second.c0)?;
+        let new_c1 = Fp6::conditionally_select(cs, flag, &first.c1, &second.c1)?;
+        Ok(Self::from_coordinates(new_c0, new_c1))
+    }
   
     pub fn get_value(&self) -> Option<T::Witness> {
         self.c0.get_value().zip(self.c1.get_value()).map(|(c0, c1)| T::convert_to_structured_witness(c0, c1))

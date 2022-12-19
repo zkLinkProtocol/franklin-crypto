@@ -321,7 +321,7 @@ where G::Base : PrimeField
 }
 
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Bn256HardPartMethod {
     Devegili,
     FuentesCastaneda,
@@ -391,43 +391,27 @@ impl<E: Engine> Bn256PairingParams<E> {
     }
 
     // this is algorithm implemented in pairing crate
-    // 1) fp = frob(f, 1)
-    // 2) fp2 = frob(f, 2)
-    // 2) fp3 = frob(fp2, 1)
-    // 3) fu = f^x
-    // 4) fu2 = fu^x
-    // 5) fu3 = fu2^x
-    // 6) y3 = conj(fu^p)
-    // 7) fu2p = fu2^p
-    // 8) fu3p = fu3^p
-    // 9) y2 = frob(fu2, 2)
-    // 10) y0 = fp * fp2 * fp3
-    // 11) y1 = conj(f)
-    // 12)  y5 = conj(fu2)
-    // 13) y4 = conj(fu * fu2p)
-    // 14) y6 = conj(fu3 * fu3p)^2 * y4 * y5
-    // 15) t1 = y3 * y5 * y6
-    // 16) y6 = y6 * y2
-    // 17) t1 = t1^2
-    // 18) t1 = t1 * y6
-    // 19) t1 = t1^2
-    // 2) t0 = t1 * y1
-    // 21) t1 = t1 * y0
-    // t0 = t0^2
-    //  f = t0 * t1
+    // 1) fp = frob(f, 1)         8) fu2p = fu2^p               15) y6 = conj(fu3 * fu3p)       22) t0 = t1 * y1
+    // 2) fp2 = frob(f, 2)        9) fu3p = fu3^p               16) y6 = y6^2 * y4 * y5         23) t1 = t1 * y0
+    // 3) fp3 = frob(fp2, 1)     10) y2 = frob(fu2, 2)          17) t1 = y3 * y5 * y6           24) t0 = t0^2
+    // 4) fu = f^x               11) y0 = fp * fp2 * fp3        18) y6 = y6 * y2                25) f = t0 * t1
+    // 5) fu2 = fu^x             12) y1 = conj(f)               19) t1 = t1^2
+    // 6) fu3 = fu2^x            13) y5 = conj(fu2)             20) t1 = t1 * y6
+    // 7) y3 = conj(fu^p)        14) y4 = conj(fu * fu2p)       21) t1 = t1^2
     fn naive_method() -> (Vec<Ops>, usize) {
         let (f, fp, tmp, fp2, fp3, fu, fu2, fu3, y3, fu2p, fu3p, y2, y0, y1, y4, y5, y6, t0, t1) = (
             0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18);
         let ops_chain = vec![
-            Ops::Frob(fp, f, 1), 
-            Ops::Frob(fp2, f, 2), Ops::Frob(fp3, fp2, 1), Ops::ExpByX(fu, f), Ops::ExpByX(fu2, fu), Ops::ExpByX(fu3, fu2),
-            Ops::Frob(tmp, fu, 1), Ops::Conj(y3, tmp), Ops::Frob(fu2p, fu2, 1), Ops::Frob(fu3p, fu3, 1),
-            Ops::Frob(y2, fu2, 2), Ops::Mul(tmp, fp, fp2), Ops::Mul(y0, tmp, fp3),  Ops::Conj(y1, f),  
-            Ops::Conj(y5, fu2), Ops::Mul(tmp, fu, fu2p),   Ops::Conj(y4, tmp), Ops::Mul(tmp, fu3, fu3p), 
-            Ops::Conj(tmp, tmp), Ops::Square(tmp, tmp), Ops::Mul(tmp, tmp, y4), Ops::Mul(y6, tmp, y5),
-            Ops::Mul(tmp, y3, y5), Ops::Mul(t1, tmp, y6), Ops::Mul(y6, y2, y6), Ops::Square(t1, t1),
-            Ops::Mul(t1, t1, y6), Ops::Square(t1, t1), Ops::Mul(t0, t1, y1),  Ops::Mul(t1, t1, y0),
-            Ops::Square(t0, t0), Ops::Mul(f, t0, t1)
+            /*1*/ Ops::Frob(fp, f, 1), /*2*/ Ops::Frob(fp2, f, 2), /*3*/ Ops::Frob(fp3, fp2, 1), 
+            /*4*/ Ops::ExpByX(fu, f), /*5*/ Ops::ExpByX(fu2, fu), /*6*/ Ops::ExpByX(fu3, fu2), 
+            /*7*/ Ops::Frob(tmp, fu, 1), Ops::Conj(y3, tmp), /*8*/ Ops::Frob(fu2p, fu2, 1), 
+            /*9*/ Ops::Frob(fu3p, fu3, 1), /*10*/ Ops::Frob(y2, fu2, 2), /*11*/ Ops::Mul(tmp, fp, fp2), 
+            Ops::Mul(y0, tmp, fp3), /*12*/ Ops::Conj(y1, f), /*13*/ Ops::Conj(y5, fu2), /*14*/ Ops::Mul(tmp, fu, fu2p),
+            Ops::Conj(y4, tmp), /*15*/ Ops::Mul(tmp, fu3, fu3p), Ops::Conj(y6, tmp), /*16*/ Ops::Square(tmp, y6), 
+            Ops::Mul(tmp, tmp, y4), Ops::Mul(y6, tmp, y5), /*17*/ Ops::Mul(tmp, y3, y5), Ops::Mul(t1, tmp, y6), 
+            /*18*/ Ops::Mul(y6, y2, y6), /*19*/ Ops::Square(t1, t1), /*20*/ Ops::Mul(t1, t1, y6), 
+            /*21*/ Ops::Square(t1, t1), /*22*/ Ops::Mul(t0, t1, y1), /*23*/ Ops::Mul(t1, t1, y0), 
+            /*24*/ Ops::Square(t0, t0), /*25*/ Ops::Mul(f, t0, t1)
         ];
         (ops_chain, 19)
     }
@@ -759,28 +743,30 @@ mod test {
     fn test_pairing_for_bn256_curve() {
         const LIMB_SIZE: usize = 80;
         const SAFE_VERSION: bool = false;
+        const METHOD : Bn256HardPartMethod = Bn256HardPartMethod::Naive;
 
         let mut cs = TrivialAssembly::<
             Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
         >::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
         let circuit_params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
-        let pairing_params = Bn256PairingParams::<Bn256>::new(Bn256HardPartMethod::FuentesCastaneda);
+        let pairing_params = Bn256PairingParams::<Bn256>::new(METHOD);
 
-        //let params = generate_optimal_circuit_params_for_bn\let mut rng = rand::thread_rng();
         let mut rng = rand::thread_rng();
         let p_wit: <Bn256 as Engine>::G1Affine = rng.gen();
         let q_wit: <Bn256 as Engine>::G2Affine = rng.gen();
         let mut res_wit = Bn256::pairing(p_wit, q_wit);
-        //let pairing_res_wit = Bn256::pairing(p_wit, q_wit);
-        // for Fuentes Castaneda we should additionally raise the result to the power
-        // m = = 2x * (6*x^2 + 3 * x + 1)
-        let mut lhs = BigUint::from(BN_U);
-        lhs = lhs * 2u64;
-        let mut rhs = BigUint::from(BN_U);
-        rhs = rhs.clone() * rhs.clone() * 6u64 + rhs.clone() * 3u64 + 1u64;
-        let x = lhs * rhs;
-        res_wit = res_wit.pow(&x.to_u64_digits());
+        
+        if METHOD == Bn256HardPartMethod::FuentesCastaneda {
+            // for Fuentes Castaneda we should additionally raise the result to the power
+            // m = 2x * (6*x^2 + 3 * x + 1)
+            let mut lhs = BigUint::from(BN_U);
+            lhs = lhs * 2u64;
+            let mut rhs = BigUint::from(BN_U);
+            rhs = rhs.clone() * rhs.clone() * 6u64 + rhs.clone() * 3u64 + 1u64;
+            let x = lhs * rhs;
+            res_wit = res_wit.pow(&x.to_u64_digits());
+        }
 
         let (q_wit_x, q_wit_y) = bellman::CurveAffine::as_xy(&q_wit); 
 

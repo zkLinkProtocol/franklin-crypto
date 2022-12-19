@@ -22,9 +22,12 @@ x_decomposition = [
     0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 1
 ]
 r = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+# p^12 - 1 = (p^6 - 1) * (p^6 + 1) = (p^6 - 1) * (p^4 - p^2 + 1) * (p^2 + 1)
+# let x be any element of Fp12*, such that x^[(p^6 - 1) * (p^2 + 1)] != 1
+# then ord(x) | 
+
 d = p^4 - p^2 + 1
-group_order = p^12 - 1
-assert(gcd(group_order / d , d) == 1)
 # for Fuentes Castaneda we should additionally raise the result to the power
 m = 2 * x * (6*x^2 + 3 * x + 1)
 assert(d % r == 0)
@@ -36,7 +39,7 @@ class Bn256HardPartMethod(Enum):
     FuentesCastaneda = 1,
     Naive = 2
 
-hard_part_method = Bn256HardPartMethod.FuentesCastaneda
+hard_part_method = Bn256HardPartMethod.Naive
 
 
 if hard_part_method == Bn256HardPartMethod.Devegili:
@@ -128,6 +131,8 @@ def check():
     
 
 check()
+
+
 
 
 

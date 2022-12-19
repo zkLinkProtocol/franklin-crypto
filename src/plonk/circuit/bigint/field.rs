@@ -22,7 +22,7 @@ use crate::plonk::circuit::SomeArithmetizable;
 // this variable is used in fma implementation: it is set to the maximal numver of bits on which 
 // new_of * shift + /sum_{i+j = k} a[i] * b[j] + \sum addition_elements[k] may overflow the limb width border
 // NB: this value is chosen more or less randomly - may be it is better to add some heuristics here
-const MAX_INTERMIDIATE_OVERFLOW_WIDTH : usize = 32;
+const MAX_INTERMIDIATE_OVERFLOW_WIDTH : usize = 16;
 
 // TODO: coarsely is completely unnecessary - get rid of it everywhere!
 // There is no problem to pay for one addtional constraint on exact allocation

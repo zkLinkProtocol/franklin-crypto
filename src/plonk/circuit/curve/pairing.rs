@@ -70,6 +70,7 @@ where G::Base : PrimeField
 {
     fn get_miller_loop_scalar_decomposition() -> Vec<i64>; 
     fn get_x() -> BigUint;
+    fn get_x_ternary_decomposition(&self) -> &[i64]; 
     fn get_hard_part_ops_chain(&self) -> (Vec<Ops>, usize);
     fn get_hard_part_generator() -> T::Witness;
     
@@ -144,13 +145,16 @@ where G::Base : PrimeField
         let params = elem.get_params();
         let (ops_chain, num_of_variables) = self.get_hard_part_ops_chain();
         let x = Self::get_x();
+        let x_decomposition = self.get_x_ternary_decomposition();
         let mut scratchpad = vec![TorusWrapper::<'a, E, G::Base, T>::uninitialized(params); num_of_variables];
         scratchpad[0] = elem.clone();
         for (_is_first, is_last, op) in ops_chain.into_iter().identify_first_last() {
             let may_cause_exp = is_safe_version && is_last;
             match op {
                 Ops::ExpByX(out_idx, in_idx) => {
-                    scratchpad[out_idx] = TorusWrapper::pow(&mut scratchpad[in_idx], cs, &x, may_cause_exp)?;
+                    scratchpad[out_idx] = TorusWrapper::pow(
+                        &mut scratchpad[in_idx], cs, &x, &x_decomposition, may_cause_exp
+                    )?;
                 },
                 Ops::Mul(out_idx, left_idx, right_idx) => {
                     scratchpad[out_idx] = TorusWrapper::mul(
@@ -241,9 +245,9 @@ where G::Base : PrimeField
         let fp6_full_elem = full_elem.c0.add(cs, &full_elem.c1)?;
         let e = Self::mul_by_sparse_01(cs, &fp6_full_elem, &fp6_sparse_elem)?;
 
-        let a0 = z[0].mul(cs, &x[0])?;
-        let a1 = z[1].mul(cs, &x[0])?;
-        let a2 = z[2].mul(cs, &x[0])?;
+        let a0 = z[0].mul_by_base_field(cs, &x[0].c0)?;
+        let a1 = z[1].mul_by_base_field(cs, &x[0].c0)?;
+        let a2 = z[2].mul_by_base_field(cs, &x[0].c0)?;
         let a = Fp6::from_coordinates(a0, a1, a2);
         
         let mut chain = Fp6Chain::new();
@@ -418,6 +422,13 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         BigUint::from_str("4965661367192848881").expect("should parse")
     }
 
+    fn get_x_ternary_decomposition(&self) -> &[i64] {
+        &[
+            1, 0, 0, 0, 1, 0, 1, 0, 0, -1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 
+            1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 1
+        ]
+    } 
+
     fn get_hard_part_generator() -> crate::bellman::pairing::bn256::Fq12 {
         crate::bellman::pairing::bn256::Fq12::one()
     }
@@ -451,71 +462,101 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         // so it bolis down to comparison of cost of squaring againts cost of multiplication
         // TODO: optimize later! (notice that z2 occures two often)
 
-        use bellman::GenericCurveProjective;
-        let mut old_q = <Bn256 as Engine>::G2::from_xyz_unchecked(
-            q.x.get_value().unwrap(), q.y.get_value().unwrap(), q.z.get_value().unwrap()
-        );
-    
-        // 1. tmp0 := X^2
-        let tmp0 = q.x.square(cs)?;
-        // 2. tmp1 := Y^2
-        let tmp1 = q.y.square(cs)?;
-        // 3. tmp2 := tmp1^2
-        let tmp2 = tmp1.square(cs)?;
-        // 4. tmp3 := (tmp1 + X)^2 - tmp0 - tmp2;
-        let tmp = tmp1.add(cs, &q.x)?;
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&tmp0).add_neg_term(&tmp2);
-        let tmp3 = tmp.square_with_chain(cs, chain)?; 
-        // 5. tmp3 := 2 * tmp3;
-        let tmp3 = tmp3.double(cs)?;
-        // 6. tmp4 := 3 * tmp0;
-        let tmp4 = tmp0.scale(cs, 3)?;
-        // 7. tmp6 := X + tmp4;
-        let tmp6 = q.x.add(cs, &tmp4)?;
-        // 8. tmp5 := tmp4^2
-        let tmp5 = tmp4.square(cs)?;
-        // 9.  X3 := tmp5 - 2*tmp3
-        let tmp = tmp3.double(cs)?;
-        let new_x = tmp5.sub(cs, &tmp)?;
-        // 10. Z3 := (Y+Z)^2 - tmp1 - Z^2
-        let z_squared = q.z.square(cs)?;
-        let tmp = q.y.add(cs, &q.z)?;
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&tmp1).add_neg_term(&z_squared);
-        let new_z = tmp.square_with_chain(cs, chain)?;
-        // 11. Y3 := (tmp3 - X1) * tmp4 - 8 * tmp2;
-        let tmp = tmp3.sub(cs, &new_x)?;
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&tmp2.scale(cs, 8)?);
-        let new_y = Fp2::mul_with_chain(cs, &tmp, &tmp4, chain)?;
-        // 12. tmp3 := -2 * (tmp4 * Z^2)
-        let tmp = tmp4.negate(cs)?;
-        let tmp = tmp.double(cs)?;
-        let tmp3 = tmp.mul(cs, &z_squared)?;
-        // 13. tmp3 := tmp3 * xp (mul by base Field)
-        let tmp3 = tmp3.mul_by_base_field(cs, &p.x)?;
-        // 14. tmp6 := tmp6^2 - tmp0 - tmp5 - 4 * tmp1
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&tmp0).add_neg_term(&tmp5).add_neg_term(&tmp1.scale(cs, 4)?);
-        let tmp6 = tmp6.square_with_chain(cs, chain)?;
-        // 16. tmp0 := 2 * zt * zy^2 * yp (mul ny base Field)
-        let mut tmp0 = new_z.double(cs)?;
-        tmp0 = tmp0.mul(cs, &z_squared)?;
-        tmp0 = tmp0.mul_by_base_field(cs, &p.y)?;
-        // 17. line_function := [tmp0, 0, 0, tmp3, tmp6, 0]
-        let zero = Fp2::zero(q.x.get_params()); 
-        let fp6_x = Fp6::from_coordinates(tmp0, zero.clone(), zero.clone());
-        let fp6_y = Fp6::from_coordinates(tmp3, tmp6, zero);
+        // use bellman::GenericCurveProjective;
+        // let mut old_q = <Bn256 as Engine>::G2::from_xyz_unchecked(
+        //     q.x.get_value().unwrap(), q.y.get_value().unwrap(), q.z.get_value().unwrap()
+        // );
 
-        let new_q = <Bn256 as Engine>::G2::from_xyz_unchecked(
-            new_x.get_value().unwrap(), new_y.get_value().unwrap(), new_z.get_value().unwrap()
-        );
-        old_q.double();
-        assert_eq!(old_q, new_q);
-        
-        *q = PreparedPoint { x: new_x, y: new_y, z: new_z };
+        let x_squared = q.x.square(cs)?;
+        let num = x_squared.scale(cs, 3)?;
+        let two_y = q.y.double(cs)?;
+        let lambda = Fp2::div(&num, cs, &two_y)?;
+
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&q.x).add_neg_term(&q.x);
+        let new_x = lambda.square_with_chain(cs, chain)?;
+
+        let x_minus_new_x = q.x.sub(cs, &new_x)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&q.y);
+        let new_y = Fp2::mul_with_chain(cs, &lambda, &x_minus_new_x, chain)?;
+
+        let mut chain = Fp2Chain::new();
+        chain.add_pos_term(&new_y);
+        let t1 = Fp2::mul_with_chain(cs, &lambda, &new_x, chain)?;
+
+        let mut t0 = lambda.mul_by_base_field(cs, &p.x)?;
+        t0 = t0.negate(cs)?;
+
+        // line_function := [yp, 0, 0, - lambda * xp, t, 0]
+        let zero = Fp2::zero(q.x.get_params()); 
+        let fp6_x = Fp6::from_coordinates(Fp2::from(p.y.clone()), zero.clone(), zero.clone());
+        let fp6_y = Fp6::from_coordinates(t0, t1, zero.clone());
+
+        // TODO: we have to convert from Fp actually.
+        *q = PreparedPoint { x: Fp2::from(new_x), y: new_y, z: zero };
         Ok(Fp12::from_coordinates(fp6_x, fp6_y))
+    
+        // // 1. tmp0 := X^2
+        // let tmp0 = q.x.square(cs)?;
+        // // 2. tmp1 := Y^2
+        // let tmp1 = q.y.square(cs)?;
+        // // 3. tmp2 := tmp1^2
+        // let tmp2 = tmp1.square(cs)?;
+        // // 4. tmp3 := (tmp1 + X)^2 - tmp0 - tmp2;
+        // let tmp = tmp1.add(cs, &q.x)?;
+        // let mut chain = Fp2Chain::new();
+        // chain.add_neg_term(&tmp0).add_neg_term(&tmp2);
+        // let tmp3 = tmp.square_with_chain(cs, chain)?; 
+        // // 5. tmp3 := 2 * tmp3;
+        // let tmp3 = tmp3.double(cs)?;
+        // // 6. tmp4 := 3 * tmp0;
+        // let tmp4 = tmp0.scale(cs, 3)?;
+        // // 7. tmp6 := X + tmp4;
+        // let tmp6 = q.x.add(cs, &tmp4)?;
+        // // 8. tmp5 := tmp4^2
+        // let tmp5 = tmp4.square(cs)?;
+        // // 9.  X3 := tmp5 - 2*tmp3
+        // let tmp = tmp3.double(cs)?;
+        // let new_x = tmp5.sub(cs, &tmp)?;
+        // // 10. Z3 := (Y+Z)^2 - tmp1 - Z^2
+        // let z_squared = q.z.square(cs)?;
+        // let tmp = q.y.add(cs, &q.z)?;
+        // let mut chain = Fp2Chain::new();
+        // chain.add_neg_term(&tmp1).add_neg_term(&z_squared);
+        // let new_z = tmp.square_with_chain(cs, chain)?;
+        // // 11. Y3 := (tmp3 - X1) * tmp4 - 8 * tmp2;
+        // let tmp = tmp3.sub(cs, &new_x)?;
+        // let mut chain = Fp2Chain::new();
+        // chain.add_neg_term(&tmp2.scale(cs, 8)?);
+        // let new_y = Fp2::mul_with_chain(cs, &tmp, &tmp4, chain)?;
+        // // 12. tmp3 := -2 * (tmp4 * Z^2)
+        // let tmp = tmp4.negate(cs)?;
+        // let tmp = tmp.double(cs)?;
+        // let tmp3 = tmp.mul(cs, &z_squared)?;
+        // // 13. tmp3 := tmp3 * xp (mul by base Field)
+        // let tmp3 = tmp3.mul_by_base_field(cs, &p.x)?;
+        // // 14. tmp6 := tmp6^2 - tmp0 - tmp5 - 4 * tmp1
+        // let mut chain = Fp2Chain::new();
+        // chain.add_neg_term(&tmp0).add_neg_term(&tmp5).add_neg_term(&tmp1.scale(cs, 4)?);
+        // let tmp6 = tmp6.square_with_chain(cs, chain)?;
+        // // 16. tmp0 := 2 * zt * zy^2 * yp (mul ny base Field)
+        // let mut tmp0 = new_z.double(cs)?;
+        // tmp0 = tmp0.mul(cs, &z_squared)?;
+        // tmp0 = tmp0.mul_by_base_field(cs, &p.y)?;
+        // // 17. line_function := [tmp0, 0, 0, tmp3, tmp6, 0]
+        // let zero = Fp2::zero(q.x.get_params()); 
+        // let fp6_x = Fp6::from_coordinates(tmp0, zero.clone(), zero.clone());
+        // let fp6_y = Fp6::from_coordinates(tmp3, tmp6, zero);
+
+        // let new_q = <Bn256 as Engine>::G2::from_xyz_unchecked(
+        //     new_x.get_value().unwrap(), new_y.get_value().unwrap(), new_z.get_value().unwrap()
+        // );
+        // old_q.double();
+        // assert_eq!(old_q, new_q);
+        
+        // *q = PreparedPoint { x: new_x, y: new_y, z: new_z };
+        // Ok(Fp12::from_coordinates(fp6_x, fp6_y))
     }
 
     fn add_and_eval<'a, CS: ConstraintSystem<E>>(
@@ -531,77 +572,118 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         // 1) t2 = xq - xr
         // Z_R can be saved for later use
 
-        // we assume that q is actuallu affine
-        let q = &to_add;
-        let r = &acc;
-        q.assert_if_normalized();
-        let z_r_squared = r.z.square(cs)?;
-        let y_q_squared = q.y.square(cs)?;
+        // line function in affine coordinates:
+        // yp + (−\lambda * xp + v * (\lambda *  x_Q − y_Q)) * w
+        // t = (\lambda *  x_Q − y_Q)
+
+        let other_x_minus_this_x = to_add.x.sub(cs, &acc.x)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_pos_term(&to_add.y).add_neg_term(&acc.y);
+        let lambda = Fp2::div_with_chain(cs, chain, &other_x_minus_this_x)?;
         
-        let tmp = q.y.add(cs, &r.z)?;
+        // lambda^2 + (-x' - x)
         let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&z_r_squared).add_neg_term(&y_q_squared);
-        let t1 = tmp.square_with_chain(cs, chain)?;
+        chain.add_neg_term(&to_add.x).add_neg_term(&acc.x);
+        let new_x = lambda.square_with_chain(cs, chain)?;
+
+        // lambda * (x - new_x) + (- y) = lambda * x_q - y_q - lambda * new_x = t1 - lambda * new_x =>
+        // t1 = new_y + lambda * new_x
+        let this_x_minus_new_x = acc.x.sub(cs, &new_x)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_neg_term(&acc.y);
+        let new_y = Fp2::mul_with_chain(cs, &lambda, &this_x_minus_new_x, chain)?;
 
         let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&r.x);
-        let t2 = Fp2::mul_with_chain(cs, &q.x, &z_r_squared, chain)?;
+        chain.add_pos_term(&new_y);
+        let t1 = Fp2::mul_with_chain(cs, &lambda, &new_x, chain)?;
 
-        let t3 = t2.square(cs)?;
-        let t4 = t3.scale(cs, 4)?;
-        let t5 = t4.mul(cs, &t2)?;
+        let mut t0 = lambda.mul_by_base_field(cs, &p.x)?;
+        t0 = t0.negate(cs)?;
 
-        // t6 = t1 * z_r^2 − 2 y_r;
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&r.y.double(cs)?);
-        let t6 = Fp2::mul_with_chain(cs, &t1, &z_r_squared, chain)?;
-    
-        let t9 = t6.mul(cs, &q.x)?;
-        let t7 = r.x.mul(cs, &t4)?;
+        // line_function := [yp, 0, 0, - lambda * xp, t, 0]
+        let zero = Fp2::zero(acc.x.get_params()); 
+        let fp6_x = Fp6::from_coordinates(Fp2::from(p.y.clone()), zero.clone(), zero.clone());
+        let fp6_y = Fp6::from_coordinates(t0, t1, zero.clone());
 
-        // tx = t6^2 - t5 - 2 * t7
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&t5).add_neg_term(&t7.double(cs)?);
-        let tx = t6.square_with_chain(cs, chain)?;
-
-        // tz = (z.r + t2)^2 - z.r^2 - t3
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&z_r_squared).add_neg_term(&t3);
-        let tmp = r.z.add(cs, &t2)?;
-        let tz = tmp.square_with_chain(cs, chain)?;
-        
-        // 9) t10 = yq + tz
-        let t10 = q.y.add(cs, &tz)?;
-        // 10) t8 = (t7 - tx) * t6
-        let tmp = t7.sub(cs, &tx)?;
-        let t8 = tmp.mul(cs, &t6)?;
-        // 11) t0 = 2 * yr * t5
-        let mut t0 = r.y.mul(cs, &t5)?;
-        t0 = t0.double(cs)?;
-        // 12) ty = t8 - t0
-        let ty = t8.sub(cs, &t0)?;
-        // 13) t10 = t10^2 - yq^2 -tz^2
-        let qy_squared = q.y.square(cs)?;
-        let tz_squared = tz.square(cs)?;
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&qy_squared).add_neg_term(&tz_squared);
-        let t10 = t10.square_with_chain(cs, chain)?;
-        // 14) t9 = 2 * t9 - t10
-        let t9 = t9.double(cs)?.sub(cs, &t10)?;
-        // 15) t10 = 2 * tz * yp
-        let mut t10 = tz.mul_by_base_field(cs, &p.y)?;
-        t10 = t10.double(cs)?; 
-        // 17) t1 = - 2 * t6 * xp
-        let mut t1 = t6.mul_by_base_field(cs, &p.x)?;
-        t1 = t1.negate(cs)?;
-        t1 = t1.double(cs)?;
-        // 18) line_function := [t10, 0, 0, t1, t9, 0]
-        let zero = Fp2::zero(q.x.get_params()); 
-        let fp6_x = Fp6::from_coordinates(t10, zero.clone(), zero.clone());
-        let fp6_y = Fp6::from_coordinates(t1, t9, zero);
-
-        *acc = PreparedPoint { x: tx, y: ty, z: tz };
+        // TODO: we have to convert from Fp actually.
+        *acc = PreparedPoint { x: Fp2::from(new_x), y: new_y, z: zero };
         Ok(Fp12::from_coordinates(fp6_x, fp6_y))
+        
+
+        // let new = Self { x: new_x, y: new_y, circuit_params: self.circuit_params };
+        // Ok(new)
+
+        // we assume that q is actuallu affine
+        // let q = &to_add;
+        // let r = &acc;
+        // q.assert_if_normalized();
+        // let z_r_squared = r.z.square(cs)?;
+        // let y_q_squared = q.y.square(cs)?;
+        
+        // let tmp = q.y.add(cs, &r.z)?;
+        // let mut chain = Fp2Chain::new();
+        // chain.add_neg_term(&z_r_squared).add_neg_term(&y_q_squared);
+        // let t1 = tmp.square_with_chain(cs, chain)?;
+
+        // let mut chain = Fp2Chain::new();
+        // chain.add_neg_term(&r.x);
+        // let t2 = Fp2::mul_with_chain(cs, &q.x, &z_r_squared, chain)?;
+
+        // let t3 = t2.square(cs)?;
+        // let t4 = t3.scale(cs, 4)?;
+        // let t5 = t4.mul(cs, &t2)?;
+
+        // // t6 = t1 * z_r^2 − 2 y_r;
+        // let mut chain = Fp2Chain::new();
+        // chain.add_neg_term(&r.y.double(cs)?);
+        // let t6 = Fp2::mul_with_chain(cs, &t1, &z_r_squared, chain)?;
+    
+        // let t9 = t6.mul(cs, &q.x)?;
+        // let t7 = r.x.mul(cs, &t4)?;
+
+        // // tx = t6^2 - t5 - 2 * t7
+        // let mut chain = Fp2Chain::new();
+        // chain.add_neg_term(&t5).add_neg_term(&t7.double(cs)?);
+        // let tx = t6.square_with_chain(cs, chain)?;
+
+        // // tz = (z.r + t2)^2 - z.r^2 - t3
+        // let mut chain = Fp2Chain::new();
+        // chain.add_neg_term(&z_r_squared).add_neg_term(&t3);
+        // let tmp = r.z.add(cs, &t2)?;
+        // let tz = tmp.square_with_chain(cs, chain)?;
+        
+        // // 9) t10 = yq + tz
+        // let t10 = q.y.add(cs, &tz)?;
+        // // 10) t8 = (t7 - tx) * t6
+        // let tmp = t7.sub(cs, &tx)?;
+        // let t8 = tmp.mul(cs, &t6)?;
+        // // 11) t0 = 2 * yr * t5
+        // let mut t0 = r.y.mul(cs, &t5)?;
+        // t0 = t0.double(cs)?;
+        // // 12) ty = t8 - t0
+        // let ty = t8.sub(cs, &t0)?;
+        // // 13) t10 = t10^2 - yq^2 -tz^2
+        // let qy_squared = q.y.square(cs)?;
+        // let tz_squared = tz.square(cs)?;
+        // let mut chain = Fp2Chain::new();
+        // chain.add_neg_term(&qy_squared).add_neg_term(&tz_squared);
+        // let t10 = t10.square_with_chain(cs, chain)?;
+        // // 14) t9 = 2 * t9 - t10
+        // let t9 = t9.double(cs)?.sub(cs, &t10)?;
+        // // 15) t10 = 2 * tz * yp
+        // let mut t10 = tz.mul_by_base_field(cs, &p.y)?;
+        // t10 = t10.double(cs)?; 
+        // // 17) t1 = - 2 * t6 * xp
+        // let mut t1 = t6.mul_by_base_field(cs, &p.x)?;
+        // t1 = t1.negate(cs)?;
+        // t1 = t1.double(cs)?;
+        // // 18) line_function := [t10, 0, 0, t1, t9, 0]
+        // let zero = Fp2::zero(q.x.get_params()); 
+        // let fp6_x = Fp6::from_coordinates(t10, zero.clone(), zero.clone());
+        // let fp6_y = Fp6::from_coordinates(t1, t9, zero);
+
+        // *acc = PreparedPoint { x: tx, y: ty, z: tz };
+        // Ok(Fp12::from_coordinates(fp6_x, fp6_y))
     } 
 
     
@@ -726,8 +808,8 @@ mod test {
     #[test]
     fn test_pairing_for_bn256_curve() {
         const LIMB_SIZE: usize = 80;
-        const SAFE_VERSION: bool = false;
-        const METHOD : Bn256HardPartMethod = Bn256HardPartMethod::FuentesCastaneda;
+        const SAFE_VERSION: bool = true;
+        const METHOD : Bn256HardPartMethod = Bn256HardPartMethod::Naive;
 
         let mut cs = TrivialAssembly::<
             Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext

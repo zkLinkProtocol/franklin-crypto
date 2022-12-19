@@ -293,17 +293,18 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
     }
 
     pub fn pow<CS: ConstraintSystem<E>>(
-        &mut self, cs: &mut CS, exp: &BigUint, is_safe_version: bool
+        &mut self, cs: &mut CS, exp: &BigUint, decomposition: &[i64], is_safe_version: bool
     ) -> Result<Self,SynthesisError> {
         assert!(!exp.is_zero());
         let mut res : TorusWrapper<'a, E, F, T> = self.clone();
-        let mut i = exp.bits() - 1;
-        
-        while i > 0 {
+        let mut self_inv = self.conjugation(cs)?;
+        for bit in decomposition.iter().skip(1) {
             res = res.square(cs, is_safe_version)?;
-            i -= 1;
-            if exp.bit(i) {
+            if *bit == 1i64 {
                 res = Self::mul(cs, &mut res, self, is_safe_version)?;
+            }
+            if *bit == -1i64 {
+                res = Self::mul(cs, &mut res, &mut self_inv, is_safe_version)?;
             }
         }
         res.value = self.value.map(|x| x.pow(exp.to_u64_digits()));

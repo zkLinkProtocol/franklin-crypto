@@ -630,7 +630,6 @@ where <G as GenericCurveAffine>::Base: PrimeField
             chain.add_pos_term(&x_cubed).add_pos_term(&b);
             FieldElement::mul_with_chain(cs, &self.x, &a, chain)?
         };
-
         FieldElement::enforce_equal(cs, &mut lhs, &mut rhs)
     }
 

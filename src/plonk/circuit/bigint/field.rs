@@ -23,6 +23,7 @@ use crate::plonk::circuit::SomeArithmetizable;
 // new_of * shift + /sum_{i+j = k} a[i] * b[j] + \sum addition_elements[k] may overflow the limb width border
 // NB: this value is chosen more or less randomly - may be it is better to add some heuristics here
 const MAX_INTERMIDIATE_OVERFLOW_WIDTH : usize = 16;
+const EXPECTED_NUM_LIMBS_PER_FMA_CYCLE : usize = 2;
 
 // TODO: coarsely is completely unnecessary - get rid of it everywhere!
 // There is no problem to pay for one addtional constraint on exact allocation
@@ -1378,7 +1379,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             assert!(a == b);
             return Ok(())
         }
-      
+        
         this.reduce(cs)?;
         other.reduce(cs)?;
 
@@ -1564,6 +1565,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             let max_btilen = params.native_field_modulus_bitlength;
             (max_btilen - MAX_INTERMIDIATE_OVERFLOW_WIDTH - 1) / params.binary_limb_width - 1
         };
+        assert_eq!(limbs_per_cycle, EXPECTED_NUM_LIMBS_PER_FMA_CYCLE);
 
         // construct shifts:
         let mut shifts = Vec::with_capacity(limbs_per_cycle as usize);
@@ -1583,16 +1585,23 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // new_of * shift + /sum_{i+j = k} a[i] * b[j] + \sum addition_elements[k] - q[k] * p[k] - r[k] + old_shift
         // NB that all p[i] are constants, so in principle we have less multiplications
         let mut left_border : usize = 0;
-        let mut input_carry = Term::zero();
+        let mut input_carry = Term::<E>::zero();
         let p_limbs = Self::split_const_into_limbs(params.represented_field_modulus.clone(), params);
-        let carry_width = params.binary_limb_width + MAX_INTERMIDIATE_OVERFLOW_WIDTH;
+        let max_carry_width = params.binary_limb_width + MAX_INTERMIDIATE_OVERFLOW_WIDTH;
+        let mut carry_width = 0;
        
         while left_border < rns_binary_modulus_width_in_limbs {
             let mut lc = AmplifiedLinearCombination::zero();
             lc.add_assign_term(&input_carry);
             let right_border = std::cmp::min(left_border + limbs_per_cycle, rns_binary_modulus_width_in_limbs);
 
-            {
+            // if current carry width is zero then we should have carry to be constant zero:
+            // a -> b is equal to !a || b
+            assert!(
+                !(carry_width == 0) || (input_carry.is_constant() && input_carry.get_value().unwrap().is_zero())
+            );
+
+            carry_width = {
                 // we optimistically assume that all intermidiate overflows do not exceed special
                 // apriori chosen constant - MAX_INTERMIDIATE_OVERFLOW_WIDTH
                 // however, we are a "validium" solution, so we are going to check that 
@@ -1641,10 +1650,21 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 }
 
                 let dbg_max_value = BigUint::max(dbg_lhs_max_value, dbg_rhs_max_value);
+                let dbg_max_bitlen = dbg_max_value.bits() as usize;
                 let num_limbs = right_border - left_border;
-                let allowed_bitlen = num_limbs * params.binary_limb_width + carry_width;
-                assert!(dbg_max_value.bits() as usize <= allowed_bitlen);
-            }
+                let allowed_bitlen = num_limbs * params.binary_limb_width + max_carry_width;
+                assert!(dbg_max_bitlen <= allowed_bitlen);
+
+                let mut carry_width = if dbg_max_bitlen <= num_limbs * params.binary_limb_width {
+                    0
+                } else {
+                    dbg_max_bitlen - num_limbs * params.binary_limb_width
+                };
+                let rem = carry_width % granularity;
+                carry_width = if rem > 0 { carry_width + granularity - 8 } else { carry_width };
+                assert!(carry_width <= max_carry_width); 
+                carry_width
+            };
             
             // add terms like a[i] * b[j], where i+j /in [left_border, right_border)
             let iter = get_limbs_product_in_diapason(&a.binary_limbs, &b.binary_limbs, left_border, right_border);
@@ -1689,38 +1709,44 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             };
             lc.scale(&scale_coef);
 
-            input_carry = Term::from_num(lc.into_num(cs)?);
-            // carry could be both positive and negative but in any case the bitwidth of it absolute value is 
-            // [0, chunk_bitlen + MAX_INTERMIDIATE_OVERFLOW_WIDTH]
-            // input_carry = +/- abs_carry * shift;
-            let (abs_flag_wit, abs_wit) = match input_carry.get_value() {
-                Some(x) => {
-                    let x_as_biguint = fe_to_biguint(&x);
-                    if x_as_biguint < BigUint::one() << carry_width {
-                        (Some(true), Some(x.clone()))
-                    } else {
-                        let mut tmp = x.clone();
-                        tmp.negate();
-                        (Some(false), Some(tmp))
-                    }
-                },
-                None => (None, None)
-            };
+            input_carry = if carry_width == 0 {
+                lc.enforce_zero(cs)?;
+                Term::zero()
+            } else {
+                input_carry = Term::from_num(lc.into_num(cs)?);
+                // carry could be both positive and negative but in any case the bitwidth of it absolute value is 
+                // [0, chunk_bitlen + MAX_INTERMIDIATE_OVERFLOW_WIDTH]
+                // input_carry = +/- abs_carry * shift;
+                let (abs_flag_wit, abs_wit) = match input_carry.get_value() {
+                    Some(x) => {
+                        let x_as_biguint = fe_to_biguint(&x);
+                        if x_as_biguint < BigUint::one() << carry_width {
+                            (Some(true), Some(x.clone()))
+                        } else {
+                            let mut tmp = x.clone();
+                            tmp.negate();
+                            (Some(false), Some(tmp))
+                        }
+                    },
+                    None => (None, None)
+                };
             
-            let abs_flag = Term::from_boolean(&Boolean::Is(AllocatedBit::alloc(cs, abs_flag_wit)?)); 
-            let abs_carry = AllocatedNum::alloc(cs, || abs_wit.grab())?;
-            constraint_bit_length_ext_with_strategy(
-                cs, &abs_carry, carry_width, params.range_check_strategy, true, None
-            )?;
-            let abs_carry = Term::from_num(Num::Variable(abs_carry)); 
+                let abs_flag = Term::from_boolean(&Boolean::Is(AllocatedBit::alloc(cs, abs_flag_wit)?)); 
+                let abs_carry = AllocatedNum::alloc(cs, || abs_wit.grab())?;
+                constraint_bit_length_ext_with_strategy(
+                    cs, &abs_carry, carry_width, params.range_check_strategy, true, None
+                )?;
+                let abs_carry = Term::from_num(Num::Variable(abs_carry)); 
            
-            // we need to constraint: carry == (2 * abs_flag - 1) * abs_carry
-            // 2 * abs_flag * abs_carry - carry - abs_carry == 0
-            let mut lc = AmplifiedLinearCombination::zero();
-            lc.add_assign_product_of_terms_with_coeff(&abs_flag, &abs_carry, two);
-            lc.sub_assign_term(&input_carry);
-            lc.sub_assign_term(&abs_carry);
-            lc.enforce_zero(cs)?;
+                // we need to constraint: carry == (2 * abs_flag - 1) * abs_carry
+                // 2 * abs_flag * abs_carry - carry - abs_carry == 0
+                let mut lc = AmplifiedLinearCombination::zero();
+                lc.add_assign_product_of_terms_with_coeff(&abs_flag, &abs_carry, two);
+                lc.sub_assign_term(&input_carry);
+                lc.sub_assign_term(&abs_carry);
+                lc.enforce_zero(cs)?;
+                input_carry
+            };
 
             left_border = right_border;
         }

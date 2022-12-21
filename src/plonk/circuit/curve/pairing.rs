@@ -285,10 +285,15 @@ where G::Base : PrimeField
         let mut f = Fp12::one(params);
         let mut t = q.clone();
 
-        for bit in Self::get_miller_loop_scalar_decomposition().into_iter().rev().skip(1) {
-            f = f.square(cs)?;
+        let iter = Self::get_miller_loop_scalar_decomposition().into_iter().rev().skip(1).identify_first_last();
+        for (is_first, _is_last, bit) in iter {
             let line_eval = Self::double_and_eval(cs, &mut t, &p)?;
-            f = Self::mul_by_sparse_034(cs, &f, &line_eval)?;
+            if is_first {
+                f = line_eval;
+            } else {
+                f = f.square(cs)?;
+                f = Self::mul_by_sparse_034(cs, &f, &line_eval)?;
+            }
            
             let mut to_add = q.clone();
             if bit == -1 {
@@ -316,6 +321,12 @@ where G::Base : PrimeField
         let candidate = self.final_exp_hard_part(cs, &wrapped_f, is_safe_version)?;
         candidate.mask(cs, &is_trivial.not())
     }
+
+    // fn subgroup_check<'a, CS: ConstraintSystem<E>>(
+    //     &self, cs: &mut CS, point: &PreparedPoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>
+    // ) -> Result<Boolean, SynthesisError> {
+
+    // }
 }
 
 
@@ -466,7 +477,6 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         // let mut old_q = <Bn256 as Engine>::G2::from_xyz_unchecked(
         //     q.x.get_value().unwrap(), q.y.get_value().unwrap(), q.z.get_value().unwrap()
         // );
-
         let x_squared = q.x.square(cs)?;
         let num = x_squared.scale(cs, 3)?;
         let two_y = q.y.double(cs)?;
@@ -571,11 +581,9 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         // Q = (xq : yq : zq), R = (xr : yr : 1) and P = (xp, yp), T = Q + R = (xt: yt: zt)
         // 1) t2 = xq - xr
         // Z_R can be saved for later use
-
         // line function in affine coordinates:
         // yp + (−\lambda * xp + v * (\lambda *  x_Q − y_Q)) * w
         // t = (\lambda *  x_Q − y_Q)
-
         let other_x_minus_this_x = to_add.x.sub(cs, &acc.x)?;
         let mut chain = Fp2Chain::new();
         chain.add_pos_term(&to_add.y).add_neg_term(&acc.y);
@@ -796,18 +804,14 @@ mod test {
         let mut exp = wrapped.decompress(&mut cs).unwrap();
         let counter_end = cs.get_current_step_number();
         println!("num of gates: {}", counter_end - counter_start);
-
-        println!("exp val: {}", wrapped.value.unwrap());
-        println!("actual val: {}", actual_exp.get_value().unwrap());
         
         Fp12::enforce_equal(&mut cs, &mut exp, &mut actual_exp).unwrap();
-
         assert!(cs.is_satisfied()); 
     }
 
     #[test]
     fn test_pairing_for_bn256_curve() {
-        const LIMB_SIZE: usize = 80;
+        const LIMB_SIZE: usize = 72;
         const SAFE_VERSION: bool = true;
         const METHOD : Bn256HardPartMethod = Bn256HardPartMethod::Naive;
 
@@ -854,6 +858,21 @@ mod test {
         Fp12::enforce_equal(&mut cs, &mut res, &mut actual_pairing_res).unwrap();
 
         assert!(cs.is_satisfied()); 
+    }
+
+    
+    #[test]
+    fn gen_finder() {
+        use crate::bellman::pairing::bn256::Fq12 as Bn256Fq12;
+        let mut rng = rand::thread_rng();
+        let a: Bn256Fq12 = rng.gen();
+        // we should only check that the order of a is not a divisor of final_exp_easy_part_modulus,
+        // which is equivalent to: (q^6-1)*(q^2+1)
+        let exp = BigUint::from_str(
+            "52685025182267958079727585229132324306587620080016536258328096448974078415034809893093109536574448512776755670234475288214733663487043022864326645300402701469262716873099059141852458566760713014133116571644574538641677807293258100005248485268016387256287119201055966889704858382635888348567395857080675800654159949055992763153813956948567844580921665501196233073393006816933214118901355354018549317889525499439922414238831421951325734535514154094826673199675191044949435335004620753696336744839185406640336414578519267604199067432113818901522717319405449802586561617292990939272498507751757375074167077932359300"
+        ).expect("should parse");
+        println!("a: {}", a);
+        println!("a_exp: {}", a.pow(exp.to_u64_digits()));
     }
 }
 

@@ -494,6 +494,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         let params= self.c0.c0.representation_params;
         let frob_c1 = Fp2::constant(T::FROBENIUS_COEFFS_C1[power % 6], params);
         let frob_c2 =  Fp2::constant(T::FROBENIUS_COEFFS_C2[power % 6], params);
+
         let new_c0 = self.c0.frobenius_power_map(cs, power)?;
         let mut new_c1 = self.c1.frobenius_power_map(cs, power)?;
         let mut new_c2 = self.c2.frobenius_power_map(cs, power)?;
@@ -516,7 +517,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
             let mut qr = x;
             qr.frobenius_map(3);
             assert_eq!(tmp, qr);
-            println!("INSIDE");
+
             qr
         });
 

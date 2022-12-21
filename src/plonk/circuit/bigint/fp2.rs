@@ -372,14 +372,16 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
         let mut subchain = chain.get_coordinate_subchain(0);
         subchain.add_pos_term(&v0);
         subchain.add_neg_term(&v1);
-        FieldElement::constraint_fma(cs, &FieldElement::zero(params), &FieldElement::zero(params), subchain)?;
+        FieldElement::collapse_chain(cs, subchain)?;
+        //FieldElement::constraint_fma(cs, &FieldElement::zero(params), &FieldElement::zero(params), subchain)?;
 
         let a = first.c0.add(cs, &first.c1)?;
         let b = second.c0.add(cs, &second.c1)?;
         let mut subchain = chain.get_coordinate_subchain(1);
         subchain.add_neg_term(&v0);
         subchain.add_neg_term(&v1);
-        FieldElement::constraint_fma(cs, &a, &b, subchain)
+        FieldElement::constraint_fma(cs, &a, &b, subchain)?;
+        Ok(())
     }
 
     pub fn mul_with_chain<CS: ConstraintSystem<E>>(

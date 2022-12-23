@@ -13,6 +13,7 @@ crate-type = ["lib", "staticlib"]
 default = ["multicore", "plonk"]
 multicore = ["bellman/multicore"]
 plonk = ["bellman/plonk"]
+allocator = ["bellman/allocator"]
  
 [dependencies]
 rand = "0.4"

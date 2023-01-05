@@ -321,12 +321,6 @@ where G::Base : PrimeField
         let candidate = self.final_exp_hard_part(cs, &wrapped_f, is_safe_version)?;
         candidate.mask(cs, &is_trivial.not())
     }
-
-    // fn subgroup_check<'a, CS: ConstraintSystem<E>>(
-    //     &self, cs: &mut CS, point: &PreparedPoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>
-    // ) -> Result<Boolean, SynthesisError> {
-
-    // }
 }
 
 

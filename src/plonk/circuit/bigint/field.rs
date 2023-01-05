@@ -15,9 +15,12 @@ use super::super::simple_term::Term;
 use crate::plonk::circuit::hashes_with_tables::utils::IdentifyFirstLast;
 use crate::plonk::circuit::SomeArithmetizable;
 
+use std::sync::Once;
+static INIT_IS_ZERO_CHECK: Once = Once::new();
+static INIT_ENFORCE_EQUAL_CHECK: Once = Once::new();
+static mut NUM_BINARY_LIMBS_FOR_ENFORCE_EQUAL_CHECK: usize = 0;
 
 // TODO and NB: the code here is very tight and dense. Every line should be carefully reviewed and double checked
-
 
 // this variable is used in fma implementation: it is set to the maximal numver of bits on which 
 // new_of * shift + /sum_{i+j = k} a[i] * b[j] + \sum addition_elements[k] may overflow the limb width border
@@ -129,16 +132,6 @@ impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
         let shift = BigUint::one() << limb_size;
         let shift_left_by_limb_constant = biguint_to_fe::<E::Fr>(shift.clone());
         
-        // (verifying that k * Fr::modulus != 0 (mod 2^{limb_width}) for all positive values of k, such that:
-        // bitlength(k * Fr::modulus) <= represented_field_modulus_bitlength bits
-        // for the testimony of the necessity of this check look the comments in "iz_zero" function
-        let mut multiple_of_fr_char = native_field_modulus.clone();
-        while multiple_of_fr_char.bits() as usize <= represented_field_modulus_bitlength {
-            if (multiple_of_fr_char.clone() % shift.clone()).is_zero() {
-                panic!("k * Fr::modulus == 0 (mod 2^limb_width)");
-            }
-            multiple_of_fr_char += native_field_modulus.clone(); 
-        }
         let f_char_mod_fr_char = biguint_to_fe::<E::Fr>(represented_field_modulus.clone());
         let f_char_mod_binary_shift = biguint_to_fe::<E::Fr>(represented_field_modulus.clone() % shift);
        
@@ -150,12 +143,6 @@ impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
         let max_msl_val_on_alloc_coarsely = get_max_possible_value_for_bit_width(msl_width);
         let max_msl_val_on_alloc_strict = represented_field_modulus.clone() >> ((num_binary_limbs - 1) * limb_size);
         
-        // check by 4 * p < native_field_modulus * 2^{limb_width} :
-        // this is required by enforce_zero family of functions
-        let lhs = represented_field_modulus.clone() * 4u64;
-        let rhs = native_field_modulus.clone() << limb_size;
-        assert!(lhs < rhs, "4 * p >= native_field_modulus * 2^limb_width");
-
         RnsParameters::<E, F> {
             allow_individual_limb_overflow,
             allow_coarse_allocation_for_temp_values,
@@ -764,14 +751,30 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         assert_eq!(lhs, rhs);
     }
 
+    pub fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
+    {
+        self.normalize(cs)?;
+        let least_significant_binary_limb = self.binary_limbs[0].term.collapse_into_num(cs)?;
+        let base_field_limb = self.base_field_limb.collapse_into_num(cs)?;
+        self.binary_limbs[0].term = Term::from_num(least_significant_binary_limb.clone());
+        self.base_field_limb = Term::from_num(base_field_limb.clone());
+
+        // check if x == 0
+        let binary_limb_check = least_significant_binary_limb.is_zero(cs)?;
+        let base_field_limb_check = base_field_limb.is_zero(cs)?;
+        let is_zero = Boolean::and(cs, &binary_limb_check, &base_field_limb_check)?;
+        Ok(is_zero)
+    }
+
     // this method requires x to be either loosely refuced or normalized, if it is in fact not - we do
     // normalization ourselves, and that's why referece is mutable
-    pub fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
+    #[deprecated(note="should be double-checked before usage, call ordinary is_zero for now")]
+    pub fn is_zero_optimized<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
     {
         let params = self.representation_params;
         let is_normalized = self.reduction_status == ReductionStatus::Normalized;
         self.reduce(cs)?;
-       
+
         // after reduction the value of x is in interval [0; 2*F) and all limbs occupy exactly limb_width bits
         // (i.e. capacity bits are not involved)
         // so, to test if x is zero we need to consider two cases: x == 0 and x == F
@@ -783,7 +786,20 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // params.represented_field_modulus_bitlength bits
         // if the value was in normalized form from the beginning than checking that
         // field_limb == 0 and least_significant_binary_limb == 0 is enough 
-        
+
+        INIT_IS_ZERO_CHECK.call_once(|| {
+            // (verifying that k * Fr::modulus != 0 (mod 2^{limb_width}) for all positive values of k, such that:
+            // bitlength(k * Fr::modulus) <= represented_field_modulus_bitlength bits
+            let shift = BigUint::one() << params.binary_limb_width;
+            let mut multiple_of_fr_char = params.native_field_modulus.clone();
+            while multiple_of_fr_char.bits() as usize <= params.represented_field_modulus_bitlength {
+                if (multiple_of_fr_char.clone() % shift.clone()).is_zero() {
+                    panic!("k * Fr::modulus == 0 (mod 2^limb_width)");
+                }
+                multiple_of_fr_char += params.native_field_modulus.clone(); 
+            }
+        });
+
         let least_significant_binary_limb = self.binary_limbs[0].term.collapse_into_num(cs)?;
         let base_field_limb = self.base_field_limb.collapse_into_num(cs)?;
         self.binary_limbs[0].term = Term::from_num(least_significant_binary_limb.clone());
@@ -794,7 +810,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         let base_field_limb_check = base_field_limb.is_zero(cs)?;
         let x_is_raw_zero = Boolean::and(cs, &binary_limb_check, &base_field_limb_check)?;
 
-        // check if x == F::char
+        //check if x == F::char
         let x_is_raw_modulus = if !is_normalized {
             let f_char_mod_fr_char = Num::Constant(params.f_char_mod_fr_char.clone());
             let f_char_mod_binary_shift = Num::Constant(params.f_char_mod_binary_shift.clone());
@@ -1383,12 +1399,32 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         this.reduce(cs)?;
         other.reduce(cs)?;
 
-        // now we know that both this and other are < 2 * F::char, hence to enforce that they are equal
-        // However, in all user scenarious we may assume that reduction is complete, i.e:
-        // both values are in range [0; F::char)
-        // it is enough to chech equality only mod native field and mod limb_width 
-        // which is justified by 2 * p < native_field_modulus * 2^{limb_width}
-        this.binary_limbs[0].term.enforce_equal(cs, &other.binary_limbs[0].term)?;
+        // at this point both values a and b are reduced and hence both are in the range [0, 2 * repr_field_modulus)
+        // the easiest way to attest equality is to compare corresponding binary limbs, but we can go with less:
+        // assume that a == b (mod Fr) and a == b (mod 2^{N * limb_width}) => w.l.o.g. a >= b:
+        // a - b == 0 (mod Fr * 2^{N * limb_width})  and 0 <= a - b < 2 * repr_field_modulus
+        // and if we enforce that 2 * repr_field_modulus <= Fr * 2^{N * limb_width} than from a == b
+        // N here is the number of binary limbs to compare (usually N == 1 for BN and N == 2 for BLS)
+        let num_binary_limbs_to_compare = {
+            unsafe {
+                INIT_ENFORCE_EQUAL_CHECK.call_once(|| {
+                    let params = this.representation_params;
+                    let mut n = 1;
+                    let lhs = params.represented_field_modulus.clone() * 2u64;
+                    let mut rhs = params.native_field_modulus.clone() << params.binary_limb_width;
+                    while lhs > rhs {
+                        n += 1;
+                        rhs <<= params.binary_limb_width;
+                    }
+                    NUM_BINARY_LIMBS_FOR_ENFORCE_EQUAL_CHECK = n;
+                });
+                NUM_BINARY_LIMBS_FOR_ENFORCE_EQUAL_CHECK
+            }
+        };
+        
+        for i in 0..num_binary_limbs_to_compare {
+            this.binary_limbs[i].term.enforce_equal(cs, &other.binary_limbs[i].term)?;
+        }
         this.base_field_limb.enforce_equal(cs, &other.base_field_limb)?;
 
         // if field_elements are equal than they are normalized or not simultaneously!
@@ -1767,7 +1803,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         }
         lc.sub_assign_term_with_coeff(&quotient.base_field_limb, params.f_char_mod_fr_char);
         lc.enforce_zero(cs)?;
-
+        
         Ok(())
     } 
 
@@ -1931,7 +1967,7 @@ mod test {
     use super::*;
     use crate::bellman::pairing::bn256::{Fq, Bn256, Fr};
     use plonk::circuit::Width4WithCustomGates;
-    use bellman::plonk::better_better_cs::gates::{selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext, self};
+    use bellman::{plonk::better_better_cs::gates::{selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext, self}, bls12_381::Bls12};
     use rand::{XorShiftRng, SeedableRng, Rng};
     use bellman::plonk::better_better_cs::cs::*;
 
@@ -2080,61 +2116,62 @@ mod test {
         println!("number of constraints for rns approach: {}", rns_mul_end - rns_mul_start);
     } 
 
-    #[test]
-    fn testing_remaining_stuff() {
-        struct TestCircuit<E:Engine>{
-            _marker: std::marker::PhantomData<E>
-        }
+    struct TestCircuit<E:Engine>{
+        _marker: std::marker::PhantomData<E>
+    }
     
-        impl<E: Engine> Circuit<E> for TestCircuit<E> {
-            type MainGate = SelectorOptimizedWidth4MainGateWithDNext;
-            fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
-                Ok(
-                    vec![ SelectorOptimizedWidth4MainGateWithDNext::default().into_internal() ]
-                )
-            }
-    
-            fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
-                let params = RnsParameters::<E, E::Fq>::new_optimal(cs, 64usize);
-                let mut rng = rand::thread_rng();
-
-                let a: E::Fq = rng.gen();
-                let b: E::Fq = rng.gen();
-                let elem_to_add_0 = rng.gen();
-                let elem_to_add_1 = rng.gen();
-                let elem_to_sub_0 = rng.gen();
-                let elem_to_sub_1 = rng.gen();
-                let mut actual_res = a;
-                actual_res.add_assign(&elem_to_add_0); 
-                actual_res.add_assign(&elem_to_add_1); 
-                actual_res.sub_assign(&elem_to_sub_0);
-                actual_res.sub_assign(&elem_to_sub_1);
-                let b_inv = b.inverse().unwrap();
-                actual_res.mul_assign(&b_inv);
-
-                let a = FieldElement::alloc(cs, Some(a), &params)?;
-                let b = FieldElement::alloc(cs, Some(b), &params)?;
-                let elem_to_add_0 = FieldElement::alloc(cs, Some(elem_to_add_0), &params)?;
-                let elem_to_add_1 = FieldElement::alloc(cs, Some(elem_to_add_1), &params)?;
-                let elem_to_sub_0 = FieldElement::alloc(cs, Some(elem_to_sub_0), &params)?;
-                let elem_to_sub_1 = FieldElement::alloc(cs, Some(elem_to_sub_1), &params)?;
-                let mut actual_res = FieldElement::alloc(cs, Some(actual_res), &params)?;
-
-                let mut chain = FieldElementsChain::new();
-                chain.add_pos_term(&a).add_pos_term(&elem_to_add_0).add_pos_term(&elem_to_add_1);
-                chain.add_neg_term(&elem_to_sub_0).add_neg_term(&elem_to_sub_1);
-                let mut result = FieldElement::div_with_chain(cs, chain, &b)?;
-
-                FieldElement::enforce_equal(cs, &mut result, &mut actual_res)
-            }
+    impl<E: Engine> Circuit<E> for TestCircuit<E> {
+        type MainGate = SelectorOptimizedWidth4MainGateWithDNext;
+        fn declare_used_gates() -> Result<Vec<Box<dyn GateInternal<E>>>, SynthesisError> {
+            Ok(
+                vec![ SelectorOptimizedWidth4MainGateWithDNext::default().into_internal() ]
+            )
         }
 
-        use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
-        use crate::bellman::worker::Worker;
-        use crate::bellman::plonk::commitments::transcript::keccak_transcript::RollingKeccakTranscript;
-        use crate::bellman::plonk::better_better_cs::setup::VerificationKey;
-        use crate::bellman::plonk::better_better_cs::verifier::verify;
+        fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+            let params = RnsParameters::<E, E::Fq>::new_optimal(cs, 64usize);
+            let mut rng = rand::thread_rng();
+
+            let a: E::Fq = rng.gen();
+            let b: E::Fq = rng.gen();
+            let elem_to_add_0 = rng.gen();
+            let elem_to_add_1 = rng.gen();
+            let elem_to_sub_0 = rng.gen();
+            let elem_to_sub_1 = rng.gen();
+            let mut actual_res = a;
+            actual_res.add_assign(&elem_to_add_0); 
+            actual_res.add_assign(&elem_to_add_1); 
+            actual_res.sub_assign(&elem_to_sub_0);
+            actual_res.sub_assign(&elem_to_sub_1);
+            let b_inv = b.inverse().unwrap();
+            actual_res.mul_assign(&b_inv);
+
+            let a = FieldElement::alloc(cs, Some(a), &params)?;
+            println!("HERE");
+            let b = FieldElement::alloc(cs, Some(b), &params)?;
+            let elem_to_add_0 = FieldElement::alloc(cs, Some(elem_to_add_0), &params)?;
+            let elem_to_add_1 = FieldElement::alloc(cs, Some(elem_to_add_1), &params)?;
+            let elem_to_sub_0 = FieldElement::alloc(cs, Some(elem_to_sub_0), &params)?;
+            let elem_to_sub_1 = FieldElement::alloc(cs, Some(elem_to_sub_1), &params)?;
+            let mut actual_res = FieldElement::alloc(cs, Some(actual_res), &params)?;
+
+            let mut chain = FieldElementsChain::new();
+            chain.add_pos_term(&a).add_pos_term(&elem_to_add_0).add_pos_term(&elem_to_add_1);
+            chain.add_neg_term(&elem_to_sub_0).add_neg_term(&elem_to_sub_1);
+            let mut result = FieldElement::div_with_chain(cs, chain, &b)?;
+
+            FieldElement::enforce_equal(cs, &mut result, &mut actual_res)
+        }
+    }
+
+    use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
+    use crate::bellman::worker::Worker;
+    use crate::bellman::plonk::commitments::transcript::keccak_transcript::RollingKeccakTranscript;
+    use crate::bellman::plonk::better_better_cs::setup::VerificationKey;
+    use crate::bellman::plonk::better_better_cs::verifier::verify;
       
+    #[test]
+    fn test_stuff_for_bn256() {  
         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
         let circuit = TestCircuit::<Bn256> {_marker: std::marker::PhantomData};
@@ -2185,6 +2222,41 @@ mod test {
         let a_fq_inverse = a_fq.inverse(&mut cs).unwrap();
         let g = FieldElement::equals(&mut cs, &mut a_fq_inverse.clone(), &mut a_res).unwrap();
         println!("inverses over Fq is {} ", Boolean::get_value(&g).unwrap());
+    }
+
+    #[test]
+    fn test_bls12_381() {
+        use crate::bellman::pairing::bls12_381::{Fq, Bls12, Fr};
+        let mut cs = TrivialAssembly::<Bls12, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+        
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let params = RnsParameters::<Bls12, Fq>::new_optimal(&mut cs, 72usize);
+        let mut rng = rand::thread_rng();
+
+        let a: Fq = rng.gen();
+        let b: Fq = rng.gen();
+        let mut actual_result = a;
+        actual_result.mul_assign(&b);
+        let a = FieldElement::alloc(&mut cs, Some(a), &params).unwrap();
+        let b = FieldElement::alloc(&mut cs, Some(b), &params).unwrap();
+        let mut actual_result = FieldElement::alloc(&mut cs, Some(actual_result), &params).unwrap();
+        let mut res = FieldElement::mul(&a, &mut cs, &b).unwrap();
+        println!("before eq");
+        FieldElement::enforce_equal(&mut cs, &mut res, &mut actual_result).unwrap();
+        println!("after eq");
+       
+        assert!(cs.is_satisfied());
+    }   
+
+    #[test]
+    fn test_stuff_for_bls12() {  
+        use crate::bellman::pairing::bls12_381::{Fq, Bls12, Fr};
+        let mut cs = TrivialAssembly::<Bls12, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let circuit = TestCircuit::<Bls12> {_marker: std::marker::PhantomData};
+        circuit.synthesize(&mut cs).expect("must work");
+        cs.finalize();
+        assert!(cs.is_satisfied()); 
     }
 }
 

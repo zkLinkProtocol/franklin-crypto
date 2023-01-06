@@ -7,6 +7,7 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use std::ops::ControlFlow;
 use std::os::raw;
+use std::sync::Arc;
 
 use num_bigint::BigUint;
 use super::super::allocated_num::{AllocatedNum, Num};
@@ -14,6 +15,7 @@ use super::super::linear_combination::LinearCombination;
 use super::super::simple_term::Term;
 use crate::plonk::circuit::hashes_with_tables::utils::IdentifyFirstLast;
 use crate::plonk::circuit::SomeArithmetizable;
+use crate::plonk::circuit::bigint::traits::*;
 
 use std::sync::Once;
 static INIT_IS_ZERO_CHECK: Once = Once::new();
@@ -77,21 +79,21 @@ fn construct_equality_certificate<E: Engine, CS: ConstraintSystem<E>>(
 //      it seems that we may have better control by introducing msl_capacity_width 
 //      which can be different from reg_capacity_width   
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RnsParameters<E: Engine, F: PrimeField>{
+pub struct RnsParameters<E: Engine> {
     allow_individual_limb_overflow: bool,
     allow_coarse_allocation_for_temp_values: bool,
 
     range_check_strategy: RangeConstraintStrategy,
     range_check_granularity: usize,
 
-    pub(crate) num_binary_limbs: usize,
-    pub(crate) binary_limb_width: usize,
+    num_binary_limbs: usize,
+    binary_limb_width: usize,
     msl_width: usize, // hereinafter msl stands for Most Significant Limb
 
     native_field_modulus: BigUint,
-    pub(crate) native_field_modulus_bitlength: usize,
+    native_field_modulus_bitlength: usize,
     represented_field_modulus: BigUint,
-    pub(crate) represented_field_modulus_bitlength: usize,
+    represented_field_modulus_bitlength: usize,
     shift_left_by_limb_constant: E::Fr, // is equal to (1 << binary_limb_width)
     
     // these fields are required only for "if_zero" method
@@ -107,11 +109,10 @@ pub struct RnsParameters<E: Engine, F: PrimeField>{
     max_msl_val_on_alloc_strict: BigUint,
 
     _marker_engine: std::marker::PhantomData<E>,
-    _marker_fr: std::marker::PhantomData<F>
 }
 
-impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
-    pub fn new_optimal<CS: ConstraintSystem<E>>(cs: &mut CS, limb_size: usize) -> Self 
+impl<E: Engine> RnsParameters<E>{
+    pub fn new_optimal<CS: ConstraintSystem<E>, F: PrimeField>(cs: &mut CS, limb_size: usize) -> Arc<Self> 
     {
         let allow_individual_limb_overflow = true;
         let allow_coarse_allocation_for_temp_values = true;
@@ -143,7 +144,7 @@ impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
         let max_msl_val_on_alloc_coarsely = get_max_possible_value_for_bit_width(msl_width);
         let max_msl_val_on_alloc_strict = represented_field_modulus.clone() >> ((num_binary_limbs - 1) * limb_size);
         
-        RnsParameters::<E, F> {
+        Arc::new(RnsParameters::<E> {
             allow_individual_limb_overflow,
             allow_coarse_allocation_for_temp_values,
             num_binary_limbs,
@@ -162,9 +163,8 @@ impl<'a, E: Engine, F: PrimeField> RnsParameters<E, F>{
             max_ordinary_limb_val_on_alloc,
             max_msl_val_on_alloc_coarsely,
             max_msl_val_on_alloc_strict,
-            _marker_engine: std::marker::PhantomData::<E>,
-            _marker_fr: std::marker::PhantomData::<F>
-        }
+            _marker_engine: std::marker::PhantomData::<E>
+        })
     }
 }
 
@@ -280,15 +280,15 @@ impl Copy for ReductionStatus {}
 
 
 #[derive(Clone, Debug)]
-pub struct FieldElement<'a, E: Engine, F: PrimeField>{
-    pub binary_limbs: Vec<Limb<E>>,
+pub struct FieldElement<E: Engine, F: PrimeField>{
+    binary_limbs: Vec<Limb<E>>,
     base_field_limb: Term<E>,
-    pub(crate) representation_params: &'a RnsParameters<E, F>,
+    representation_params: Arc<RnsParameters<E>>,
     value: Option<F>,
     reduction_status: ReductionStatus,
 }
 
-impl<'a, E: Engine, F: PrimeField> PartialEq for FieldElement<'a, E, F>{
+impl<E: Engine, F: PrimeField> PartialEq for FieldElement<E, F>{
     fn eq(&self, other: &Self) -> bool {
         assert!(Self::check_params_equivalence(self, other));
         let are_equal = self.binary_limbs.iter().zip(other.binary_limbs.iter()).all(|(a, b)| {
@@ -297,10 +297,10 @@ impl<'a, E: Engine, F: PrimeField> PartialEq for FieldElement<'a, E, F>{
         are_equal && self.base_field_limb == other.base_field_limb
     }
 }
-impl<'a, E: Engine, F: PrimeField> Eq for FieldElement<'a, E, F> {}
+impl<E: Engine, F: PrimeField> Eq for FieldElement<E, F> {}
 
 
-impl<'a, E: Engine, F: PrimeField> std::fmt::Display for FieldElement<'a, E, F> {
+impl<E: Engine, F: PrimeField> std::fmt::Display for FieldElement<E, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "FieldElement {{ ")?;
         write!(f, "Modulus = {}, ", F::char())?;
@@ -322,89 +322,7 @@ impl<'a, E: Engine, F: PrimeField> std::fmt::Display for FieldElement<'a, E, F> 
 }
 
 
-pub struct FieldElementsChain<'a, E: Engine, F: PrimeField> {
-    pub elems_to_add: Vec<FieldElement<'a, E, F>>,
-    pub elems_to_sub: Vec<FieldElement<'a, E, F>> 
-}
-
-impl<'a, E: Engine, F: PrimeField> FieldElementsChain<'a, E, F> {
-    pub fn new() -> Self {
-        FieldElementsChain::<E, F> {
-            elems_to_add: vec![],
-            elems_to_sub: vec![] 
-        }
-    }
-    
-    pub fn add_pos_term(&mut self, elem: &FieldElement<'a, E, F>) -> &mut Self {
-        self.elems_to_add.push(elem.clone());
-        self
-    } 
-
-    pub fn add_neg_term(&mut self, elem: &FieldElement<'a, E, F>) -> &mut Self {
-        self.elems_to_sub.push(elem.clone());
-        self
-    }
-
-    pub fn is_constant(&self) -> bool {
-        self.elems_to_add.iter().chain(self.elems_to_sub.iter()).all(|x| x.is_constant())
-    }
-
-    pub fn get_field_value(&self) -> Option<F> {
-        let pos_total_sum = self.elems_to_add.iter().fold(Some(F::zero()), |acc, x| acc.add(&x.get_field_value()));
-        let neg_total_sum = self.elems_to_sub.iter().fold(Some(F::zero()), |acc, x| acc.add(&x.get_field_value()));
-        pos_total_sum.sub(&neg_total_sum)
-    }
-
-    pub fn get_maximal_positive_stored_value(&self) -> BigUint {
-        self.elems_to_add.iter().fold(BigUint::zero(), |acc, x| acc + x.get_maximal_possible_stored_value())
-    } 
-
-    pub fn get_maximal_negative_stored_value(&self) -> BigUint {
-        self.elems_to_sub.iter().fold(BigUint::zero(), |acc, x| acc + x.get_maximal_possible_stored_value())
-    }
-
-    pub fn negate(self) -> Self {
-        let FieldElementsChain { elems_to_add, elems_to_sub } = self;
-        FieldElementsChain {
-            elems_to_add: elems_to_sub,
-            elems_to_sub: elems_to_add
-        }
-    } 
-
-    fn add_raw_value_to_accumulator(&self, init_acc_val: Option<BigUint>) -> Option<BigUint> {
-        if init_acc_val.is_none() {
-            return None;
-        }
-
-        let final_acc_value = self.elems_to_add.iter().map(|x| (x, true)).chain(
-            self.elems_to_sub.iter().map(|x| (x, false))
-        ) .try_fold(init_acc_val.unwrap(), |prev, (x, is_pos_term)| {
-            if let Some(val) = x.get_raw_value() {
-                let next = match is_pos_term { 
-                    true => prev + val,
-                    false => {
-                        assert!(prev >= val);
-                        prev - val
-                    },
-                };
-                ControlFlow::Continue(next)
-            } else {
-                ControlFlow::Break(prev)
-            }
-        });
-        match final_acc_value {
-            ControlFlow::Break(_) => None,
-            ControlFlow::Continue(x) => Some(x)
-        }
-    } 
-
-    pub fn len(&self) -> usize {
-        self.elems_to_add.len() + self.elems_to_sub.len()
-    }
-}
-
-
-pub fn split_into_limbs<E: Engine, F: PrimeField>(value: F, params: &RnsParameters<E, F>) -> (Vec<E::Fr>, E::Fr) 
+pub fn split_into_limbs<E: Engine, F: PrimeField>(value: F, params: &RnsParameters<E>) -> (Vec<E::Fr>, E::Fr) 
 {
     let value_as_bigint = fe_to_biguint(&value);
     let binary_limb_values = split_into_fixed_number_of_limbs(
@@ -421,7 +339,7 @@ pub fn split_into_limbs<E: Engine, F: PrimeField>(value: F, params: &RnsParamete
     return (binary_limbs, base_limb);
 }
 
-pub fn value_to_limbs<E, F>(value: Option<F>, params: &RnsParameters<E, F>) -> (Vec<Option<E::Fr>>, Option<E::Fr>) 
+pub fn value_to_limbs<E, F>(value: Option<F>, params: &RnsParameters<E>) -> (Vec<Option<E::Fr>>, Option<E::Fr>) 
 where E: Engine, F: PrimeField
 {
     let num_limbs = params.num_binary_limbs;
@@ -461,7 +379,7 @@ pub fn slice_into_limbs_non_exact(value: BigUint, total_width: usize, limb_width
 } 
 
 
-impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
+impl<E: Engine, F: PrimeField> FieldElement<E, F> {
     // check that self and other are actuall the same circuit variables!
     #[track_caller]
     pub fn circuit_eq(&self, other: &Self) -> bool {
@@ -477,7 +395,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     // and the maximal_stored_value < F::char
     #[track_caller]
     pub unsafe fn alloc_from_limbs_unchecked<CS: ConstraintSystem<E>>(
-        cs: &mut CS, raw_limbs: &[Num<E>], params: &'a RnsParameters<E, F>, is_normalized: bool
+        cs: &mut CS, raw_limbs: &[Num<E>], params: Arc<RnsParameters<E>>, is_normalized: bool
     ) -> Result<Self, SynthesisError> {
         let mut binary_limbs_allocated = Vec::with_capacity(params.num_binary_limbs);
         let msl_max_val = &params.max_msl_val_on_alloc_strict;
@@ -532,7 +450,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     #[track_caller]
     fn alloc_impl<CS: ConstraintSystem<E>>(
-        cs: &mut CS, value: Option<BigUint>, bit_width: usize, params: &'a RnsParameters<E, F>, 
+        cs: &mut CS, value: Option<BigUint>, bit_width: usize, params: Arc<RnsParameters<E>>, 
         coarsely: bool, granularity: Option<usize>
     ) -> Result<(Self, RangeCheckDecomposition<E>), SynthesisError> {
         assert!(bit_width > 0);
@@ -593,18 +511,9 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok((new, total_decomposition))
     }
 
-    // NB: we do not check for normalization on allocation
-    #[track_caller]
-    pub fn alloc<CS: ConstraintSystem<E>>(
-        cs: &mut CS, value: Option<F>, params: &'a RnsParameters<E, F>
-    ) -> Result<Self, SynthesisError> {
-        let (new, _decomposition) = Self::alloc_ext(cs, value, params)?;
-        Ok(new)
-    }
-
     #[track_caller]
     pub fn alloc_ext<CS: ConstraintSystem<E>>(
-        cs: &mut CS, value: Option<F>, params: &'a RnsParameters<E, F>
+        cs: &mut CS, value: Option<F>, params: Arc<RnsParameters<E>>
     ) -> Result<(Self, RangeCheckDecomposition<E>), SynthesisError>  
     {
         let bit_width = params.represented_field_modulus_bitlength;
@@ -614,7 +523,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     #[track_caller]
     pub(crate) fn alloc_for_known_bitwidth<CS: ConstraintSystem<E>>(
-        cs: &mut CS, value: Option<BigUint>, bit_width: usize, params: &'a RnsParameters<E, F>, coarsely: bool
+        cs: &mut CS, value: Option<BigUint>, bit_width: usize, params: Arc<RnsParameters<E>>, coarsely: bool
     ) -> Result<Self, SynthesisError> {
         let (val, _decomposition) = Self::alloc_impl(cs, value, bit_width, params, coarsely, None)?;
         Ok(val)
@@ -623,13 +532,13 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     #[track_caller]
     pub(crate) fn alloc_for_known_bitwidth_with_custom_range_check_granularity<CS: ConstraintSystem<E>>(
         cs: &mut CS, value: Option<BigUint>, bit_width: usize, 
-        params: &'a RnsParameters<E, F>, granularity: usize
+        params: Arc<RnsParameters<E>>, granularity: usize
     ) -> Result<(Self, RangeCheckDecomposition<E>), SynthesisError> {
         assert_eq!(params.binary_limb_width % granularity, 0);
         Self::alloc_impl(cs, value, bit_width, params, false, Some(granularity))
     }
 
-    pub(crate) fn split_const_into_limbs(value: BigUint, params: &'a RnsParameters<E, F>) -> Vec<Limb<E>> {
+    pub(crate) fn split_const_into_limbs(value: BigUint, params: &RnsParameters<E>) -> Vec<Limb<E>> {
         let binary_limb_values = split_into_fixed_number_of_limbs(
             value, params.binary_limb_width, params.num_binary_limbs
         );
@@ -642,57 +551,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             binary_limbs.push(limb);
         }
         binary_limbs
-    }
-
-    pub fn constant(v: F, params: &'a RnsParameters<E, F>) -> Self {
-        let value = fe_to_biguint(&v);
-        let base_limb_value = value.clone() % &params.native_field_modulus;
-        let base_limb = biguint_to_fe::<E::Fr>(base_limb_value.clone());
-        let base_limb = Term::<E>::from_constant(base_limb);
-        assert_eq!(fe_to_biguint(&v) % &params.native_field_modulus, fe_to_biguint(&base_limb.get_value().unwrap()));
-        let binary_limbs_allocated = Self::split_const_into_limbs(value, params);
-
-        Self {
-            binary_limbs: binary_limbs_allocated,
-            base_field_limb: base_limb,
-            representation_params: params,
-            value: Some(v),
-            reduction_status: ReductionStatus::Normalized
-        }
-    }
-
-    pub fn zero(
-        params: &'a RnsParameters<E, F>
-    ) -> Self {
-        let zero_limb = Limb::zero();
-        let binary_limbs = vec![zero_limb.clone(); params.num_binary_limbs];
-    
-        Self {
-            binary_limbs: binary_limbs,
-            base_field_limb: Term::<E>::from_constant(E::Fr::zero()),
-            representation_params: params,
-            value: Some(F::zero()),
-            reduction_status: ReductionStatus::Normalized
-        }
-    }
-
-    pub fn one(
-        params: &'a RnsParameters<E, F>
-    ) -> Self {
-        let one_limb = Limb::one();
-        let zero_limb = Limb::zero();
-
-        let mut binary_limbs = Vec::with_capacity(params.num_binary_limbs);
-        binary_limbs.push(one_limb);
-        binary_limbs.resize(params.num_binary_limbs, zero_limb.clone());
-    
-        Self {
-            binary_limbs: binary_limbs,
-            base_field_limb: Term::<E>::from_constant(E::Fr::one()),
-            representation_params: params,
-            value: Some(F::one()),
-            reduction_status: ReductionStatus::Normalized
-        }
     }
 
     // return current value unreduced
@@ -715,15 +573,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         self.value
     }
 
-    pub fn is_constant(&self) -> bool {
-        for l in self.binary_limbs.iter() {
-            if !l.is_constant() {
-                return false;
-            }
-        }
-        self.base_field_limb.is_constant()
-    }
-
     // return maximum value based on maximum limb values
     pub fn get_maximal_possible_stored_value(&self) -> BigUint {
         if self.is_constant() {
@@ -742,7 +591,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     }
 
     fn check_params_equivalence(a: &Self, b: &Self) -> bool {
-        std::ptr::eq(a.representation_params, b.representation_params)
+        Arc::ptr_eq(&a.representation_params, &b.representation_params)
     }
 
     fn debug_check_value_coherency(&self) -> () {
@@ -751,7 +600,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         assert_eq!(lhs, rhs);
     }
 
-    pub fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
+    pub fn is_zero_unopt<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
     {
         self.normalize(cs)?;
         let least_significant_binary_limb = self.binary_limbs[0].term.collapse_into_num(cs)?;
@@ -771,7 +620,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     #[deprecated(note="should be double-checked before usage, call ordinary is_zero for now")]
     pub fn is_zero_optimized<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
     {
-        let params = self.representation_params;
+        let params = self.representation_params.clone();
         let is_normalized = self.reduction_status == ReductionStatus::Normalized;
         self.reduce(cs)?;
 
@@ -826,70 +675,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok(is_zero)
     }
 
-    #[track_caller]
-    pub fn conditionally_select<CS: ConstraintSystem<E>>(
-        cs: &mut CS, flag: &Boolean, first: &Self, second: &Self
-    ) -> Result<Self, SynthesisError>  
-    {
-        assert!(Self::check_params_equivalence(first, second));
-        match flag {
-            Boolean::Constant(c) => {
-                if *c { return Ok(first.clone()) } else { return Ok(second.clone()) };
-            },
-            _ => {},
-        };
-        if first == second {
-            return Ok(first.clone());
-        }
-
-        // flag * a + (1-flag) * b = flag * (a-b) + b
-        let mut new_binary_limbs = vec![];
-        for (l, r) in first.binary_limbs.iter().zip(second.binary_limbs.iter()) 
-        {
-            // let mut minus_b = r.term.clone();
-            // minus_b.negate();
-            // let a_minus_b = l.term.add(cs, &minus_b)?;
-            // let n = Term::<E>::fma(cs, &flag_as_term, &a_minus_b, &r.term)?;
-            let n = Term::<E>::conditionally_select(cs, &flag, &l.term, &r.term)?;
-            
-            let new_max = std::cmp::max(l.max_value(), r.max_value());
-            let new_limb = Limb::new(n, new_max);
-            new_binary_limbs.push(new_limb);
-        }
-
-        // let mut minus_b = second.base_field_limb.clone();
-        // minus_b.negate();
-        // let a_minus_b = first.base_field_limb.add(cs, &minus_b)?;
-        let new_base_limb = Term::<E>::conditionally_select(
-            cs, &flag, &first.base_field_limb, &second.base_field_limb
-        )?;
-
-        let new_value = if let Some(f) = flag.get_value() {
-            if f { first.get_field_value() } else { second.get_field_value() }
-        } else {
-            None
-        };
-
-        let final_reduction_status = match (first.reduction_status, second.reduction_status) {
-            (ReductionStatus::Unreduced, _) | (_, ReductionStatus::Unreduced) => ReductionStatus::Unreduced,
-            (ReductionStatus::Loose, _) | (_, ReductionStatus::Loose) => ReductionStatus::Loose,
-            (ReductionStatus::Normalized, ReductionStatus::Normalized) => ReductionStatus::Normalized
-        };
-
-        let new = Self {
-            binary_limbs: new_binary_limbs,
-            base_field_limb: new_base_limb,
-            value: new_value,
-            representation_params: first.representation_params,
-            reduction_status: final_reduction_status
-        };
-        Ok(new)
-    }
-
-    pub fn negate<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        Self::zero(&self.representation_params).sub(cs, self)
-    }
-
     // negates if true
     #[deprecated]
     #[track_caller]
@@ -905,7 +690,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     }
 
     #[track_caller]
-    pub fn conditionally_negate<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
+    pub fn conditionally_negate_opt<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         if flag.is_constant() {
@@ -916,9 +701,9 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         }
         
         let max_val = self.get_maximal_possible_stored_value();
-        let params = self.representation_params;
+        let params = self.representation_params.clone();
         let limbs_max_vals = self.binary_limbs.iter().map(|x| x.max_value()).collect::<Vec<BigUint>>();
-        let (multiples_to_add, const_chunks) = Self::subtraction_helper(max_val, limbs_max_vals, params);
+        let (multiples_to_add, const_chunks) = Self::subtraction_helper(max_val, limbs_max_vals, &params);
         
         // create new limbs
         let mut new_binary_limbs = vec![];
@@ -978,20 +763,11 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok(new)
     }
 
-    pub fn normalize<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
-        // if already normalized no nothing - we do not want to normalize twice in a row
-        if self.reduction_status == ReductionStatus::Normalized {
-            return Ok(());
-        }    
-        self.reduce(cs)?; 
-        self.enforce_if_normalized(cs)
-    }
-
     #[track_caller]
     pub fn reduce<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
         if self.reduction_status == ReductionStatus::Unreduced && !self.is_constant() {
-            let one = Self::one(self.representation_params);
-            let reduced = self.mul(cs, &one)?;
+            let one = <Self as CircuitField<E, F>>::one(self.representation_params.clone());
+            let reduced = <Self as CircuitField<E, F>>::mul(cs, &self, &one)?;
             *self = reduced;
             self.reduction_status = ReductionStatus::Loose;
         }
@@ -1003,7 +779,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         assert_ne!(self.reduction_status, ReductionStatus::Unreduced);
         self.reduction_status = ReductionStatus::Normalized;
         if self.is_constant() { return Ok(()) }
-        let params = self.representation_params;
+        let params = self.representation_params.clone();
         let mut minus_one = E::Fr::one();
         minus_one.negate();
 
@@ -1075,7 +851,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     // the function returns k and chunk division of k
     #[track_caller]
     fn subtraction_helper(
-        max_val: BigUint, limbs_max_vals: Vec<BigUint>, params: &RnsParameters<E, F>
+        max_val: BigUint, limbs_max_vals: Vec<BigUint>, params: &RnsParameters<E>
     ) -> (BigUint, Vec<BigUint>) {
         let modulus = params.represented_field_modulus.clone();
         let rem = max_val.clone() % modulus.clone();
@@ -1107,7 +883,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     pub fn add_with_reduction<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, other: &Self, needs_reduction: bool
     ) -> Result<Self, SynthesisError> {
-        let params = self.representation_params;
+        let params = self.representation_params.clone();
         assert!(Self::check_params_equivalence(self, other));
 
         if self.is_constant() && other.is_constant() {
@@ -1146,13 +922,9 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok(new)
     }
 
-    pub fn add<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
-        self.add_with_reduction(cs, other, !self.representation_params.allow_individual_limb_overflow)
-    }
-
     pub fn conditionally_increment<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError>
     where CS: ConstraintSystem<E> {
-        let params = self.representation_params;
+        let params = self.representation_params.clone();
         let new_value = self.get_field_value().add(&flag.get_value().map(|x| if x {F::one()} else {F::zero()}));
         
         if self.is_constant() && flag.is_constant() {
@@ -1189,7 +961,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         &self, cs: &mut CS, factor: u64, needs_reduction: bool
     ) -> Result<Self, SynthesisError>  
     {
-        let params = self.representation_params;
+        let params = self.representation_params.clone();
         let factor_as_native_field_elem = u64_to_fe::<E::Fr>(factor);
         let factor_as_represented_field_elem = u64_to_fe::<F>(factor);
 
@@ -1232,19 +1004,11 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok(new)
     }
 
-    pub fn scale<CS: ConstraintSystem<E>>(&self, cs: &mut CS, factor: u64) -> Result<Self, SynthesisError> {
-        self.scale_with_reduction(cs, factor, !self.representation_params.allow_individual_limb_overflow)       
-    }
-
-    pub fn double<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        self.scale(cs, 2u64)
-    }
-
     pub fn sub_with_reduction<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, other: &Self, needs_reduction: bool
     ) -> Result<Self, SynthesisError> 
     {
-        let params = self.representation_params;
+        let params = self.representation_params.clone();
         assert!(Self::check_params_equivalence(self, other));
 
         if self.is_constant() && other.is_constant() {
@@ -1263,7 +1027,9 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // now we can determine how many moduluses of the represented field we have to add to never underflow
         let max_val = other.get_maximal_possible_stored_value();
         let limbs_max_vals = other.binary_limbs.iter().map(|x| x.max_value()).collect::<Vec<BigUint>>();
-        let (multiples_to_add_at_least, const_constituent_chunks) = Self::subtraction_helper(max_val, limbs_max_vals, params);
+        let (multiples_to_add_at_least, const_constituent_chunks) = Self::subtraction_helper(
+            max_val, limbs_max_vals, &params
+        );
         
         // create new limbs
         let mut new_binary_limbs = vec![];
@@ -1307,220 +1073,47 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         Ok(new)
     }
 
-    pub fn sub<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
-        self.sub_with_reduction(cs, other, !self.representation_params.allow_individual_limb_overflow)
+    fn get_chain_maximal_positive_stored_value(chain: &FieldElementsChain<E, F, Self>) -> BigUint {
+        chain.elems_to_add.iter().fold(BigUint::zero(), |acc, x| acc + x.get_maximal_possible_stored_value())
+    } 
+
+    fn get_chain_maximal_negative_stored_value(chain: &FieldElementsChain<E, F, Self>) -> BigUint {
+        chain.elems_to_sub.iter().fold(BigUint::zero(), |acc, x| acc + x.get_maximal_possible_stored_value())
     }
 
-    pub fn mul<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
-        Self::mul_with_chain(cs, &self, &other, FieldElementsChain::new())
-    }
-
-    pub fn square<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        Self::mul_with_chain(cs, &self, &self, FieldElementsChain::new())
-    }
-
-    pub fn square_with_chain<CS>(&self, cs: &mut CS, chain: FieldElementsChain<'a, E, F>) -> Result<Self, SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {
-        Self::mul_with_chain(cs, &self, &self, chain)
-    }
-
-    pub fn div<CS: ConstraintSystem<E>>(&self, cs: &mut CS, den: &Self) -> Result<Self, SynthesisError> {
-        let mut num_chain = FieldElementsChain::new();
-        num_chain.add_pos_term(self);
-        Self::div_with_chain(cs, num_chain, den)
-    }
-
-    pub fn inverse<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        let mut num_chain = FieldElementsChain::new();
-        num_chain.add_pos_term(&Self::one(&self.representation_params));
-        Self::div_with_chain(cs, num_chain, self)
-    }
-
-    #[track_caller]
-    pub fn div_with_chain<CS>(cs: &mut CS, chain: FieldElementsChain<'a, E, F>, den: &Self) -> Result<Self, SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {
-        let params = &den.representation_params;
-        // we do chain/den = result mod p, where we assume that den != 0
-        assert!(!den.get_field_value().unwrap_or(F::one()).is_zero());
-
-        let numerator_value = chain.get_field_value();
-        let den_inverse_value = den.get_field_value().map(|x| x.inverse().expect("denominator is zero"));
-        let final_value = numerator_value.mul(&den_inverse_value);
-        let all_constants = den.is_constant() && chain.is_constant();
-        
-        if all_constants {
-            let res = Self::constant(final_value.unwrap(), params);
-            Ok(res)
+    fn add_raw_chain_value_to_accumulator(
+        chain: &FieldElementsChain<E, F, Self>, init_acc_val: Option<BigUint>
+    ) -> Option<BigUint> {
+        if init_acc_val.is_none() {
+            return None;
         }
-        else {
-            let res = Self::alloc(cs, final_value, params)?;
-            let chain = chain.negate();
-            Self::constraint_fma(cs, &res, &den, chain)?;
-            Ok(res)
-        }
-    }
 
-    #[track_caller]
-    pub fn mul_with_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, a: &Self, b: &Self, mut chain: FieldElementsChain<'a, E, F>,
-    ) -> Result<Self, SynthesisError> {
-        let params = &a.representation_params;
-        let mut final_value = a.get_field_value();
-        final_value = final_value.mul(&b.get_field_value());
-        final_value = final_value.add(&chain.get_field_value());
-        let all_constants = a.is_constant() && b.is_constant() && chain.is_constant();
-        
-        if all_constants {
-            let r = Self::constant(final_value.unwrap(), params);
-            Ok(r)
-        }
-        else {
-            let r = Self::alloc(cs, final_value, params)?;
-            chain.add_neg_term(&r);
-            Self::constraint_fma(cs, &a, &b, chain)?;
-            Ok(r)
-        }
-    }
-
-    #[track_caller]
-    pub fn enforce_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {
-        assert!(Self::check_params_equivalence(&this, &other));
-        if this.is_constant() && other.is_constant() {
-            let a = this.get_field_value().unwrap();
-            let b = other.get_field_value().unwrap();
-            assert!(a == b);
-            return Ok(())
-        }
-        
-        this.reduce(cs)?;
-        other.reduce(cs)?;
-
-        // at this point both values a and b are reduced and hence both are in the range [0, 2 * repr_field_modulus)
-        // the easiest way to attest equality is to compare corresponding binary limbs, but we can go with less:
-        // assume that a == b (mod Fr) and a == b (mod 2^{N * limb_width}) => w.l.o.g. a >= b:
-        // a - b == 0 (mod Fr * 2^{N * limb_width})  and 0 <= a - b < 2 * repr_field_modulus
-        // and if we enforce that 2 * repr_field_modulus <= Fr * 2^{N * limb_width} than from a == b
-        // N here is the number of binary limbs to compare (usually N == 1 for BN and N == 2 for BLS)
-        let num_binary_limbs_to_compare = {
-            unsafe {
-                INIT_ENFORCE_EQUAL_CHECK.call_once(|| {
-                    let params = this.representation_params;
-                    let mut n = 1;
-                    let lhs = params.represented_field_modulus.clone() * 2u64;
-                    let mut rhs = params.native_field_modulus.clone() << params.binary_limb_width;
-                    while lhs > rhs {
-                        n += 1;
-                        rhs <<= params.binary_limb_width;
-                    }
-                    NUM_BINARY_LIMBS_FOR_ENFORCE_EQUAL_CHECK = n;
-                });
-                NUM_BINARY_LIMBS_FOR_ENFORCE_EQUAL_CHECK
+        let final_acc_value = chain.elems_to_add.iter().map(|x| (x, true)).chain(
+            chain.elems_to_sub.iter().map(|x| (x, false))
+        ) .try_fold(init_acc_val.unwrap(), |prev, (x, is_pos_term)| {
+            if let Some(val) = x.get_raw_value() {
+                let next = match is_pos_term { 
+                    true => prev + val,
+                    false => {
+                        assert!(prev >= val);
+                        prev - val
+                    },
+                };
+                ControlFlow::Continue(next)
+            } else {
+                ControlFlow::Break(prev)
             }
-        };
-        
-        for i in 0..num_binary_limbs_to_compare {
-            this.binary_limbs[i].term.enforce_equal(cs, &other.binary_limbs[i].term)?;
+        });
+        match final_acc_value {
+            ControlFlow::Break(_) => None,
+            ControlFlow::Continue(x) => Some(x)
         }
-        this.base_field_limb.enforce_equal(cs, &other.base_field_limb)?;
+    } 
 
-        // if field_elements are equal than they are normalized or not simultaneously!
-        // hence if we somehow know that one of values is normalized than we may lay the other to be normalized
-        let any_is_normalized = {
-            this.reduction_status == ReductionStatus::Normalized || 
-            other.reduction_status == ReductionStatus::Normalized
-        };
-        if any_is_normalized {
-            this.reduction_status = ReductionStatus::Normalized;
-            other.reduction_status = ReductionStatus::Normalized;
-        };
-
-        Ok(())
-    }
-
-    #[track_caller]
-    pub fn enforce_not_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {
-        assert!(Self::check_params_equivalence(&this, &other));   
-        if this.is_constant() && other.is_constant() {
-            let a = this.get_field_value().unwrap();
-            let b = other.get_field_value().unwrap();
-            assert!(a != b);
-            return Ok(())
-        }
-
-        this.normalize(cs)?;
-        other.normalize(cs)?;
-
-        // here we know that both variables are reduced, hence there exists a, b such that:
-        // a * (this.field_modulus - other.field_modulus) + b * (this.limb_modulus - other.limb_modulus) == 1
-        // we can allocate the constraint system for this check on two gates:
-        // 1) [a. this.field_modulus, other.field_modulus, tmp]:
-        //    a * this.field_modulus - a * other.field_modulus - 1 = tmp
-        // 2) [b, this.limb_modulus, other.limb_modulus, tmp]:
-        //    b * this.limb_modulus - b * other.limb_modulus + tmp = 0
-        let a = construct_equality_certificate(
-            cs, &this.binary_limbs[0].term, &other.binary_limbs[0].term, false
-        )?;
-        let flag = !a.get_value().unwrap_or(E::Fr::zero()).is_zero();
-        let b = construct_equality_certificate(cs, &this.base_field_limb, &other.base_field_limb, flag)?;
-        
-        // construct first_gate:
-        let mut lc = AmplifiedLinearCombination::zero();
-        lc.add_assign_product_of_terms(&a, &this.binary_limbs[0].term);
-        lc.sub_assign_product_of_terms(&a, &other.binary_limbs[0].term);
-        lc.sub_assign_constant(E::Fr::one());
-        let (tmp, num_gates) = lc.into_num_ext(cs)?;
-        assert_eq!(num_gates, 1);
-
-        let mut lc = AmplifiedLinearCombination::zero();
-        lc.add_assign_product_of_terms(&b, &this.base_field_limb);
-        lc.add_assign_product_of_terms(&b, &other.base_field_limb);
-        lc.add_assign_number_with_coeff(&tmp, E::Fr::one());
-        let num_gates = lc.enforce_zero(cs)?;
-        assert_eq!(num_gates, 1);
-            
-        return Ok(())
-    }
-
-    // TODO: usage by reference here is much more better
-    #[track_caller]
-    pub fn equals<CS: ConstraintSystem<E>>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<Boolean, SynthesisError> {
-        assert!(Self::check_params_equivalence(&this, &other));
-        if this.is_constant() && other.is_constant() {
-            let a = this.get_field_value().unwrap();
-            let b = other.get_field_value().unwrap();
-            return Ok(Boolean::constant(a == b));
-        }
-
-        this.normalize(cs)?;
-        other.normalize(cs)?;
-
-        let mut out_0 = Boolean::zero();
-        let mut out_1 = Boolean::zero();
-       
-        let arr = vec![
-            (&this.binary_limbs[0].term, &other.binary_limbs[0].term, &mut out_0), 
-            (&this.base_field_limb, &other.base_field_limb, &mut out_1)
-        ];
-        for (a, b, out) in arr.into_iter() {
-            let a = a.collapse_into_num(cs)?;
-            let b = b.collapse_into_num(cs)?;
-            let equals = Num::equals(cs, &a, &b)?;
-            *out = equals;
-        }
-
-        let equals = Boolean::and(cs, &out_0, &out_1)?;
-        Ok(equals)
-    }
 
     #[track_caller]
     pub fn constraint_fma<CS: ConstraintSystem<E>>(
-        cs: &mut CS, a: &Self, b: &Self, chain: FieldElementsChain<'a, E, F>
+        cs: &mut CS, a: &Self, b: &Self, chain: FieldElementsChain<E, F, Self>
     ) -> Result<(), SynthesisError> {  
         assert!(Self::check_params_equivalence(a, b));
         assert!(chain.elems_to_add.iter().all(|x| Self::check_params_equivalence(a, x)));
@@ -1560,7 +1153,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
             Limb::<E>::constant_from_biguint(x)
         }).collect();
         raw_value.as_mut().map(|x| *x += const_delta_value.clone());
-        raw_value = chain.add_raw_value_to_accumulator(raw_value);
+        raw_value = Self::add_raw_chain_value_to_accumulator(&chain, raw_value);
         let q = raw_value.map(|x| {
             let (q, r) = x.div_rem(&params.represented_field_modulus);
             assert!(r.is_zero());
@@ -1570,12 +1163,12 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // so we constraint a * b + [chain_elems_to_add] = q * p + [chain_elems_to_sub] 
         // we start ny estimating q width
         let mut lhs_max_value = a.get_maximal_possible_stored_value() * b.get_maximal_possible_stored_value();
-        lhs_max_value += chain.get_maximal_positive_stored_value(); 
+        lhs_max_value += Self::get_chain_maximal_positive_stored_value(&chain); 
         lhs_max_value += const_delta_value.clone();
         let q_max_value = lhs_max_value.clone() / &params.represented_field_modulus;
         let q_max_bits = q_max_value.bits();
         let coarsely = params.allow_coarse_allocation_for_temp_values;
-        let quotient = Self::alloc_for_known_bitwidth(cs, q, q_max_bits as usize, params, coarsely)?;
+        let quotient = Self::alloc_for_known_bitwidth(cs, q, q_max_bits as usize, params.clone(), coarsely)?;
 
         // next with finding the RNS binary modulus - we perform an exhaustive check here: 
         // a * b + [chain_elems_to_add] < RNS composite_modulus = RNS_binary_modulus * RNS_native_modulus
@@ -1816,7 +1409,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
     pub fn decompose_into_binary_representation<CS: ConstraintSystem<E>>(
         &mut self, cs: &mut CS, limit: Option<usize>
     )-> Result<Vec<Boolean>, SynthesisError> {
-        let params = self.representation_params;
+        let params = self.representation_params.clone();
         let limit = limit.unwrap_or(params.represented_field_modulus_bitlength);
         self.reduce(cs)?;
 
@@ -1843,10 +1436,10 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     #[track_caller]
     pub fn collapse_chain_with_reduction<CS: ConstraintSystem<E>>(
-        cs: &mut CS, chain: FieldElementsChain<'a, E, F>, needs_reduction: bool
+        cs: &mut CS, chain: FieldElementsChain<E, F, Self>, needs_reduction: bool
     ) -> Result<Self, SynthesisError> {
         assert!(chain.len() > 0);
-        let params = chain.elems_to_add.get(0).unwrap_or_else(|| &chain.elems_to_sub[0]).representation_params;
+        let params = chain.elems_to_add.get(0).unwrap_or_else(|| &chain.elems_to_sub[0]).representation_params.clone();
         if chain.is_constant() {
             let val = chain.get_field_value().unwrap();
             return Ok(Self::constant(val, params))
@@ -1861,7 +1454,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                     *out_limb += r_limb.max_value();
                 }
             }
-            Self::subtraction_helper(max_val, limbs_max_vals, params)
+            Self::subtraction_helper(max_val, limbs_max_vals, &params)
         };
         let const_limbs : Vec<_> = const_delta_chunks.into_iter().map(|x| {
             Limb::<E>::constant_from_biguint(x)
@@ -1910,16 +1503,371 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
         Ok(new)
     }
+}
 
-    pub fn collapse_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, chain: FieldElementsChain<'a, E, F>
+
+impl<E: Engine, F: PrimeField> CircuitField<E, F> for FieldElement<E, F> {
+    // NB: we do not check for normalization on allocation
+    #[track_caller]
+    fn alloc<CS: ConstraintSystem<E>>(
+        cs: &mut CS, value: Option<F>, params: Arc<RnsParameters<E>>
+    ) -> Result<Self, SynthesisError> {
+        let (new, _decomposition) = Self::alloc_ext(cs, value, params)?;
+        Ok(new)
+    }
+
+    fn constant(v: F, params: Arc<RnsParameters<E>>) -> Self {
+        let value = fe_to_biguint(&v);
+        let base_limb_value = value.clone() % &params.native_field_modulus;
+        let base_limb = biguint_to_fe::<E::Fr>(base_limb_value.clone());
+        let base_limb = Term::<E>::from_constant(base_limb);
+        assert_eq!(fe_to_biguint(&v) % &params.native_field_modulus, fe_to_biguint(&base_limb.get_value().unwrap()));
+        let binary_limbs_allocated = Self::split_const_into_limbs(value, &params);
+
+        Self {
+            binary_limbs: binary_limbs_allocated,
+            base_field_limb: base_limb,
+            representation_params: params,
+            value: Some(v),
+            reduction_status: ReductionStatus::Normalized
+        }
+    }
+
+    fn zero(params: Arc<RnsParameters<E>>) -> Self {
+        let zero_limb = Limb::zero();
+        let binary_limbs = vec![zero_limb.clone(); params.num_binary_limbs];
+    
+        Self {
+            binary_limbs: binary_limbs,
+            base_field_limb: Term::<E>::from_constant(E::Fr::zero()),
+            representation_params: params,
+            value: Some(F::zero()),
+            reduction_status: ReductionStatus::Normalized
+        }
+    }
+
+    fn one(params: Arc<RnsParameters<E>>) -> Self {
+        let one_limb = Limb::one();
+        let zero_limb = Limb::zero();
+
+        let mut binary_limbs = Vec::with_capacity(params.num_binary_limbs);
+        binary_limbs.push(one_limb);
+        binary_limbs.resize(params.num_binary_limbs, zero_limb.clone());
+    
+        Self {
+            binary_limbs: binary_limbs,
+            base_field_limb: Term::<E>::from_constant(E::Fr::one()),
+            representation_params: params,
+            value: Some(F::one()),
+            reduction_status: ReductionStatus::Normalized
+        }
+    }
+   
+    fn get_value(&self) -> Option<F> {
+        self.get_field_value()
+    } 
+
+    fn get_rns_params(&self) -> Arc<RnsParameters<E>> {
+        self.representation_params.clone()
+    }
+
+    fn is_constant(&self) -> bool {
+        for l in self.binary_limbs.iter() {
+            if !l.is_constant() {
+                return false;
+            }
+        }
+        self.base_field_limb.is_constant()
+    }
+
+    fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> {
+        self.is_zero_unopt(cs)
+    }
+    
+    #[track_caller]
+    fn conditionally_select<CS: ConstraintSystem<E>>(
+        cs: &mut CS, flag: &Boolean, first: &Self, second: &Self
+    ) -> Result<Self, SynthesisError>  
+    {
+        assert!(Self::check_params_equivalence(first, second));
+        match flag {
+            Boolean::Constant(c) => {
+                if *c { return Ok(first.clone()) } else { return Ok(second.clone()) };
+            },
+            _ => {},
+        };
+        if first == second {
+            return Ok(first.clone());
+        }
+
+        // flag * a + (1-flag) * b = flag * (a-b) + b
+        let mut new_binary_limbs = vec![];
+        for (l, r) in first.binary_limbs.iter().zip(second.binary_limbs.iter()) 
+        {
+            // let mut minus_b = r.term.clone();
+            // minus_b.negate();
+            // let a_minus_b = l.term.add(cs, &minus_b)?;
+            // let n = Term::<E>::fma(cs, &flag_as_term, &a_minus_b, &r.term)?;
+            let n = Term::<E>::conditionally_select(cs, &flag, &l.term, &r.term)?;
+            
+            let new_max = std::cmp::max(l.max_value(), r.max_value());
+            let new_limb = Limb::new(n, new_max);
+            new_binary_limbs.push(new_limb);
+        }
+
+        // let mut minus_b = second.base_field_limb.clone();
+        // minus_b.negate();
+        // let a_minus_b = first.base_field_limb.add(cs, &minus_b)?;
+        let new_base_limb = Term::<E>::conditionally_select(
+            cs, &flag, &first.base_field_limb, &second.base_field_limb
+        )?;
+
+        let new_value = if let Some(f) = flag.get_value() {
+            if f { first.get_field_value() } else { second.get_field_value() }
+        } else {
+            None
+        };
+
+        let final_reduction_status = match (first.reduction_status, second.reduction_status) {
+            (ReductionStatus::Unreduced, _) | (_, ReductionStatus::Unreduced) => ReductionStatus::Unreduced,
+            (ReductionStatus::Loose, _) | (_, ReductionStatus::Loose) => ReductionStatus::Loose,
+            (ReductionStatus::Normalized, ReductionStatus::Normalized) => ReductionStatus::Normalized
+        };
+
+        let new = Self {
+            binary_limbs: new_binary_limbs,
+            base_field_limb: new_base_limb,
+            value: new_value,
+            representation_params: first.representation_params.clone(),
+            reduction_status: final_reduction_status
+        };
+        Ok(new)
+    }
+  
+    fn conditionally_negate<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E> {
+        self.conditionally_negate_opt(cs, flag)
+    } 
+    
+    fn normalize<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
+        // if already normalized no nothing - we do not want to normalize twice in a row
+        if self.reduction_status == ReductionStatus::Normalized {
+            return Ok(());
+        }    
+        self.reduce(cs)?; 
+        self.enforce_if_normalized(cs)
+    }
+
+    fn add<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
+        self.add_with_reduction(cs, other, !self.representation_params.allow_individual_limb_overflow)
+    }
+
+    fn sub<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
+        self.sub_with_reduction(cs, other, !self.representation_params.allow_individual_limb_overflow)
+    }
+   
+    fn scale<CS: ConstraintSystem<E>>(&self, cs: &mut CS, factor: u64) -> Result<Self, SynthesisError> {
+        self.scale_with_reduction(cs, factor, !self.representation_params.allow_individual_limb_overflow)       
+    }
+ 
+    #[track_caller]
+    fn mul_with_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, a: &Self, b: &Self, mut chain: FieldElementsChain<E, F, Self>,
+    ) -> Result<Self, SynthesisError> {
+        let params = a.representation_params.clone();
+        let mut final_value = a.get_field_value();
+        final_value = final_value.mul(&b.get_field_value());
+        final_value = final_value.add(&chain.get_field_value());
+        let all_constants = a.is_constant() && b.is_constant() && chain.is_constant();
+        
+        if all_constants {
+            let r = Self::constant(final_value.unwrap(), params);
+            Ok(r)
+        }
+        else {
+            let r = Self::alloc(cs, final_value, params)?;
+            chain.add_neg_term(&r);
+            Self::constraint_fma(cs, &a, &b, chain)?;
+            Ok(r)
+        }
+    }
+
+    fn square_with_chain<CS>(&self, cs: &mut CS, chain: FieldElementsChain<E, F, Self>) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        Self::mul_with_chain(cs, &self, &self, chain)
+    }
+
+    #[track_caller]
+    fn div_with_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: FieldElementsChain<E, F, Self>, den: &Self
+    ) -> Result<Self, SynthesisError> {
+        let params = den.representation_params.clone();
+        // we do chain/den = result mod p, where we assume that den != 0
+        assert!(!den.get_field_value().unwrap_or(F::one()).is_zero());
+
+        let numerator_value = chain.get_field_value();
+        let den_inverse_value = den.get_field_value().map(|x| x.inverse().expect("denominator is zero"));
+        let final_value = numerator_value.mul(&den_inverse_value);
+        let all_constants = den.is_constant() && chain.is_constant();
+        
+        if all_constants {
+            let res = Self::constant(final_value.unwrap(), params);
+            Ok(res)
+        }
+        else {
+            let res = Self::alloc(cs, final_value, params)?;
+            let chain = chain.negate();
+            Self::constraint_fma(cs, &res, &den, chain)?;
+            Ok(res)
+        }
+    }
+
+    #[track_caller]
+    fn enforce_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        assert!(Self::check_params_equivalence(&this, &other));
+        if this.is_constant() && other.is_constant() {
+            let a = this.get_field_value().unwrap();
+            let b = other.get_field_value().unwrap();
+            assert!(a == b);
+            return Ok(())
+        }
+        
+        this.reduce(cs)?;
+        other.reduce(cs)?;
+
+        // at this point both values a and b are reduced and hence both are in the range [0, 2 * repr_field_modulus)
+        // the easiest way to attest equality is to compare corresponding binary limbs, but we can go with less:
+        // assume that a == b (mod Fr) and a == b (mod 2^{N * limb_width}) => w.l.o.g. a >= b:
+        // a - b == 0 (mod Fr * 2^{N * limb_width})  and 0 <= a - b < 2 * repr_field_modulus
+        // and if we enforce that 2 * repr_field_modulus <= Fr * 2^{N * limb_width} than from a == b
+        // N here is the number of binary limbs to compare (usually N == 1 for BN and N == 2 for BLS)
+        let num_binary_limbs_to_compare = {
+            unsafe {
+                INIT_ENFORCE_EQUAL_CHECK.call_once(|| {
+                    let params = &this.representation_params;
+                    let mut n = 1;
+                    let lhs = params.represented_field_modulus.clone() * 2u64;
+                    let mut rhs = params.native_field_modulus.clone() << params.binary_limb_width;
+                    while lhs > rhs {
+                        n += 1;
+                        rhs <<= params.binary_limb_width;
+                    }
+                    NUM_BINARY_LIMBS_FOR_ENFORCE_EQUAL_CHECK = n;
+                });
+                NUM_BINARY_LIMBS_FOR_ENFORCE_EQUAL_CHECK
+            }
+        };
+        
+        for i in 0..num_binary_limbs_to_compare {
+            this.binary_limbs[i].term.enforce_equal(cs, &other.binary_limbs[i].term)?;
+        }
+        this.base_field_limb.enforce_equal(cs, &other.base_field_limb)?;
+
+        // if field_elements are equal than they are normalized or not simultaneously!
+        // hence if we somehow know that one of values is normalized than we may lay the other to be normalized
+        let any_is_normalized = {
+            this.reduction_status == ReductionStatus::Normalized || 
+            other.reduction_status == ReductionStatus::Normalized
+        };
+        if any_is_normalized {
+            this.reduction_status = ReductionStatus::Normalized;
+            other.reduction_status = ReductionStatus::Normalized;
+        };
+
+        Ok(())
+    }
+
+    #[track_caller]
+    fn enforce_not_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        assert!(Self::check_params_equivalence(&this, &other));   
+        if this.is_constant() && other.is_constant() {
+            let a = this.get_field_value().unwrap();
+            let b = other.get_field_value().unwrap();
+            assert!(a != b);
+            return Ok(())
+        }
+
+        this.normalize(cs)?;
+        other.normalize(cs)?;
+
+        // here we know that both variables are reduced, hence there exists a, b such that:
+        // a * (this.field_modulus - other.field_modulus) + b * (this.limb_modulus - other.limb_modulus) == 1
+        // we can allocate the constraint system for this check on two gates:
+        // 1) [a. this.field_modulus, other.field_modulus, tmp]:
+        //    a * this.field_modulus - a * other.field_modulus - 1 = tmp
+        // 2) [b, this.limb_modulus, other.limb_modulus, tmp]:
+        //    b * this.limb_modulus - b * other.limb_modulus + tmp = 0
+        let a = construct_equality_certificate(
+            cs, &this.binary_limbs[0].term, &other.binary_limbs[0].term, false
+        )?;
+        let flag = !a.get_value().unwrap_or(E::Fr::zero()).is_zero();
+        let b = construct_equality_certificate(cs, &this.base_field_limb, &other.base_field_limb, flag)?;
+        
+        // construct first_gate:
+        let mut lc = AmplifiedLinearCombination::zero();
+        lc.add_assign_product_of_terms(&a, &this.binary_limbs[0].term);
+        lc.sub_assign_product_of_terms(&a, &other.binary_limbs[0].term);
+        lc.sub_assign_constant(E::Fr::one());
+        let (tmp, num_gates) = lc.into_num_ext(cs)?;
+        assert_eq!(num_gates, 1);
+
+        let mut lc = AmplifiedLinearCombination::zero();
+        lc.add_assign_product_of_terms(&b, &this.base_field_limb);
+        lc.add_assign_product_of_terms(&b, &other.base_field_limb);
+        lc.add_assign_number_with_coeff(&tmp, E::Fr::one());
+        let num_gates = lc.enforce_zero(cs)?;
+        assert_eq!(num_gates, 1);
+            
+        return Ok(())
+    }
+
+    // TODO: usage by reference here is much more better
+    #[track_caller]
+    fn equals<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<Boolean, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        assert!(Self::check_params_equivalence(&this, &other));
+        if this.is_constant() && other.is_constant() {
+            let a = this.get_field_value().unwrap();
+            let b = other.get_field_value().unwrap();
+            return Ok(Boolean::constant(a == b));
+        }
+
+        this.normalize(cs)?;
+        other.normalize(cs)?;
+
+        let mut out_0 = Boolean::zero();
+        let mut out_1 = Boolean::zero();
+       
+        let arr = vec![
+            (&this.binary_limbs[0].term, &other.binary_limbs[0].term, &mut out_0), 
+            (&this.base_field_limb, &other.base_field_limb, &mut out_1)
+        ];
+        for (a, b, out) in arr.into_iter() {
+            let a = a.collapse_into_num(cs)?;
+            let b = b.collapse_into_num(cs)?;
+            let equals = Num::equals(cs, &a, &b)?;
+            *out = equals;
+        }
+
+        let equals = Boolean::and(cs, &out_0, &out_1)?;
+        Ok(equals)
+    }
+ 
+    fn collapse_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: FieldElementsChain<E, F, Self>
     ) -> Result<Self, SynthesisError> {
         assert!(chain.len() > 0);
-        let params = chain.elems_to_add.get(0).unwrap_or_else(|| &chain.elems_to_sub[0]).representation_params;
+        let params = chain.elems_to_add.get(0).unwrap_or_else(|| &chain.elems_to_sub[0]).representation_params.clone();
         Self::collapse_chain_with_reduction(cs, chain, !params.allow_individual_limb_overflow)
     }
 
-    pub fn from_boolean(flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
+    fn from_boolean(flag: &Boolean, params: Arc<RnsParameters<E>>) -> Self {
         let mut binary_limbs = vec![Limb::zero(); params.num_binary_limbs];
         binary_limbs[0] = Limb::new(Term::from_boolean(flag), BigUint::one());
         Self {
@@ -1931,8 +1879,8 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         }
     }
 
-    pub fn conditional_constant(value: F, flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
-        let unconditional_constant = Self::constant(value, params);
+    fn conditional_constant(value: F, flag: &Boolean, params: Arc<RnsParameters<E>>) -> Self {
+        let unconditional_constant = Self::constant(value, params.clone());
         let binary_limbs = unconditional_constant.binary_limbs.iter().map(|cnst_limb| {
             let val = cnst_limb.get_value().unwrap();
             let max_value = cnst_limb.max_value();
@@ -1953,11 +1901,17 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         }
     }
 
-    pub fn enforce_chain_is_zero<CS: ConstraintSystem<E>>(
-        cs: &mut CS, chain: FieldElementsChain<'a, E, F>, 
+    fn enforce_chain_is_zero<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: FieldElementsChain<E, F, Self>, 
     ) -> Result<(), SynthesisError> {
-        let params = chain.elems_to_add.get(0).unwrap_or_else(|| &chain.elems_to_sub[0]).representation_params;
-        Self::constraint_fma(cs, &Self::zero(params), &Self::zero(params), chain)
+        let params = chain.elems_to_add.get(0).unwrap_or_else(|| &chain.elems_to_sub[0]).representation_params.clone();
+        let zero = <Self as CircuitField<E, F>>::zero(params);
+        Self::constraint_fma(cs, &zero, &zero, chain)
+    }
+
+    fn frobenius_power_map<CS>(&self, _cs: &mut CS, _power: usize)-> Result<Self, SynthesisError>
+    where CS: ConstraintSystem<E> {
+        Ok(self.clone())
     }
 }
 
@@ -1980,7 +1934,7 @@ mod test {
     fn test_naive_modulus_multiplication() {
         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let params = RnsParameters::<Bn256, Fq>::new_optimal(&mut cs, 80usize);
+        let params = RnsParameters::<Bn256>::new_optimal::<_, Fq>(&mut cs, 80usize);
         let mut rng = rand::thread_rng();
 
         let a_f: Fq = rng.gen();
@@ -1988,9 +1942,9 @@ mod test {
         let mut result_f = a_f;
         result_f.mul_assign(&b_f);
         
-        let a = FieldElement::alloc(&mut cs, Some(a_f), &params).unwrap();
-        let b = FieldElement::alloc(&mut cs, Some(b_f), &params).unwrap();
-        let mut actual_result = FieldElement::alloc(&mut cs, Some(result_f), &params).unwrap();
+        let a = FieldElement::alloc(&mut cs, Some(a_f), params.clone()).unwrap();
+        let b = FieldElement::alloc(&mut cs, Some(b_f), params.clone()).unwrap();
+        let mut actual_result = FieldElement::alloc(&mut cs, Some(result_f), params.clone()).unwrap();
     
         let naive_mul_start = cs.get_current_step_number();
         let total_bitlen = params.binary_limb_width * params.num_binary_limbs * 2;
@@ -2007,8 +1961,10 @@ mod test {
         let q_max_value = max_value / &params.represented_field_modulus;
         let q_max_bits = q_max_value.bits();
 
-        let q = FieldElement::alloc_for_known_bitwidth(&mut cs, Some(q), q_max_bits as usize, &params, false).unwrap();
-        let mut r = FieldElement::alloc(&mut cs, Some(biguint_to_fe::<Fq>(r)), &params).unwrap();
+        let q = FieldElement::<Bn256, Fq>::alloc_for_known_bitwidth(
+            &mut cs, Some(q), q_max_bits as usize, params.clone(), false
+        ).unwrap();
+        let mut r = FieldElement::alloc(&mut cs, Some(biguint_to_fe::<Fq>(r)), params.clone()).unwrap();
 
         // overflow check for q * p + r:
         let mut max_value = q.get_maximal_possible_stored_value() * params.represented_field_modulus.clone();
@@ -2017,7 +1973,9 @@ mod test {
 
         let q_raw = &q.binary_limbs;
         let r_raw = &r.binary_limbs;
-        let p_raw = FieldElement::split_const_into_limbs(params.represented_field_modulus.clone(), &params);
+        let p_raw = FieldElement::<Bn256, Fq>::split_const_into_limbs(
+            params.represented_field_modulus.clone(), &params
+        );
 
         // construct shifts:
         let mut shifts = Vec::with_capacity(limbs_per_window as usize);
@@ -2105,7 +2063,7 @@ mod test {
         FieldElement::enforce_equal(&mut cs, &mut actual_result, &mut r).unwrap();
 
         let rns_mul_start = cs.get_current_step_number();
-        let mut result = a.mul(&mut cs, &b).unwrap();
+        let mut result = FieldElement::mul(&mut cs, &a, &b).unwrap();
         let rns_mul_end = cs.get_current_step_number();
         
         // check the correctness of rns multiplication
@@ -2129,7 +2087,7 @@ mod test {
         }
 
         fn synthesize<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
-            let params = RnsParameters::<E, E::Fq>::new_optimal(cs, 64usize);
+            let params = RnsParameters::<E>::new_optimal::<_, E::Fq>(cs, 64usize);
             let mut rng = rand::thread_rng();
 
             let a: E::Fq = rng.gen();
@@ -2146,14 +2104,13 @@ mod test {
             let b_inv = b.inverse().unwrap();
             actual_res.mul_assign(&b_inv);
 
-            let a = FieldElement::alloc(cs, Some(a), &params)?;
-            println!("HERE");
-            let b = FieldElement::alloc(cs, Some(b), &params)?;
-            let elem_to_add_0 = FieldElement::alloc(cs, Some(elem_to_add_0), &params)?;
-            let elem_to_add_1 = FieldElement::alloc(cs, Some(elem_to_add_1), &params)?;
-            let elem_to_sub_0 = FieldElement::alloc(cs, Some(elem_to_sub_0), &params)?;
-            let elem_to_sub_1 = FieldElement::alloc(cs, Some(elem_to_sub_1), &params)?;
-            let mut actual_res = FieldElement::alloc(cs, Some(actual_res), &params)?;
+            let a = FieldElement::alloc(cs, Some(a), params.clone())?;
+            let b = FieldElement::alloc(cs, Some(b), params.clone())?;
+            let elem_to_add_0 = FieldElement::alloc(cs, Some(elem_to_add_0), params.clone())?;
+            let elem_to_add_1 = FieldElement::alloc(cs, Some(elem_to_add_1), params.clone())?;
+            let elem_to_sub_0 = FieldElement::alloc(cs, Some(elem_to_sub_0), params.clone())?;
+            let elem_to_sub_1 = FieldElement::alloc(cs, Some(elem_to_sub_1), params.clone())?;
+            let mut actual_res = FieldElement::alloc(cs, Some(actual_res), params.clone())?;
 
             let mut chain = FieldElementsChain::new();
             chain.add_pos_term(&a).add_pos_term(&elem_to_add_0).add_pos_term(&elem_to_add_1);
@@ -2199,11 +2156,11 @@ mod test {
     fn test_bugfix() {
         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let params = RnsParameters::<Bn256, Fq>::new_optimal(&mut cs, 80usize);
+        let params = RnsParameters::<Bn256>::new_optimal::<_, Fq>(&mut cs, 80usize);
         let mut rng = rand::thread_rng();
 
         let a: Fq = rng.gen();
-        let mut a = FieldElement::alloc(&mut cs, Some(a), &params).unwrap();
+        let mut a = FieldElement::alloc(&mut cs, Some(a), params).unwrap();
         a.normalize(&mut cs).unwrap();
         assert!(cs.is_satisfied());
     }   
@@ -2212,13 +2169,13 @@ mod test {
     fn test_inversion() {
         let mut cs = TrivialAssembly::<Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let params = RnsParameters::<Bn256, Fq>::new_optimal(&mut cs, 80usize);
+        let params = RnsParameters::<Bn256>::new_optimal::<_, Fq>(&mut cs, 80usize);
         let mut rng = rand::thread_rng();
         let a: Fq = rng.gen();
 
-        let a_fq = FieldElement::alloc_ext(&mut cs, Some(a), &params).unwrap().0;
+        let a_fq = FieldElement::alloc_ext(&mut cs, Some(a), params.clone()).unwrap().0;
         let a_inv = a.inverse();
-        let  mut a_res = FieldElement::alloc_ext(&mut cs, a_inv, &params).unwrap().0;
+        let  mut a_res = FieldElement::alloc_ext(&mut cs, a_inv, params).unwrap().0;
         let a_fq_inverse = a_fq.inverse(&mut cs).unwrap();
         let g = FieldElement::equals(&mut cs, &mut a_fq_inverse.clone(), &mut a_res).unwrap();
         println!("inverses over Fq is {} ", Boolean::get_value(&g).unwrap());
@@ -2230,17 +2187,17 @@ mod test {
         let mut cs = TrivialAssembly::<Bls12, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext>::new();
         
         inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let params = RnsParameters::<Bls12, Fq>::new_optimal(&mut cs, 72usize);
+        let params = RnsParameters::<Bls12>::new_optimal::<_, Fq>(&mut cs, 72usize);
         let mut rng = rand::thread_rng();
 
         let a: Fq = rng.gen();
         let b: Fq = rng.gen();
         let mut actual_result = a;
         actual_result.mul_assign(&b);
-        let a = FieldElement::alloc(&mut cs, Some(a), &params).unwrap();
-        let b = FieldElement::alloc(&mut cs, Some(b), &params).unwrap();
-        let mut actual_result = FieldElement::alloc(&mut cs, Some(actual_result), &params).unwrap();
-        let mut res = FieldElement::mul(&a, &mut cs, &b).unwrap();
+        let a = FieldElement::alloc(&mut cs, Some(a), params.clone()).unwrap();
+        let b = FieldElement::alloc(&mut cs, Some(b), params.clone()).unwrap();
+        let mut actual_result = FieldElement::alloc(&mut cs, Some(actual_result), params).unwrap();
+        let mut res = FieldElement::mul(&mut cs, &a, &b).unwrap();
         println!("before eq");
         FieldElement::enforce_equal(&mut cs, &mut res, &mut actual_result).unwrap();
         println!("after eq");

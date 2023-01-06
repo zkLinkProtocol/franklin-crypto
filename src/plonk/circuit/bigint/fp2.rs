@@ -1,4 +1,5 @@
 use super::*;
+use super::traits::CircuitField;
 use std::ops::Index;
 use num_traits::ToPrimitive;
 use plonk::circuit::SomeArithmetizable;
@@ -73,29 +74,29 @@ impl Extension2Params<SecpFq> for Secp256K1Extension2Params {
 
 
 #[derive(Clone)]
-pub struct Fp2<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> {
-    pub c0: FieldElement<'a, E, F>,
-    pub c1: FieldElement<'a, E, F>,
+pub struct Fp2<E: Engine, F: PrimeField, T: Extension2Params<F>> {
+    pub c0: FieldElement<E, F>,
+    pub c1: FieldElement<E, F>,
     wit: Option<T::Witness>,
     _marker: std::marker::PhantomData<T>
 }
  
-impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>> std::fmt::Display for Fp2<'a, E, F, T> {
+impl<E:Engine, F:PrimeField, T: Extension2Params<F>> std::fmt::Display for Fp2<E, F, T> {
     #[inline(always)]
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         write!(f, "Fp2({} + {} * u)", self.c0, self.c1)
     }
 }
 
-impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>> std::fmt::Debug for Fp2<'a, E, F, T> {
+impl<E:Engine, F:PrimeField, T: Extension2Params<F>> std::fmt::Debug for Fp2<E, F, T> {
     #[inline(always)]
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         write!(f, "Fp2({} + {} * u)", self.c0, self.c1)
     }
 }
 
-impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>> Index<usize> for Fp2<'a, E, F, T> {
-    type Output = FieldElement<'a, E, F>;
+impl<E:Engine, F:PrimeField, T: Extension2Params<F>> Index<usize> for Fp2<E, F, T> {
+    type Output = FieldElement<E, F>;
 
     fn index(&self, idx: usize) -> &Self::Output {
         match idx {
@@ -106,90 +107,28 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>> Index<usize> for Fp2<'a
     }
 }
 
-impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>> From<FieldElement<'a, E, F>> for Fp2<'a, E, F, T>
+impl<E:Engine, F:PrimeField, T: Extension2Params<F>> From<FieldElement<E, F>> for Fp2<E, F, T>
 {
-    fn from(x: FieldElement<'a, E, F>) -> Self {
-        let params = x.representation_params;
+    fn from(x: FieldElement<E, F>) -> Self {
+        let params = x.representation_params.clone();
         let witness = x.get_field_value().map(|fr| T::convert_to_structured_witness(fr, F::zero()));
         Fp2::<E, F, T> {
             c0: x,
-            c1: FieldElement::<E, F>::zero(params),
+            c1: <FieldElement::<E, F> as CircuitField<E, F>>::zero(params),
             wit: witness,
             _marker: std::marker::PhantomData::<T>
         }
     }    
 }
 
-pub struct Fp2Chain<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> {
-    pub elems_to_add: Vec<Fp2<'a, E, F, T>>,
-    pub elems_to_sub: Vec<Fp2<'a, E, F, T>> 
-}
 
-impl<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> Fp2Chain<'a, E, F, T> {
-    pub fn new() -> Self {
-        Fp2Chain::<E, F, T> {
-            elems_to_add: vec![],
-            elems_to_sub: vec![] 
-        }
-    }
-    
-    pub fn add_pos_term(&mut self, elem: &Fp2<'a, E, F, T>) -> &mut Self {
-        self.elems_to_add.push(elem.clone());
-        self
-    } 
-
-    pub fn add_neg_term(&mut self, elem: &Fp2<'a, E, F, T>) -> &mut Self {
-        self.elems_to_sub.push(elem.clone());
-        self
-    }
-
-    pub fn is_constant(&self) -> bool {
-        self.elems_to_add.iter().chain(self.elems_to_sub.iter()).all(|x| x.is_constant())
-    }
-
-    pub fn get_field_value_as_coordinates(&self) -> (Option<F>, Option<F>) {
-        let (pos_c0, pos_c1) = self.elems_to_add.iter().fold((Some(F::zero()), Some(F::zero())), |acc, x| {
-            (acc.0.add(&x.c0.get_field_value()), acc.1.add(&x.c1.get_field_value()))
-        });
-        let (neg_c0, neg_c1) = self.elems_to_sub.iter().fold((Some(F::zero()), Some(F::zero())), |acc, x| {
-            (acc.0.add(&x.c0.get_field_value()), acc.1.add(&x.c1.get_field_value()))
-        });
-        
-        (pos_c0.sub(&neg_c0), pos_c1.sub(&neg_c1))
-    }
-
-    pub fn get_field_value(&self) -> Option<T::Witness> {
-        let pos = self.elems_to_add.iter().fold(Some(T::Witness::zero()), |acc, x| acc.add(&x.get_value()));
-        let neg = self.elems_to_sub.iter().fold(Some(T::Witness::zero()), |acc, x| acc.add(&x.get_value()));
-        pos.sub(&neg)
-    }
-
-    pub fn get_coordinate_subchain(&self, i: usize) -> FieldElementsChain<'a, E, F> {
-        let elems_to_add = self.elems_to_add.iter().map(|x| x[i].clone()).collect();
-        let elems_to_sub = self.elems_to_sub.iter().map(|x| x[i].clone()).collect();
-        FieldElementsChain::<E, F> {
-            elems_to_add,
-            elems_to_sub
-        }
-    }
-
-    pub fn negate(self) -> Self {
-        let Fp2Chain { elems_to_add, elems_to_sub } = self;
-        Fp2Chain {
-            elems_to_add: elems_to_sub,
-            elems_to_sub: elems_to_add
-        }
-    }  
-}
-
-
-impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
-    pub fn get_base_field_coordinates(&self) -> Vec<FieldElement<'a, E, F>> {
+impl<E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<E, F, T> {
+    pub fn get_base_field_coordinates(&self) -> Vec<FieldElement<E, F>> {
         vec![self.c0.clone(), self.c1.clone()]
     }
 
     pub fn alloc_from_coordinates<CS: ConstraintSystem<E>>(
-        cs: &mut CS, c0_wit: Option<F>, c1_wit: Option<F>, params: &'a RnsParameters<E, F>
+        cs: &mut CS, c0_wit: Option<F>, c1_wit: Option<F>, params: Arc<RnsParameters<E>>
     ) -> Result<Self, SynthesisError> {
         let c0 = FieldElement::alloc(cs, c0_wit, params)?;
         let c1 = FieldElement::alloc(cs, c1_wit, params)?;
@@ -201,7 +140,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
     }
     
     pub fn alloc<CS: ConstraintSystem<E>>(
-        cs: &mut CS, wit: Option<T::Witness>, params: &'a RnsParameters<E, F>
+        cs: &mut CS, wit: Option<T::Witness>, params: Arc<RnsParameters<E>>
     ) -> Result<Self, SynthesisError> {
         let (c0_wit, c1_wit) = wit.map(|x| T::convert_from_structured_witness(x)).unzip();
         let c0 = FieldElement::alloc(cs, c0_wit, params)?;
@@ -642,6 +581,107 @@ impl<'a, E:Engine, F:PrimeField, T: Extension2Params<F>>  Fp2<'a, E, F, T> {
     pub fn get_params(&self) -> &'a RnsParameters<E, F> {
         self.c0.representation_params
     }
+}
+
+
+impl CircuitField<E: Engine, F: Field> : Sized + Clone {
+    fn alloc<CS: ConstraintSystem<E>>(
+        cs: &mut CS, wit: Option<F>, params: Arc<RnsParameters<E>>
+    ) -> Result<Self, SynthesisError>;   
+   
+    fn constant(v: F, params: Arc<RnsParameters<E>>) -> Self; 
+
+    fn zero(params: Arc<RnsParameters<E>>) -> Self; 
+
+    fn one(params: Arc<RnsParameters<E>>) -> Self; 
+
+    fn get_value(&self) -> Option<F>; 
+
+    fn get_rns_params(&self) -> Arc<RnsParameters<E>>;
+
+    fn is_constant(&self) -> bool;
+
+    fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError>; 
+    
+    fn conditionally_select<CS: ConstraintSystem<E>>(
+        cs: &mut CS, flag: &Boolean, first: &Self, second: &Self
+    ) -> Result<Self, SynthesisError>;  
+   
+    fn negate<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        Self::zero(self.get_rns_params()).sub(cs, self)
+    }
+
+    fn conditionally_negate<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, flag: &Boolean
+    ) -> Result<Self, SynthesisError>; 
+    
+    fn normalize<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError>; 
+    
+    fn add<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError>;
+
+    fn sub<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError>; 
+   
+    fn scale<CS: ConstraintSystem<E>>(&self, cs: &mut CS, factor: u64) -> Result<Self, SynthesisError>; 
+
+    fn double<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        self.scale(cs, 2u64)
+    }
+
+    fn mul<CS: ConstraintSystem<E>>(cs: &mut CS, this: &Self, other: &Self) -> Result<Self, SynthesisError> {
+        Self::mul_with_chain(cs, &this, &other, FieldElementsChain::new())
+    }
+
+    fn mul_with_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, this: &Self, other: &Self, chain: FieldElementsChain<E, F, Self>
+    ) -> Result<Self, SynthesisError>;
+
+    fn square<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        self.square_with_chain(cs, FieldElementsChain::new())
+    }
+
+    fn square_with_chain<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, chain: FieldElementsChain<E, F, Self>
+    ) -> Result<Self, SynthesisError>;  
+
+    fn div<CS: ConstraintSystem<E>>(&self, cs: &mut CS, den: &Self) -> Result<Self, SynthesisError> {
+        let mut num_chain = FieldElementsChain::new();
+        num_chain.add_pos_term(self);
+        Self::div_with_chain(cs, num_chain, den)
+    }
+
+    fn inverse<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        let mut num_chain = FieldElementsChain::new();
+        num_chain.add_pos_term(&Self::one(self.get_rns_params()));
+        Self::div_with_chain(cs, num_chain, self)
+    }
+
+    fn div_with_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: FieldElementsChain<E, F, Self>, den: &Self
+    ) -> Result<Self, SynthesisError>; 
+
+    fn enforce_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
+    where CS: ConstraintSystem<E>;
+        
+    fn enforce_not_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
+    where CS: ConstraintSystem<E>;
+        
+    fn equals<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<Boolean, SynthesisError> 
+    where CS: ConstraintSystem<E>;
+       
+    fn collapse_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: FieldElementsChain<E, F, Self>
+    ) -> Result<Self, SynthesisError>;
+
+    fn enforce_chain_is_zero<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: FieldElementsChain<E, F, Self>, 
+    ) -> Result<(), SynthesisError>;
+
+    fn from_boolean(flag: &Boolean, params: Arc<RnsParameters<E>>) -> Self;
+
+    fn conditional_constant(value: F, flag: &Boolean, params: Arc<RnsParameters<E>>) -> Self;
+
+    fn frobenius_power_map<CS>(&self, cs: &mut CS, power: usize)-> Result<Self, SynthesisError>
+    where CS: ConstraintSystem<E>;
 }
 
 

@@ -28,21 +28,21 @@ pub use self::range_checks::*;
 pub use self::range_check_table2::*;
 
 pub mod amplified_linear_combination;
-pub mod field;
+pub mod fp;
 pub use self::amplified_linear_combination::*;
-pub use self::field::*;
+pub use self::fp::*;
 
 pub mod fp2;
 pub use self::fp2::*;
 
-pub mod fp6;
-pub use self::fp6::*;
+// pub mod fp6;
+// pub use self::fp6::*;
 
-pub mod fp12;
-pub use self::fp12::*;
+// pub mod fp12;
+// pub use self::fp12::*;
 
-pub mod algebraic_torus;
-pub use self::algebraic_torus::*;
+// pub mod algebraic_torus;
+// pub use self::algebraic_torus::*;
 
 
 pub const BITWISE_LOGICAL_OPS_TABLE_NAME: &'static str = "Table for bitwise logical ops";

@@ -1348,3 +1348,391 @@ where <G as GenericCurveAffine>::Base: PrimeField
 
          
 
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MultiexpStrategy {
+    SelectionTree,
+    WaksmanBasedRam,
+    HashSetsBasedRam
+}
+
+impl std::fmt::Display for MultiexpStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MultiexpStrategy::SelectionTree => write!(f, "selection table"),
+            MultiexpStrategy::WaksmanBasedRam => write!(f, "waksman based ram"),
+            MultiexpStrategy::HashSetsBasedRam => write!(f, "hash-sets based ram")
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MultiExpGeometry {
+    pub strategy: MultiexpStrategy,
+    pub width: usize,
+}
+
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ScalarDecomposition {
+    pub k1_is_negative: bool,
+    pub k2_is_negative: bool,
+    pub k1_modulus: BigUint,
+    pub k2_modulus: BigUint
+}
+
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CurveType {
+    BN256,
+    BLS12_381,
+    SECP256K1
+}
+
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CurveCircuitParameters<E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+where <G as GenericCurveAffine>::Base: PrimeField 
+{
+    pub base_field_rns_params: RnsParameters<E, G::Base>,
+    pub scalar_field_rns_params: RnsParameters<E, G::Scalar>,
+    pub is_prime_order_curve: bool,
+
+    pub fp2_offset_generator_x_c0: G::Base,
+    pub fp2_offset_generator_x_c1: G::Base,
+    pub fp2_offset_generator_y_c0: G::Base,
+    pub fp2_offset_generator_y_c1: G::Base,
+
+    pub fp2_pt_ord3_x_c0: G::Base,
+    pub fp2_pt_ord3_x_c1: G::Base,
+    pub fp2_pt_ord3_y_c0: G::Base,
+    pub fp2_pt_ord3_y_c1: G::Base,
+    
+    _marker: std::marker::PhantomData<T>,
+
+    // parameters related to endomorphism:
+    // decomposition of scalar k as k = k1 + \lambda * k2 
+    // where multiplication by \lambda transorms affine point P=(x, y) into Q=(\beta * x, -y)
+    // scalars k1 and k2 have bitlength twice shorter than k
+    // a1, b1, a2, b2 are auxiliary parameters dependent only on the curve, which are used actual decomposition
+    // see "Guide to Elliptic Curve Cryptography" algorithm  3.74 for reference
+    pub lambda: G::Scalar,
+    pub beta: G::Base,
+    pub a1: BigUint,
+    pub a2: BigUint,
+    pub minus_b1: BigUint,
+    pub b2: BigUint,
+
+    pub opt_multiexp_geometry: MultiExpGeometry,
+    pub curve_type: CurveType
+}
+
+
+
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CurveCircuitParameters<E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
+where <G as GenericCurveAffine>::Base: PrimeField 
+{
+    pub base_field_rns_params: RnsParameters<E, G::Base>,
+    pub scalar_field_rns_params: RnsParameters<E, G::Scalar>,
+    pub is_prime_order_curve: bool,
+
+    pub fp2_offset_generator_x_c0: G::Base,
+    pub fp2_offset_generator_x_c1: G::Base,
+    pub fp2_offset_generator_y_c0: G::Base,
+    pub fp2_offset_generator_y_c1: G::Base,
+
+    pub fp2_pt_ord3_x_c0: G::Base,
+    pub fp2_pt_ord3_x_c1: G::Base,
+    pub fp2_pt_ord3_y_c0: G::Base,
+    pub fp2_pt_ord3_y_c1: G::Base,
+    
+    _marker: std::marker::PhantomData<T>,
+
+    // parameters related to endomorphism:
+    // decomposition of scalar k as k = k1 + \lambda * k2 
+    // where multiplication by \lambda transorms affine point P=(x, y) into Q=(\beta * x, -y)
+    // scalars k1 and k2 have bitlength twice shorter than k
+    // a1, b1, a2, b2 are auxiliary parameters dependent only on the curve, which are used actual decomposition
+    // see "Guide to Elliptic Curve Cryptography" algorithm  3.74 for reference
+    pub lambda: G::Scalar,
+    pub beta: G::Base,
+    pub a1: BigUint,
+    pub a2: BigUint,
+    pub minus_b1: BigUint,
+    pub b2: BigUint,
+
+    pub opt_multiexp_geometry: MultiExpGeometry,
+    pub curve_type: CurveType
+}
+
+impl<E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> CurveCircuitParameters<E, G, T> 
+where <G as GenericCurveAffine>::Base: PrimeField {
+    fn rounded_div(dividend: BigUint, divisor: BigUint) -> BigUint {
+        (dividend + (divisor.clone() >> 1)) / divisor
+    }
+
+    pub fn get_opt_multiexp_geometry(&self) -> MultiExpGeometry {
+        self.opt_multiexp_geometry
+    }
+
+    pub fn get_endomorphism_bitlen_limit(&self) -> usize {
+        // https://www.iacr.org/archive/crypto2001/21390189.pdf, lemma2:
+        // The vector u = (k1, k2), has norm at most max(||v1||, ||v2||), where 
+        // v1 = (a1, b1), v2 = (a2, b2)
+        let v1_squared_norm = self.a1.clone() * self.a1.clone() + self.minus_b1.clone() * self.minus_b1.clone();
+        let v2_squared_norm = self.a2.clone() * self.a2.clone() + self.b2.clone() * self.b2.clone();
+        let max_squared_norm = BigUint::max(v1_squared_norm, v2_squared_norm);
+        let limit = (max_squared_norm.bits() / 2) as usize;
+        limit
+    }
+
+    pub fn calculate_decomposition(&self, num: G::Scalar) -> ScalarDecomposition {
+        // Compute c1 = |b2 * k/n| and c2 = |−b1 * k/n|.
+        // Compute k1 = k − c1 * a1 −c2 * a2 and k2 = −c1 * b1 − c2 * b2
+        let n = repr_to_biguint::<G::Scalar>(&G::Scalar::char());
+        let k = fe_to_biguint(&num);
+        let limit = self.get_endomorphism_bitlen_limit();
+
+        let c1 = Self::rounded_div(k.clone() * self.b2.clone(), n.clone()); 
+        let c2 = Self::rounded_div(k.clone() * self.minus_b1.clone(), n.clone());
+
+        let a1_as_fe = biguint_to_fe::<G::Scalar>(self.a1.clone());
+        let a2_as_fe = biguint_to_fe::<G::Scalar>(self.a2.clone());
+        let minus_b1_as_fe = biguint_to_fe::<G::Scalar>(self.minus_b1.clone());
+        let b2_as_fe = biguint_to_fe::<G::Scalar>(self.b2.clone());
+        let c1_as_fe = biguint_to_fe::<G::Scalar>(c1);
+        let c2_as_fe = biguint_to_fe::<G::Scalar>(c2);
+
+        let k1 = {
+            let mut tmp0 = c1_as_fe.clone();
+            tmp0.mul_assign(&a1_as_fe);
+            let mut tmp1 = c2_as_fe.clone();
+            tmp1.mul_assign(&a2_as_fe);
+            
+            let mut res = num;
+            res.sub_assign(&tmp0);
+            res.sub_assign(&tmp1);
+            res
+        };
+        
+        let k2 = {
+            let mut tmp0 = c1_as_fe.clone();
+            tmp0.mul_assign(&minus_b1_as_fe);
+            let mut tmp1 = c2_as_fe.clone();
+            tmp1.mul_assign(&b2_as_fe);
+            
+            let mut res = tmp0;
+            res.sub_assign(&tmp1);
+            res
+        };
+
+        let mut k1 = fe_to_biguint(&k1);
+        let k1_is_negative = k1.bits() as usize > limit;
+        if k1_is_negative {
+            k1 = n.clone() - k1;
+        }
+
+        let mut k2 = fe_to_biguint(&k2);
+        let k2_is_negative = k2.bits() as usize > limit;
+        if k2_is_negative {
+            k2 = n.clone() - k2;
+        }
+
+        ScalarDecomposition {
+            k1_is_negative,
+            k2_is_negative,
+            k1_modulus: k1,
+            k2_modulus: k2
+        }
+    }
+}
+
+use crate::bellman::pairing::bn256::Bn256;
+type Bn256CircuitParameters<E> = CurveCircuitParameters<E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>; 
+pub fn generate_optimal_circuit_params_for_bn256<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, base_field_limb_size: usize, scalar_field_limb_size: usize
+) -> Bn256CircuitParameters<E>
+{
+    type Fq = <<Bn256 as Engine>::G1Affine as GenericCurveAffine>::Base;
+    type Fr = <<Bn256 as Engine>::G1Affine as GenericCurveAffine>::Scalar;
+
+    let fp2_offset_generator_x_c0 = Fq::from_str(
+        "16300907393763553952797146753989960732368004674693012223284497678682995867793"
+    ).expect("should parse");
+    let fp2_offset_generator_x_c1 = Fq::zero();
+    let fp2_offset_generator_y_c0 = Fq::zero();
+    let fp2_offset_generator_y_c1 = Fq::from_str(
+        "18847519929951292720903138501492801907098041246451137057597277895538377195039"
+    ).expect("should parse");
+
+    let fp2_pt_ord3_x_c0 = Fq::zero();
+    let fp2_pt_ord3_x_c1 = Fq::zero();
+    let fp2_pt_ord3_y_c0 = Fq::zero();
+    let fp2_pt_ord3_y_c1 = Fq::from_str(
+        "21888242871839275217838484774961031245859103671646299620740479376884814904650"
+    ).expect("should parse"); 
+
+    let lambda = Fr::from_str(
+        "21888242871839275217838484774961031246154997185409878258781734729429964517155"
+    ).expect("should parse");
+    let beta = Fq::from_str(
+        "21888242871839275220042445260109153167277707414472061641714758635765020556616"
+    ).expect("should parse");
+
+    let a1 = BigUint::from_str("147946756881789319000765030803803410728").expect("should parse");
+    let a2 = BigUint::from_str("9931322734385697763").expect("should parse");
+    let minus_b1 = BigUint::from_str("9931322734385697763").expect("should parse");
+    let b2 = BigUint::from_str("147946756881789319010696353538189108491").expect("should parse");
+
+    let opt_multiexp_geometry = MultiExpGeometry { 
+        width: 4, strategy: MultiexpStrategy::SelectionTree
+    };
+
+    CurveCircuitParameters {
+        base_field_rns_params: RnsParameters::<E, Fq>::new_optimal(cs, base_field_limb_size),
+        scalar_field_rns_params: RnsParameters::<E, Fr>::new_optimal(cs, scalar_field_limb_size),
+        is_prime_order_curve: true,
+        fp2_offset_generator_x_c0,
+        fp2_offset_generator_x_c1,
+        fp2_offset_generator_y_c0,
+        fp2_offset_generator_y_c1,
+        fp2_pt_ord3_x_c0,
+        fp2_pt_ord3_x_c1,
+        fp2_pt_ord3_y_c0,
+        fp2_pt_ord3_y_c1,
+        lambda, beta, a1, a2, minus_b1, b2,
+        opt_multiexp_geometry,
+        curve_type: CurveType::BN256,
+        _marker: std::marker::PhantomData::<Bn256Extension2Params>
+    }
+}
+
+
+use super::secp256k1::PointAffine as SecpPointAffine;
+type Secp256K1CircuitParameters<E> = CurveCircuitParameters<E, SecpPointAffine, Secp256K1Extension2Params>; 
+pub fn generate_optimal_circuit_params_for_secp256k1<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, base_field_limb_size: usize, scalar_field_limb_size: usize
+) -> Secp256K1CircuitParameters<E>
+{
+    use super::secp256k1::fq::Fq as Fq;
+    use super::secp256k1::fr::Fr as Fr;
+
+    let fp2_offset_generator_x_c0 = Fq::from_str(
+        "78054183989958579898435060651083551759218714698759530613045865018582996959238"
+    ).expect("should parse");
+    let fp2_offset_generator_x_c1 = Fq::zero();
+    let fp2_offset_generator_y_c0 = Fq::zero();
+    let fp2_offset_generator_y_c1 = Fq::from_str(
+        "61858051359164228581422701657130827979253603865681507703459123009171000168235"
+    ).expect("should parse");
+
+    let fp2_pt_ord3_x_c0 = Fq::zero();
+    let fp2_pt_ord3_x_c1 = Fq::zero();
+    let fp2_pt_ord3_y_c0 = Fq::zero();
+    let fp2_pt_ord3_y_c1 = Fq::from_str(
+        "64828261740814840065360381756190772627110652128289340260788836867053167272156"
+    ).expect("should parse"); 
+
+    let lambda = Fr::from_str(
+        "78074008874160198520644763525212887401909906723592317393988542598630163514318"
+    ).expect("should parse");
+    let beta = Fq::from_str(
+        "60197513588986302554485582024885075108884032450952339817679072026166228089408"
+    ).expect("should parse");
+
+    let a1 = BigUint::from_str("303414439467246543595250775667605759171").expect("should parse");
+    let a2 = BigUint::from_str("64502973549206556628585045361533709077").expect("should parse");
+    let minus_b1 = BigUint::from_str("64502973549206556628585045361533709077").expect("should parse");
+    let b2 = BigUint::from_str("367917413016453100223835821029139468248").expect("should parse");
+
+    let opt_multiexp_geometry = MultiExpGeometry { 
+        width: 4, strategy: MultiexpStrategy::SelectionTree
+    };
+
+    CurveCircuitParameters {
+        base_field_rns_params: RnsParameters::<E, Fq>::new_optimal(cs, base_field_limb_size),
+        scalar_field_rns_params: RnsParameters::<E, Fr>::new_optimal(cs, scalar_field_limb_size),
+        is_prime_order_curve: true,
+        fp2_offset_generator_x_c0,
+        fp2_offset_generator_x_c1,
+        fp2_offset_generator_y_c0,
+        fp2_offset_generator_y_c1,
+        fp2_pt_ord3_x_c0,
+        fp2_pt_ord3_x_c1,
+        fp2_pt_ord3_y_c0,
+        fp2_pt_ord3_y_c1,
+        lambda, beta, a1, a2, minus_b1, b2,
+        opt_multiexp_geometry,
+        curve_type: CurveType::SECP256K1,
+        _marker: std::marker::PhantomData::<Secp256K1Extension2Params>
+    }
+}
+
+
+use crate::bellman::pairing::bls12_381::Bls12;
+type BLs12CircuitParameters<E> = CurveCircuitParameters<E, <Bls12 as Engine>::G1Affine, BLS12Extension2Params>; 
+pub fn generate_optimal_circuit_params_for_bls12<E: Engine, CS: ConstraintSystem<E>>(
+    cs: &mut CS, base_field_limb_size: usize, scalar_field_limb_size: usize
+) -> BLs12CircuitParameters<E>
+{
+    type Fq = <<Bls12 as Engine>::G1Affine as GenericCurveAffine>::Base;
+    type Fr = <<Bls12 as Engine>::G1Affine as GenericCurveAffine>::Scalar;
+    println!("AAA");
+
+    let fp2_offset_generator_x_c0 = Fq::from_str(
+        "1067264685030724708538788882656460381104931541603938723410358338973606906391679083715376977125266347261808406513360"
+    ).expect("should parse");
+    let fp2_offset_generator_x_c1 = Fq::zero();
+    let fp2_offset_generator_y_c0 = Fq::from_str(
+        "3210129967153318302010561693068627155614057227824899339054521084929911738629207049913360141406473068435860637374216"
+    ).expect("should parse");
+    let fp2_offset_generator_y_c1 = Fq::zero();
+
+    println!("AAA");
+    
+    let fp2_pt_ord3_x_c0 = Fq::zero();
+    let fp2_pt_ord3_x_c1 = Fq::zero();
+    let mut fp2_pt_ord3_y_c0 = Fq::one();
+    fp2_pt_ord3_y_c0.double();
+    let fp2_pt_ord3_y_c1 = Fq::zero(); 
+
+    let lambda = Fr::from_str(
+        "228988810152649578064853576960394133503"
+    ).expect("should parse");
+    let beta = Fq::from_str(
+        "793479390729215512621379701633421447060886740281060493010456487427281649075476305620758731620350"
+    ).expect("should parse");
+
+    println!("AAA");
+
+    let a1 = BigUint::from_str("228988810152649578064853576960394133503").expect("should parse");
+    let a2 = BigUint::one();
+    let minus_b1 = BigUint::one();
+    let b2 = BigUint::from_str("228988810152649578064853576960394133504").expect("should parse");
+
+    let opt_multiexp_geometry = MultiExpGeometry { 
+        width: 4, strategy: MultiexpStrategy::SelectionTree
+    };
+
+    println!("AAB");
+
+    CurveCircuitParameters {
+        base_field_rns_params: RnsParameters::<E, Fq>::new_optimal(cs, base_field_limb_size),
+        scalar_field_rns_params: RnsParameters::<E, Fr>::new_optimal(cs, scalar_field_limb_size),
+        is_prime_order_curve: true,
+        fp2_offset_generator_x_c0,
+        fp2_offset_generator_x_c1,
+        fp2_offset_generator_y_c0,
+        fp2_offset_generator_y_c1,
+        fp2_pt_ord3_x_c0,
+        fp2_pt_ord3_x_c1,
+        fp2_pt_ord3_y_c0,
+        fp2_pt_ord3_y_c1,
+        lambda, beta, a1, a2, minus_b1, b2,
+        opt_multiexp_geometry,
+        curve_type: CurveType::BLS12_381,
+        _marker: std::marker::PhantomData::<BLS12Extension2Params>
+    }
+}

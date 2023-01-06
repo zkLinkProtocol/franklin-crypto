@@ -1,4 +1,5 @@
 use super::*;
+use crate::plonk::circuit::SomeArithmetizable;
 
 
 pub struct FieldElementsChain<E: Engine, F: Field, T: CircuitField<E, F>> {
@@ -19,7 +20,7 @@ impl<E: Engine, F: Field, T: CircuitField<E, F>> FieldElementsChain<E, F, T> {
     }
 
     pub fn fin(x: &mut Self) -> Self {
-        *x
+        std::mem::replace(x, Self::new())
     } 
     
     pub fn add_pos_term(&mut self, elem: &T) -> &mut Self {
@@ -38,10 +39,10 @@ impl<E: Engine, F: Field, T: CircuitField<E, F>> FieldElementsChain<E, F, T> {
 
     pub fn get_field_value(&self) -> Option<F> {
         let pos_total_sum = self.elems_to_add.iter().fold(
-            Some(F::zero()), |acc, x| acc.add(&x.get_field_value())
+            Some(F::zero()), |acc, x| acc.add(&x.get_value())
         );
         let neg_total_sum = self.elems_to_sub.iter().fold(
-            Some(F::zero()), |acc, x| acc.add(&x.get_field_value())
+            Some(F::zero()), |acc, x| acc.add(&x.get_value())
         );
         pos_total_sum.sub(&neg_total_sum)
     }
@@ -62,18 +63,20 @@ impl<E: Engine, F: Field, T: CircuitField<E, F>> FieldElementsChain<E, F, T> {
 }
 
 
-pub trait CircuitField<E: Engine, F: Field> {
+pub trait CircuitField<E: Engine, F: Field> : Sized + Clone {
     fn alloc<CS: ConstraintSystem<E>>(
-        cs: &mut CS, wit: Option<F>, params: &RnsParameters<E, F>
+        cs: &mut CS, wit: Option<F>, params: Arc<RnsParameters<E>>
     ) -> Result<Self, SynthesisError>;   
    
-    fn constant(v: F, params: &RnsParameters<E, F>) -> Self; 
+    fn constant(v: F, params: Arc<RnsParameters<E>>) -> Self; 
 
-    fn zero(params: &RnsParameters<E, F>) -> Self; 
+    fn zero(params: Arc<RnsParameters<E>>) -> Self; 
 
-    fn one(params: &RnsParameters<E, F>) -> Self; 
+    fn one(params: Arc<RnsParameters<E>>) -> Self; 
 
     fn get_value(&self) -> Option<F>; 
+
+    fn get_rns_params(&self) -> Arc<RnsParameters<E>>;
 
     fn is_constant(&self) -> bool;
 
@@ -84,10 +87,12 @@ pub trait CircuitField<E: Engine, F: Field> {
     ) -> Result<Self, SynthesisError>;  
    
     fn negate<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        Self::zero(&self.representation_params).sub(cs, self)
+        Self::zero(self.get_rns_params()).sub(cs, self)
     }
 
-    fn conditionally_negate<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError>; 
+    fn conditionally_negate<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, flag: &Boolean
+    ) -> Result<Self, SynthesisError>; 
     
     fn normalize<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError>; 
     
@@ -101,16 +106,20 @@ pub trait CircuitField<E: Engine, F: Field> {
         self.scale(cs, 2u64)
     }
 
-    fn mul<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
-        Self::mul_with_chain(cs, &self, &other, FieldElementsChain::new())
+    fn mul<CS: ConstraintSystem<E>>(cs: &mut CS, this: &Self, other: &Self) -> Result<Self, SynthesisError> {
+        Self::mul_with_chain(cs, &this, &other, FieldElementsChain::new())
     }
 
+    fn mul_with_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, this: &Self, other: &Self, chain: FieldElementsChain<E, F, Self>
+    ) -> Result<Self, SynthesisError>;
+
     fn square<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        Self::square_with_chain(cs, &self, &self, FieldElementsChain::new())
+        self.square_with_chain(cs, FieldElementsChain::new())
     }
 
     fn square_with_chain<CS: ConstraintSystem<E>>(
-        &self, cs: &mut CS, chain: FieldElementsChain<E, F, T>
+        &self, cs: &mut CS, chain: FieldElementsChain<E, F, Self>
     ) -> Result<Self, SynthesisError>;  
 
     fn div<CS: ConstraintSystem<E>>(&self, cs: &mut CS, den: &Self) -> Result<Self, SynthesisError> {
@@ -121,39 +130,35 @@ pub trait CircuitField<E: Engine, F: Field> {
 
     fn inverse<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
         let mut num_chain = FieldElementsChain::new();
-        num_chain.add_pos_term(&Self::one(&self.representation_params));
+        num_chain.add_pos_term(&Self::one(self.get_rns_params()));
         Self::div_with_chain(cs, num_chain, self)
     }
 
-    fn div_with_chain<CS>(cs: &mut CS, chain: FieldElementsChain<'a, E, F>, den: &Self) -> Result<Self, SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {}
-        
-    fn mul_with_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, a: &Self, b: &Self, mut chain: FieldElementsChain<'a, E, F>,
-    ) -> Result<Self, SynthesisError> {}
-       
+    fn div_with_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: FieldElementsChain<E, F, Self>, den: &Self
+    ) -> Result<Self, SynthesisError>; 
 
     fn enforce_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {}
+    where CS: ConstraintSystem<E>;
         
     fn enforce_not_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {}
+    where CS: ConstraintSystem<E>;
         
-    fn equals<CS: ConstraintSystem<E>>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<Boolean, SynthesisError> 
-    {}
+    fn equals<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<Boolean, SynthesisError> 
+    where CS: ConstraintSystem<E>;
        
     fn collapse_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, chain: FieldElementsChain<'a, E, F>
-    ) -> Result<Self, SynthesisError> {}
+        cs: &mut CS, chain: FieldElementsChain<E, F, Self>
+    ) -> Result<Self, SynthesisError>;
 
-    fn from_boolean(flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {}
-
-    fn conditional_constant(value: F, flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {}
-       
     fn enforce_chain_is_zero<CS: ConstraintSystem<E>>(
-        cs: &mut CS, chain: FieldElementsChain<'a, E, F>, 
-    ) -> Result<(), SynthesisError> {}
+        cs: &mut CS, chain: FieldElementsChain<E, F, Self>, 
+    ) -> Result<(), SynthesisError>;
+
+    fn from_boolean(flag: &Boolean, params: Arc<RnsParameters<E>>) -> Self;
+
+    fn conditional_constant(value: F, flag: &Boolean, params: Arc<RnsParameters<E>>) -> Self;
+
+    fn frobenius_power_map<CS>(&self, cs: &mut CS, power: usize)-> Result<Self, SynthesisError>
+    where CS: ConstraintSystem<E>;
 }

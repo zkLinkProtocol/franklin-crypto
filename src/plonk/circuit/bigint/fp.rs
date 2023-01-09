@@ -617,9 +617,9 @@ impl<E: Engine, F: PrimeField> FieldElement<E, F> {
 
     // this method requires x to be either loosely refuced or normalized, if it is in fact not - we do
     // normalization ourselves, and that's why referece is mutable
-    #[deprecated(note="should be double-checked before usage, call ordinary is_zero for now")]
     pub fn is_zero_optimized<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
     {
+        // NB: should be double-checked for correctness during audit
         let params = self.representation_params.clone();
         let is_normalized = self.reduction_status == ReductionStatus::Normalized;
         self.reduce(cs)?;
@@ -766,7 +766,7 @@ impl<E: Engine, F: PrimeField> FieldElement<E, F> {
     #[track_caller]
     pub fn reduce<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
         if self.reduction_status == ReductionStatus::Unreduced && !self.is_constant() {
-            let one = <Self as CircuitField<E, F>>::one(self.representation_params.clone());
+            let one = <Self as CoreCircuitField<E, F>>::one(self.representation_params.clone());
             let reduced = <Self as CircuitField<E, F>>::mul(cs, &self, &one)?;
             *self = reduced;
             self.reduction_status = ReductionStatus::Loose;
@@ -1506,7 +1506,7 @@ impl<E: Engine, F: PrimeField> FieldElement<E, F> {
 }
 
 
-impl<E: Engine, F: PrimeField> CircuitField<E, F> for FieldElement<E, F> {
+impl<E: Engine, F: PrimeField> CoreCircuitField<E, F> for FieldElement<E, F> {
     // NB: we do not check for normalization on allocation
     #[track_caller]
     fn alloc<CS: ConstraintSystem<E>>(
@@ -1581,7 +1581,12 @@ impl<E: Engine, F: PrimeField> CircuitField<E, F> for FieldElement<E, F> {
     }
 
     fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> {
-        self.is_zero_unopt(cs)
+        let params = self.get_rns_params();
+        if params.represented_field_modulus_bitlength == params.native_field_modulus_bitlength {
+            self.is_zero_optimized(cs)
+        } else {
+            self.is_zero_unopt(cs)
+        }
     }
     
     #[track_caller]
@@ -1668,59 +1673,6 @@ impl<E: Engine, F: PrimeField> CircuitField<E, F> for FieldElement<E, F> {
    
     fn scale<CS: ConstraintSystem<E>>(&self, cs: &mut CS, factor: u64) -> Result<Self, SynthesisError> {
         self.scale_with_reduction(cs, factor, !self.representation_params.allow_individual_limb_overflow)       
-    }
- 
-    #[track_caller]
-    fn mul_with_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, a: &Self, b: &Self, mut chain: FieldElementsChain<E, F, Self>,
-    ) -> Result<Self, SynthesisError> {
-        let params = a.representation_params.clone();
-        let mut final_value = a.get_field_value();
-        final_value = final_value.mul(&b.get_field_value());
-        final_value = final_value.add(&chain.get_field_value());
-        let all_constants = a.is_constant() && b.is_constant() && chain.is_constant();
-        
-        if all_constants {
-            let r = Self::constant(final_value.unwrap(), params);
-            Ok(r)
-        }
-        else {
-            let r = Self::alloc(cs, final_value, params)?;
-            chain.add_neg_term(&r);
-            Self::constraint_fma(cs, &a, &b, chain)?;
-            Ok(r)
-        }
-    }
-
-    fn square_with_chain<CS>(&self, cs: &mut CS, chain: FieldElementsChain<E, F, Self>) -> Result<Self, SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {
-        Self::mul_with_chain(cs, &self, &self, chain)
-    }
-
-    #[track_caller]
-    fn div_with_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, chain: FieldElementsChain<E, F, Self>, den: &Self
-    ) -> Result<Self, SynthesisError> {
-        let params = den.representation_params.clone();
-        // we do chain/den = result mod p, where we assume that den != 0
-        assert!(!den.get_field_value().unwrap_or(F::one()).is_zero());
-
-        let numerator_value = chain.get_field_value();
-        let den_inverse_value = den.get_field_value().map(|x| x.inverse().expect("denominator is zero"));
-        let final_value = numerator_value.mul(&den_inverse_value);
-        let all_constants = den.is_constant() && chain.is_constant();
-        
-        if all_constants {
-            let res = Self::constant(final_value.unwrap(), params);
-            Ok(res)
-        }
-        else {
-            let res = Self::alloc(cs, final_value, params)?;
-            let chain = chain.negate();
-            Self::constraint_fma(cs, &res, &den, chain)?;
-            Ok(res)
-        }
     }
 
     #[track_caller]
@@ -1905,10 +1857,66 @@ impl<E: Engine, F: PrimeField> CircuitField<E, F> for FieldElement<E, F> {
         cs: &mut CS, chain: FieldElementsChain<E, F, Self>, 
     ) -> Result<(), SynthesisError> {
         let params = chain.elems_to_add.get(0).unwrap_or_else(|| &chain.elems_to_sub[0]).representation_params.clone();
-        let zero = <Self as CircuitField<E, F>>::zero(params);
+        let zero = <Self as CoreCircuitField<E, F>>::zero(params);
         Self::constraint_fma(cs, &zero, &zero, chain)
     }
+}
 
+
+impl<E: Engine, F: PrimeField> CircuitField<E, F> for FieldElement<E, F> {
+    #[track_caller]
+    fn mul_with_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, a: &Self, b: &Self, mut chain: FieldElementsChain<E, F, Self>,
+    ) -> Result<Self, SynthesisError> {
+        let params = a.representation_params.clone();
+        let mut final_value = a.get_field_value();
+        final_value = final_value.mul(&b.get_field_value());
+        final_value = final_value.add(&chain.get_field_value());
+        let all_constants = a.is_constant() && b.is_constant() && chain.is_constant();
+        
+        if all_constants {
+            let r = Self::constant(final_value.unwrap(), params);
+            Ok(r)
+        }
+        else {
+            let r = Self::alloc(cs, final_value, params)?;
+            chain.add_neg_term(&r);
+            Self::constraint_fma(cs, &a, &b, chain)?;
+            Ok(r)
+        }
+    }
+
+    fn square_with_chain<CS>(&self, cs: &mut CS, chain: FieldElementsChain<E, F, Self>) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        Self::mul_with_chain(cs, &self, &self, chain)
+    }
+
+    #[track_caller]
+    fn div_with_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: FieldElementsChain<E, F, Self>, den: &Self
+    ) -> Result<Self, SynthesisError> {
+        let params = den.representation_params.clone();
+        // we do chain/den = result mod p, where we assume that den != 0
+        assert!(!den.get_field_value().unwrap_or(F::one()).is_zero());
+
+        let numerator_value = chain.get_field_value();
+        let den_inverse_value = den.get_field_value().map(|x| x.inverse().expect("denominator is zero"));
+        let final_value = numerator_value.mul(&den_inverse_value);
+        let all_constants = den.is_constant() && chain.is_constant();
+        
+        if all_constants {
+            let res = Self::constant(final_value.unwrap(), params);
+            Ok(res)
+        }
+        else {
+            let res = Self::alloc(cs, final_value, params)?;
+            let chain = chain.negate();
+            Self::constraint_fma(cs, &res, &den, chain)?;
+            Ok(res)
+        }
+    }
+  
     fn frobenius_power_map<CS>(&self, _cs: &mut CS, _power: usize)-> Result<Self, SynthesisError>
     where CS: ConstraintSystem<E> {
         Ok(self.clone())

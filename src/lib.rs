@@ -25,6 +25,8 @@ extern crate indexmap;
 extern crate smallvec;
 extern crate addchain;
 extern crate num_iter;
+extern crate array_init;
+
 
 use bellman::pairing;
 use bellman::pairing::ff;
@@ -35,6 +37,9 @@ extern crate lazy_static;
 
 #[macro_use]
 extern crate arr_macro;
+
+#[macro_use]
+extern crate paste;
 
 
 #[cfg(test)]

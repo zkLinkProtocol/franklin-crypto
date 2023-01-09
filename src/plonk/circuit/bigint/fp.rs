@@ -1110,9 +1110,8 @@ impl<E: Engine, F: PrimeField> FieldElement<E, F> {
         }
     } 
 
-
     #[track_caller]
-    pub fn constraint_fma<CS: ConstraintSystem<E>>(
+    pub fn constraint_fma_impl<CS: ConstraintSystem<E>>(
         cs: &mut CS, a: &Self, b: &Self, chain: FieldElementsChain<E, F, Self>
     ) -> Result<(), SynthesisError> {  
         assert!(Self::check_params_equivalence(a, b));
@@ -1441,7 +1440,7 @@ impl<E: Engine, F: PrimeField> FieldElement<E, F> {
         assert!(chain.len() > 0);
         let params = chain.elems_to_add.get(0).unwrap_or_else(|| &chain.elems_to_sub[0]).representation_params.clone();
         if chain.is_constant() {
-            let val = chain.get_field_value().unwrap();
+            let val = chain.get_value().unwrap();
             return Ok(Self::constant(val, params))
         }
 
@@ -1492,7 +1491,7 @@ impl<E: Engine, F: PrimeField> FieldElement<E, F> {
         let mut new = Self {
             binary_limbs: new_binary_limbs,
             base_field_limb: base_field_term,
-            value: chain.get_field_value(),
+            value: chain.get_value(),
             representation_params: params,
             reduction_status: ReductionStatus::Unreduced
         };
@@ -1871,7 +1870,7 @@ impl<E: Engine, F: PrimeField> CircuitField<E, F> for FieldElement<E, F> {
         let params = a.representation_params.clone();
         let mut final_value = a.get_field_value();
         final_value = final_value.mul(&b.get_field_value());
-        final_value = final_value.add(&chain.get_field_value());
+        final_value = final_value.add(&chain.get_value());
         let all_constants = a.is_constant() && b.is_constant() && chain.is_constant();
         
         if all_constants {
@@ -1900,8 +1899,8 @@ impl<E: Engine, F: PrimeField> CircuitField<E, F> for FieldElement<E, F> {
         // we do chain/den = result mod p, where we assume that den != 0
         assert!(!den.get_field_value().unwrap_or(F::one()).is_zero());
 
-        let numerator_value = chain.get_field_value();
-        let den_inverse_value = den.get_field_value().map(|x| x.inverse().expect("denominator is zero"));
+        let numerator_value = chain.get_value();
+        let den_inverse_value = den.get_value().map(|x| x.inverse().expect("denominator is zero"));
         let final_value = numerator_value.mul(&den_inverse_value);
         let all_constants = den.is_constant() && chain.is_constant();
         
@@ -1920,6 +1919,12 @@ impl<E: Engine, F: PrimeField> CircuitField<E, F> for FieldElement<E, F> {
     fn frobenius_power_map<CS>(&self, _cs: &mut CS, _power: usize)-> Result<Self, SynthesisError>
     where CS: ConstraintSystem<E> {
         Ok(self.clone())
+    }
+
+    fn constraint_fma<CS: ConstraintSystem<E>>(
+        cs: &mut CS, a: &Self, b: &Self, chain: FieldElementsChain<E, F, Self>
+    ) -> Result<(), SynthesisError> {
+        Self::constraint_fma_impl(cs, a, b, chain)
     }
 }
 

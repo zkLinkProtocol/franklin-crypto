@@ -38,7 +38,7 @@ impl<E: Engine, F: Field, T: CoreCircuitField<E, F>> FieldElementsChain<E, F, T>
         self.elems_to_add.iter().chain(self.elems_to_sub.iter()).all(|x| x.is_constant())
     }
 
-    pub fn get_field_value(&self) -> Option<F> {
+    pub fn get_value(&self) -> Option<F> {
         let pos_total_sum = self.elems_to_add.iter().fold(
             Some(F::zero()), |acc, x| acc.add(&x.get_value())
         );
@@ -186,20 +186,28 @@ pub trait CircuitField<E: Engine, F: Field> : CoreCircuitField<E, F>
 
     fn frobenius_power_map<CS>(&self, cs: &mut CS, power: usize)-> Result<Self, SynthesisError>
     where CS: ConstraintSystem<E>;
+
+    fn mul_by<CS: ConstraintSystem<E>>(&self, cs: &mut CS, elem: &Self) -> Result<Self, SynthesisError> {
+        Self::mul(cs, self, elem)
+    }
+
+    fn constraint_fma<CS: ConstraintSystem<E>>(
+        cs: &mut CS, a: &Self, b: &Self, chain: FieldElementsChain<E, F, Self>
+    ) -> Result<(), SynthesisError>;
 }
 
 
 pub trait FieldExtensionParams<E: Engine, F: Field, const N: usize> : Clone {
     type BaseField: Field;
-    type BaseCircuitField: CoreCircuitField<E, Self::BaseField>;
+    type BaseCircuitField: CircuitField<E, Self::BaseField>;
     
     fn convert_to_structured_witness(arr: [Self::BaseField; N]) -> F;
     fn convert_from_structured_witness(val: F) -> [Self::BaseField; N];
 }
 
 
-#[derive(Clone, Debug)]
-struct ExtField<E: Engine, F: Field, const N: usize, T: FieldExtensionParams<E, F, N>> {
+#[derive(Clone)]
+pub struct ExtField<E: Engine, F: Field, const N: usize, T: FieldExtensionParams<E, F, N>> {
     coordinates: [T::BaseCircuitField; N],
     wit: Option<F>,
     _marker: std::marker::PhantomData<T>
@@ -227,13 +235,30 @@ impl<E: Engine, F: Field, const N: usize, T: FieldExtensionParams<E, F, N>> ExtF
         }
     }
 
-    fn from_base_field(x: T::BaseCircuitField) -> Self {
+    pub fn from_base_field(x: T::BaseCircuitField) -> Self {
         let params = x.get_rns_params();
         let zero = <T::BaseCircuitField as CoreCircuitField<E, _>>::zero(params);
         let mut coordinates: [T::BaseCircuitField; N] = array_init::array_init(|_i: usize| zero.clone());
         coordinates[0] = x;
         Self::from_coordinates(coordinates)
     }
+
+    pub fn mul_by_base_field<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS, base_field_var: &T::BaseCircuitField
+    ) -> Result<Self, SynthesisError> {
+        let params = self.get_rns_params();
+        let zero = <T::BaseCircuitField as CoreCircuitField<E, _>>::zero(params);
+        let mut coordinates: [T::BaseCircuitField; N] = array_init::array_init(|_i: usize| zero.clone());
+
+        for idx in 0..N {
+            coordinates[idx] = {
+                <T::BaseCircuitField as CircuitField<E, _>>::mul(cs, &self[idx], base_field_var)?
+            };
+        }
+       
+        Ok(Self::from_coordinates(coordinates))
+    }
+    
 }
 
 impl<E, F, const N: usize, T> CoreCircuitField<E, F> for ExtField<E, F, N, T>

@@ -32,8 +32,8 @@ pub mod fp;
 pub use self::amplified_linear_combination::*;
 pub use self::fp::*;
 
-pub mod fp2;
-pub use self::fp2::*;
+// pub mod fp2;
+// pub use self::fp2::*;
 
 // pub mod fp6;
 // pub use self::fp6::*;

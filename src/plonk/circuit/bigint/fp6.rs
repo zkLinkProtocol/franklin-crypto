@@ -33,7 +33,7 @@ pub type Fp6<E, F, T> = ExtField<E, F, EXT_DEGREE, T>;
 pub struct Bn256Extension6Params {}
 impl<E: Engine> FieldExtensionParams<E, Bn256Fq6, EXT_DEGREE> for Bn256Extension6Params {
     type BaseField = Bn256Fq2;
-    type BaseCircuitField = Fp2<E, Bn256Fq2, Bn256Extension2Params>;
+    type BaseCircuitField = ExtField<E, Bn256Fq2, 2, Bn256Extension2Params>;
                 
     fn convert_to_structured_witness(arr: [Self::BaseField; EXT_DEGREE]) -> Bn256Fq6 {
         Bn256Fq6 { c0: arr[0], c1: arr[1], c2: arr[2] }
@@ -70,7 +70,8 @@ where T::BaseCircuitField : std::fmt::Debug
 }
 
 
-impl<E: Engine, F: Field, T: Extension6Params<E, F>> CircuitField<E, F> for ExtField<E, F, EXT_DEGREE, T> {  
+impl<E: Engine, F: Field, T: Extension6Params<E, F>> CircuitField<E, F> for ExtField<E, F, EXT_DEGREE, T> 
+{  
     #[track_caller]
     fn mul_with_chain<CS: ConstraintSystem<E>>(
         cs: &mut CS, first: &Self, second: &Self, chain: FieldElementsChain<E, F, Self>

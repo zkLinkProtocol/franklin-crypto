@@ -22,7 +22,6 @@ pub trait Extension2Params<E: Engine, F: Field>: FieldExtensionParams<E, F, EXT_
     // default impl is consistent only with non-residue == -1
     fn is_default_impl() -> bool { true }
 }
-pub type Fp2<E, F, T> = ExtField<E, F, EXT_DEGREE, T>;
 
 
 macro_rules! construct_ext2_params {

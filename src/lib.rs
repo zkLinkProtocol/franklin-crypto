@@ -3,6 +3,7 @@
 #![warn(unused_assignments)]
 #![feature(unzip_option)]
 #![feature(associated_type_defaults)]
+#![feature(generic_const_exprs)]
 
 
 pub extern crate bellman;
@@ -40,6 +41,9 @@ extern crate arr_macro;
 
 #[macro_use]
 extern crate paste;
+
+#[macro_use]
+extern crate sealed;
 
 
 #[cfg(test)]

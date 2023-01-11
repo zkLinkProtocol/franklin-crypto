@@ -16,7 +16,7 @@ use super::boolean::*;
 use std::iter::FromIterator;
 use std::sync::Arc;
 
-pub mod traits;
+mod traits;
 pub mod bigint;
 pub mod range_check_custom_gate2;
 pub mod range_checks;

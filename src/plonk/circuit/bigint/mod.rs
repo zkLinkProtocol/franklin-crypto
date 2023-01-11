@@ -16,7 +16,7 @@ use super::boolean::*;
 use std::iter::FromIterator;
 use std::sync::Arc;
 
-mod traits;
+pub mod traits;
 pub mod bigint;
 pub mod range_check_custom_gate2;
 pub mod range_checks;
@@ -32,8 +32,8 @@ pub mod fp;
 pub use self::amplified_linear_combination::*;
 pub use self::fp::*;
 
-// pub mod fp2;
-// pub use self::fp2::*;
+pub mod fp2;
+pub use self::fp2::*;
 
 // pub mod fp6;
 // pub use self::fp6::*;

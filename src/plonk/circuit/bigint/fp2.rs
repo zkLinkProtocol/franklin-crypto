@@ -1,62 +1,18 @@
 use super::*;
-use super::traits::CircuitField;
+use super::traits::*;
 use std::ops::Index;
 use num_traits::ToPrimitive;
 use plonk::circuit::SomeArithmetizable;
+
 use plonk::circuit::bigint::traits::*;
-use paste::paste;
-use serde::__private::de;
-
-use crate::bellman::pairing::bn256::Fq as Bn256Fq;
-use crate::bellman::pairing::bn256::Fq2 as Bn256Fq2;
-
-use crate::bellman::pairing::bls12_381::Fq as Bls12Fq;
-use crate::bellman::pairing::bls12_381::Fq2 as Bls12Fq2;
-
-use super::super::curve::secp256k1::fq::Fq as SecpFq;
-use super::super::curve::secp256k1::fq2::Fq2 as SecpFq2;
+use smallvec::SmallVec;
+use construct_ext_circuit_field;
 
 
-const EXT_DEGREE: usize = 2;
-pub trait Extension2Params<E: Engine, F: Field>: FieldExtensionParams<E, F, EXT_DEGREE> {
-    // default impl is consistent only with non-residue == -1
-    fn is_default_impl() -> bool { true }
-}
+construct_ext_circuit_field!(Fp2, FieldElement, F::BaseField, PrimeField, 2);
 
-
-macro_rules! construct_ext2_params {
-    ($curve_name:ident) => {
-        paste! {
-            #[derive(Clone)]
-            pub struct [<$curve_name Extension2Params>] {}
-
-            impl<E> FieldExtensionParams<E,[<$curve_name Fq2>], EXT_DEGREE> for [<$curve_name Extension2Params>] 
-            where E: Engine
-            {
-                type BaseField = [<$curve_name Fq>];
-                type BaseCircuitField = FieldElement<E, Self::BaseField>;
-                
-                fn convert_to_structured_witness(arr: [Self::BaseField; EXT_DEGREE]) -> [<$curve_name Fq2>] {
-                    [<$curve_name Fq2>]{ c0: arr[0], c1: arr[1] }
-                }
-
-                fn convert_from_structured_witness(val: [<$curve_name Fq2>]) -> [Self::BaseField; EXT_DEGREE] {
-                    [val.c0, val.c1]
-                }
-            }
-
-            impl<E: Engine> Extension2Params<E, [<$curve_name Fq2>]> for [<$curve_name Extension2Params>] {} 
-        }
-    }
-}
-
-construct_ext2_params!(Bn256);
-construct_ext2_params!(Bls12);
-construct_ext2_params!(Secp);
-
-
-impl<E: Engine, F: Field, T: Extension2Params<E, F>> std::fmt::Display for ExtField<E, F, EXT_DEGREE, T> 
-where T::BaseCircuitField : std::fmt::Display
+impl<E: Engine, F: ExtField> std::fmt::Display for Fp2<E, F> 
+where F::BaseField: PrimeField
 {
     #[inline(always)]
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
@@ -64,8 +20,8 @@ where T::BaseCircuitField : std::fmt::Display
     }
 }
 
-impl<E: Engine, F: Field, T: Extension2Params<E, F>> std::fmt::Debug for ExtField<E, F, EXT_DEGREE, T> 
-where T::BaseCircuitField : std::fmt::Debug
+impl<E: Engine, F: ExtField> std::fmt::Debug for Fp2<E, F> 
+where F::BaseField: PrimeField
 {
     #[inline(always)]
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
@@ -73,13 +29,21 @@ where T::BaseCircuitField : std::fmt::Debug
     }
 }
 
-impl<E: Engine, F: Field, T: Extension2Params<E, F>> ExtField<E, F, EXT_DEGREE, T> {
+impl<E: Engine, F: ExtField> Fp2<E, F> 
+where F::BaseField: PrimeField
+{
+    fn is_default_impl() -> bool {
+        // for all our curves non_residue = -1
+        // may be extended in the future
+        true
+    }
+    
     #[track_caller]
     pub fn mul_by_small_constant_with_chain<CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, scalar: (u64, u64), chain: FieldElementsChain<E, F, Self>
     ) -> Result<Self, SynthesisError> {
         // we assume that non_residue = -1
-        assert!(T::is_default_impl());
+        assert!(Self::is_default_impl());
         let (s0, s1) = scalar;
         // if our small constant is (s0, s1) then:
         // for a = a0 + u * a1 and b = b0 + u * b1 compute a * b = c0 + u * c1 [\beta = u^2]
@@ -88,18 +52,21 @@ impl<E: Engine, F: Field, T: Extension2Params<E, F>> ExtField<E, F, EXT_DEGREE, 
         // 3) c0 = v0 + \beta * v1 = v0 - v1 = a0 * s0 - a1 * s1
         // 4) c1 = (a0 + a1) * (b0 + b1) - v0 - v1 = a0 * (s0 + s1) + a1 * (s0 + s1) - a0 * s0 - a1 * s1
         // hence: c1 = a0 * s1 + a1 * s0
+        let mut coordinates = SmallVec::new();
 
         let mut subchain = chain.get_coordinate_subchain(0); 
         subchain.add_pos_term(&self[0].scale(cs, s0)?);
         subchain.add_neg_term(&self[1].scale(cs, s1)?);
-        let c0 = <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::collapse_chain(cs, subchain)?;
+        let c0 = FieldElement::collapse_chain(cs, subchain)?;
+        coordinates.push(c0);
         
         let mut subchain = chain.get_coordinate_subchain(1);
         subchain.add_pos_term(&self[0].scale(cs, s1)?);
         subchain.add_pos_term(&self[1].scale(cs, s0)?);
-        let c1 = <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::collapse_chain(cs, subchain)?;
+        let c1 = FieldElement::collapse_chain(cs, subchain)?;
+        coordinates.push(c1);
         
-        Ok(Self::from_coordinates([c0, c1]))
+        Ok(Self::from_coordinates(coordinates))
     }
 
     pub fn mul_by_small_constant<CS: ConstraintSystem<E>>(
@@ -113,7 +80,7 @@ impl<E: Engine, F: Field, T: Extension2Params<E, F>> ExtField<E, F, EXT_DEGREE, 
     pub fn constraint_mul_by_small_constant_with_chain<CS: ConstraintSystem<E>>(
         cs: &mut CS, elem: &Self, scalar: (u64, u64), chain: FieldElementsChain<E, F, Self>
     ) -> Result<(), SynthesisError> {
-        assert!(T::is_default_impl());
+        assert!(Self::is_default_impl());
         let (s0, s1) = scalar;
         // if our small constant is (s0, s1) then:
         // for a = a0 + u * a1 and b = b0 + u * b1 compute a * b = c0 + u * c1 [\beta = u^2]
@@ -126,17 +93,19 @@ impl<E: Engine, F: Field, T: Extension2Params<E, F>> ExtField<E, F, EXT_DEGREE, 
         let mut subchain = chain.get_coordinate_subchain(0); 
         subchain.add_pos_term(&elem[0].scale(cs, s0)?);
         subchain.add_neg_term(&elem[1].scale(cs, s1)?);
-        <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::enforce_chain_is_zero(cs, subchain)?;
+        FieldElement::enforce_chain_is_zero(cs, subchain)?;
         
         let mut subchain = chain.get_coordinate_subchain(1);
         subchain.add_pos_term(&elem[0].scale(cs, s1)?);
         subchain.add_pos_term(&elem[1].scale(cs, s0)?);
-        <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::enforce_chain_is_zero(cs, subchain)
+        FieldElement::enforce_chain_is_zero(cs, subchain)
     }
 }
 
 
-impl<E: Engine, F: Field, T: Extension2Params<E, F>> CircuitField<E, F> for ExtField<E, F, EXT_DEGREE, T> {   
+impl<E: Engine, F: ExtField> CircuitField<E, F> for Fp2<E, F> 
+where F::BaseField: PrimeField
+{   
     fn mul_with_chain<CS: ConstraintSystem<E>>(
         cs: &mut CS, first: &Self, second: &Self, chain: FieldElementsChain<E, F, Self>
     ) -> Result<Self, SynthesisError> {
@@ -149,14 +118,13 @@ impl<E: Engine, F: Field, T: Extension2Params<E, F>> CircuitField<E, F> for ExtF
         // NB: v0 = c0 + v1 - chain0, c1 = a * b - v0 - v1 + chain1 = a * b - c0 - 2 * v1 + chain0 + chain1
     
         // we assume that non_residue = -1
-        assert!(T::is_default_impl());
+        assert!(Self::is_default_impl());
+        
         
         let v1 = first[1].mul_by(cs, &second[1])?;
         let mut subchain = chain.get_coordinate_subchain(0);
         subchain.add_neg_term(&v1);
-        let c0 = <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::mul_with_chain(
-            cs, &first[0], &second[0], subchain
-        )?;
+        let c0 = FieldElement::mul_with_chain(cs, &first[0], &second[0], subchain)?;
     
         let a = first[0].add(cs, &first[1])?;
         let b = second[0].add(cs, &second[1])?;
@@ -164,16 +132,12 @@ impl<E: Engine, F: Field, T: Extension2Params<E, F>> CircuitField<E, F> for ExtF
         subchain.add_neg_term(&c0);
         let x = v1.double(cs)?;
         subchain.add_neg_term(&x);
-        for elem in chain.get_coordinate_subchain(0).elems_to_add.iter() {
-            subchain.add_pos_term(elem);
-        }
-        for elem in chain.get_coordinate_subchain(0).elems_to_sub.iter() {
-            subchain.add_neg_term(elem);
-        }
-        let c1 = <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::mul_with_chain(
-            cs, &a, &b, subchain
-        )?;
-        Ok(Self::from_coordinates([c0, c1]))
+        for elem in chain.get_coordinate_subchain(0).elems_to_add.iter() { subchain.add_pos_term(elem); }
+        for elem in chain.get_coordinate_subchain(0).elems_to_sub.iter() { subchain.add_neg_term(elem); }
+        let c1 = FieldElement::mul_with_chain(cs, &a, &b, subchain)?;
+
+        let coordinates = SmallVec::from_iter(std::iter::once(c0).chain(std::iter::once(c1)));
+        Ok(Self::from_coordinates(coordinates))
     }
     
     fn square_with_chain<CS: ConstraintSystem<E>>(
@@ -185,29 +149,28 @@ impl<E: Engine, F: Field, T: Extension2Params<E, F>> CircuitField<E, F> for ExtF
         // 2) c0 = (a0 - a1)(a0 + a1)
         
         // we assume that non_residue = -1
-        assert!(T::is_default_impl());
-    
-        let tmp = self[0].double(cs)?;
-        let subchain = chain.get_coordinate_subchain(1);
-        let c1 = <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::mul_with_chain(
-            cs, &tmp, &self[1], subchain
-        )?;
-    
+        assert!(Self::is_default_impl());
+        let mut coordinates = SmallVec::new();
+
         let x = self[0].sub(cs, &self[1])?;
         let y = self[0].add(cs, &self[1])?;
         let subchain = chain.get_coordinate_subchain(0);
-        let c0 = <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::mul_with_chain(
-            cs, &x, &y, subchain
-        )?;
+        let c0 = FieldElement::mul_with_chain(cs, &x, &y, subchain)?;
+        coordinates.push(c0);
     
-        Ok(Self::from_coordinates([c0, c1]))
+        let tmp = self[0].double(cs)?;
+        let subchain = chain.get_coordinate_subchain(1);
+        let c1 = FieldElement::mul_with_chain(cs, &tmp, &self[1], subchain)?;
+        coordinates.push(c1);
+    
+        Ok(Self::from_coordinates(coordinates))
     }
 
     fn div_with_chain<CS: ConstraintSystem<E>>(
         cs: &mut CS, chain: FieldElementsChain<E, F, Self>, den: &Self
     ) -> Result<Self, SynthesisError> {
         // we assume that non_residue = -1
-        assert!(T::is_default_impl()); 
+        assert!(Self::is_default_impl()); 
         let params = den.get_rns_params();
        
         let res_wit = match (chain.get_value(), den.get_value()) {
@@ -240,11 +203,12 @@ impl<E: Engine, F: Field, T: Extension2Params<E, F>> CircuitField<E, F> for ExtF
             return Ok(self.clone())
         } 
         else {
-            assert!(T::is_default_impl());
+            assert!(Self::is_default_impl());
             let new_c1 = self[1].negate(cs)?;
-            let new_c0 = self[0].clone();   
-            
-            let res = Self::from_coordinates([new_c0, new_c1]);
+            let new_c0 = self[0].clone(); 
+            let coordinates = SmallVec::from_iter(std::iter::once(new_c0).chain(std::iter::once(new_c1)));
+
+            let res = Self::from_coordinates(coordinates);
             let actual_value = self.get_value().map(|x| {
                 let mut tmp = x;
                 tmp.frobenius_map(power);
@@ -268,23 +232,22 @@ impl<E: Engine, F: Field, T: Extension2Params<E, F>> CircuitField<E, F> for ExtF
         // 4) c1 = (a0 + a1) * (b0 + b1) - v0 - v1
         
         // we assume that non_residue = -1
-        assert!(T::is_default_impl());
+        assert!(Self::is_default_impl());
 
-        let params = first.get_rns_params();
         let v0 = first[0].mul_by(cs, &second[0])?;
         let v1 = first[1].mul_by(cs, &second[1])?;
     
         let mut subchain = chain.get_coordinate_subchain(0);
         subchain.add_pos_term(&v0);
         subchain.add_neg_term(&v1);
-        <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::collapse_chain(cs, subchain)?;
+        FieldElement::collapse_chain(cs, subchain)?;
 
         let a = first[0].add(cs, &first[1])?;
         let b = second[0].add(cs, &second[1])?;
         let mut subchain = chain.get_coordinate_subchain(1);
         subchain.add_neg_term(&v0);
         subchain.add_neg_term(&v1);
-        <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::constraint_fma(cs, &a, &b, subchain)?;
+        FieldElement::constraint_fma(cs, &a, &b, subchain)?;
         Ok(())
     }
 }

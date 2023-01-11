@@ -1,11 +1,9 @@
 use super::*;
 use std::ops::Index;
 use crate::plonk::circuit::SomeArithmetizable;
-use crate::plonk::circuit::bigint::traits::*;
 
 use crate::bellman::pairing::bn256::Fq as Bn256Fq;
 use crate::bellman::pairing::bn256::Fq2 as Bn256Fq2;
-use crate::bellman::pairing::bn256::Fq6 as Bn256Fq6;
 use crate::bellman::pairing::bn256::fq::FROBENIUS_COEFF_FQ6_C1 as BN256_FROBENIUS_COEFF_FQ6_C1;
 use crate::bellman::pairing::bn256::fq::FROBENIUS_COEFF_FQ6_C2 as BN256_FROBENIUS_COEFF_FQ6_C2;
 use crate::bellman::pairing::bn256::fq::FROBENIUS_COEFF_FQ12_C1 as BN256_FROBENIUS_COEFF_FQ12_C1;
@@ -16,65 +14,311 @@ use crate::bellman::pairing::bls12_381::Fq2 as Bls12Fq2;
 use super::super::curve::secp256k1::fq::Fq as SecpFq;
 use super::super::curve::secp256k1::fq2::Fq2 as SecpFq2;
 
+pub trait Extension6Params<F:PrimeField>: Clone {
+    type Ex2: Extension2Params<F>;
+    type Witness: Field;
 
-const EXT_DEGREE: usize = 3;
-pub trait Extension6Params<E: Engine, F: Field>: FieldExtensionParams<E, F, EXT_DEGREE> {
     const NON_RESIDUE: (u64, u64);
-    const FROBENIUS_COEFFS_C1: [Self::BaseField; 6];
-    const FROBENIUS_COEFFS_C2: [Self::BaseField; 6];
-    const FROBENIUS_COEFFS_FQ12_C1:  [Self::BaseField; 12];
+    const FROBENIUS_COEFFS_C1: [<Self::Ex2 as Extension2Params<F>>::Witness; 6];
+    const FROBENIUS_COEFFS_C2: [<Self::Ex2 as Extension2Params<F>>::Witness; 6];
+    const FROBENIUS_COEFFS_FQ12_C1:  [<Self::Ex2 as Extension2Params<F>>::Witness; 12];
   
     fn non_residue() -> (u64,u64) { Self::NON_RESIDUE.clone() }
+    fn convert_to_structured_witness(
+        c0: <Self::Ex2 as Extension2Params<F>>::Witness, 
+        c1: <Self::Ex2 as Extension2Params<F>>::Witness, 
+        c2: <Self::Ex2 as Extension2Params<F>>::Witness
+    ) -> Self::Witness; 
+    fn convert_from_structured_witness(wit: Self::Witness) -> [<Self::Ex2 as Extension2Params<F>>::Witness; 3];
 }
-pub type Fp6<E, F, T> = ExtField<E, F, EXT_DEGREE, T>;
-
 
 #[derive(Clone)]
 pub struct Bn256Extension6Params {}
-impl<E: Engine> FieldExtensionParams<E, Bn256Fq6, EXT_DEGREE> for Bn256Extension6Params {
-    type BaseField = Bn256Fq2;
-    type BaseCircuitField = ExtField<E, Bn256Fq2, 2, Bn256Extension2Params>;
-                
-    fn convert_to_structured_witness(arr: [Self::BaseField; EXT_DEGREE]) -> Bn256Fq6 {
-        Bn256Fq6 { c0: arr[0], c1: arr[1], c2: arr[2] }
-    }
+impl Extension6Params<Bn256Fq> for Bn256Extension6Params {
+    type Ex2 = Bn256Extension2Params;
+    type Witness = crate::bellman::pairing::bn256::Fq6;
 
-    fn convert_from_structured_witness(val: Bn256Fq6) -> [Self::BaseField; EXT_DEGREE] {
-        [val.c0, val.c1, val.c2]
-    }
-}
-impl<E: Engine> Extension6Params<E, Bn256Fq6> for Bn256Extension6Params {
     const NON_RESIDUE: (u64, u64) = (9, 1);
     const FROBENIUS_COEFFS_C1: [Bn256Fq2; 6] = BN256_FROBENIUS_COEFF_FQ6_C1;
     const FROBENIUS_COEFFS_C2: [Bn256Fq2; 6] = BN256_FROBENIUS_COEFF_FQ6_C2;
     const FROBENIUS_COEFFS_FQ12_C1: [Bn256Fq2; 12] = BN256_FROBENIUS_COEFF_FQ12_C1;
-}
-
-
-impl<E: Engine, F: Field, T: Extension6Params<E, F>> std::fmt::Display for ExtField<E, F, EXT_DEGREE, T> 
-where T::BaseCircuitField : std::fmt::Display
-{
-    #[inline(always)]
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        write!(f, "Fp6({} + {} * u + {} * u^2)", self[0], self[1], self[2])
+   
+    fn convert_to_structured_witness(c0: Bn256Fq2, c1: Bn256Fq2, c2: Bn256Fq2) -> Self::Witness 
+    {
+        Self::Witness { c0, c1, c2 }
     }
-}
 
-impl<E: Engine, F: Field, T: Extension6Params<E, F>> std::fmt::Debug for ExtField<E, F, EXT_DEGREE, T> 
-where T::BaseCircuitField : std::fmt::Debug
-{
-    #[inline(always)]
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        write!(f, "Fp2({:?} + {:?} * u + {:?} * u^2)", self[0], self[1], self[2])
+    fn convert_from_structured_witness(x: Self::Witness) -> [Bn256Fq2; 3] {
+        [x.c0, x.c1, x.c2]
     }
 }
 
 
-impl<E: Engine, F: Field, T: Extension6Params<E, F>> CircuitField<E, F> for ExtField<E, F, EXT_DEGREE, T> 
-{  
+#[derive(Clone)]
+pub struct Fp6<'a, E: Engine, F: PrimeField, T: Extension6Params<F>> {
+    pub c0: Fp2<'a, E, F, T::Ex2>,
+    pub c1: Fp2<'a, E, F, T::Ex2>,
+    pub c2: Fp2<'a, E, F, T::Ex2>,
+    _marker: std::marker::PhantomData<T>
+}
+ 
+impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>>std::fmt::Display for Fp6<'a, E, F, T> {
+    #[inline(always)]
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "Fp6({} + {} * v+ {} * v^2)", self.c0, self.c1, self.c2)
+    }
+}
+
+impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> std::fmt::Debug for Fp6<'a, E, F, T> {
+    #[inline(always)]
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "Fp6({} + {} * v + {} * v^2)", self.c0, self.c1, self.c2)
+    }
+}
+
+impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Index<usize> for Fp6<'a, E, F, T> {
+    type Output = Fp2<'a, E, F, T::Ex2>;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        match idx {
+            0 => &self.c0,
+            1 => &self.c1,
+            2 => &self.c2,
+            _ => panic!("Index should be 0, 1 or 2"),
+        }
+    }
+}
+
+impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F> > From<Fp2<'a, E, F, T::Ex2>> for Fp6<'a, E, F, T>
+{
+    fn from(x: Fp2<'a, E, F, T::Ex2>) -> Self {
+        let params = x.c0.representation_params;
+        Fp6::<E, F, T> {
+            c0: x,
+            c1: Fp2::<E, F, T::Ex2>::zero(params),
+            c2: Fp2::<E, F, T::Ex2>::zero(params),
+            _marker: std::marker::PhantomData::<T>
+        }
+    }    
+}
+
+
+pub struct Fp6Chain<'a, E: Engine, F: PrimeField, T: Extension6Params<F>> {
+    pub elems_to_add: Vec<Fp6<'a, E, F, T>>,
+    pub elems_to_sub: Vec<Fp6<'a, E, F, T>> 
+}
+
+impl<'a, E: Engine, F: PrimeField, T: Extension6Params<F>> Fp6Chain<'a, E, F, T> {
+    pub fn new() -> Self {
+        Fp6Chain::<E, F, T> {
+            elems_to_add: vec![],
+            elems_to_sub: vec![] 
+        }
+    }
+    
+    pub fn add_pos_term(&mut self, elem: &Fp6<'a, E, F, T>) -> &mut Self {
+        self.elems_to_add.push(elem.clone());
+        self
+    } 
+
+    pub fn add_neg_term(&mut self, elem: &Fp6<'a, E, F, T>) -> &mut Self {
+        self.elems_to_sub.push(elem.clone());
+        self
+    }
+
+    pub fn is_constant(&self) -> bool {
+        self.elems_to_add.iter().chain(self.elems_to_sub.iter()).all(|x| x.is_constant())
+    }
+
+    pub fn get_value(&self) -> Option<T::Witness> {
+        let pos = self.elems_to_add.iter().fold(Some(T::Witness::zero()), |acc, x| acc.add(&x.get_value()));
+        let neg = self.elems_to_sub.iter().fold(Some(T::Witness::zero()), |acc, x| acc.add(&x.get_value()));
+        pos.sub(&neg)
+    }
+
+    pub fn get_coordinate_subchain(&self, i: usize) -> Fp2Chain<'a, E, F, T::Ex2> {
+        let elems_to_add = self.elems_to_add.iter().map(|x| x[i].clone()).collect();
+        let elems_to_sub = self.elems_to_sub.iter().map(|x| x[i].clone()).collect();
+        Fp2Chain::<E, F, T::Ex2> {
+            elems_to_add,
+            elems_to_sub
+        }
+    }
+
+    pub fn negate(self) -> Self {
+        let Fp6Chain { elems_to_add, elems_to_sub } = self;
+        Fp6Chain {
+            elems_to_add: elems_to_sub,
+            elems_to_sub: elems_to_add
+        }
+    }  
+}
+
+
+impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
+    pub fn get_base_field_coordinates(&self) -> Vec<FieldElement<'a, E, F>> {
+        (0..3).map(|i| self[i].get_base_field_coordinates()).flatten().collect()
+    }
+
+    pub fn get_coordinates(&self) -> (Fp2<'a, E, F, T::Ex2>, Fp2<'a, E, F, T::Ex2>, Fp2<'a, E, F, T::Ex2>) {
+        (self.c0.clone(), self.c1.clone(), self.c2.clone())
+    }
+
+    pub fn alloc<CS: ConstraintSystem<E>>(
+        cs: &mut CS, wit: Option<T::Witness>, params: &'a RnsParameters<E, F>
+    ) -> Result<Self, SynthesisError> {
+        let (c0_wit, c1_wit, c2_wit) = if let Some(wit) = wit {
+            let [c0, c1, c2] = T::convert_from_structured_witness(wit);
+            (Some(c0), Some(c1), Some(c2))
+        } else {
+            (None, None, None)
+        };
+        let c0 = Fp2::alloc(cs, c0_wit, params)?;
+        let c1 = Fp2::alloc(cs, c1_wit, params)?;
+        let c2 = Fp2::alloc(cs, c2_wit, params)?;
+
+        Ok(Fp6{ c0, c1, c2, _marker: std::marker::PhantomData::<T>})
+    } 
+
+    pub fn from_coordinates(
+        c0: Fp2<'a, E, F, T::Ex2>, c1: Fp2<'a, E, F, T::Ex2>, c2: Fp2<'a, E, F, T::Ex2>
+    ) -> Self {
+        Fp6 { c0, c1, c2, _marker: std::marker::PhantomData::<T> }
+    }
+
+    pub fn get_value(&self) -> Option<T::Witness> {
+        self.c0.get_value().zip(self.c1.get_value()).zip(self.c2.get_value()).map(
+            |((c0, c1), c2)| T::convert_to_structured_witness(c0, c1, c2)
+        )      
+    }
+  
+    pub fn equals<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<Boolean, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        let first_coordinate_check = Fp2::equals(cs, &mut this.c0, &mut other.c0)?;
+        let second_coordinate_check = Fp2::equals(cs, &mut this.c1, &mut other.c1)?; 
+        let third_coordinate_check = Fp2::equals(cs, &mut this.c2, &mut other.c2)?;
+        let parital = Boolean::and(cs, &first_coordinate_check, &second_coordinate_check)?;
+        Boolean::and(cs, &parital, &third_coordinate_check)
+    }
+
+    pub fn enforce_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        Fp2::enforce_equal(cs, &mut this.c0, &mut other.c0)?;
+        Fp2::enforce_equal(cs, &mut this.c1, &mut other.c1)?;
+        Fp2::enforce_equal(cs, &mut this.c2, &mut other.c2)
+    }
+    
+    pub fn enforce_not_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        // if a = a0 +a1 * v+ a2 * v^2 is not equal b = b0 + b1 * v+ b2 * v^2 then at least one of 
+        // a0 != b0 or a1 != b1 or a2 != b2 should hold
+        let (first_sel_wit, second_sel_wit) = if this.get_value().is_some() && other.get_value().is_some() {
+            let first = this[1].get_value().unwrap() != other[1].get_value().unwrap();
+            let second = this[2].get_value().unwrap() != other[2].get_value().unwrap();
+            (Some(first), Some(second))
+        } else {
+            (None, None)
+        };
+        let first_selector = Boolean::Is(AllocatedBit::alloc(cs, first_sel_wit)?);
+        let second_selector = Boolean::Is(AllocatedBit::alloc(cs, second_sel_wit)?);
+        
+        let mut a = Fp2::conditionally_select(cs, &first_selector, &this.c1, &this.c0)?;
+        a = Fp2::conditionally_select(cs, &second_selector, &this.c2, &a)?;
+        let mut b = Fp2::conditionally_select(cs, &first_selector, &other.c1, &other.c0)?;
+        b = Fp2::conditionally_select(cs, &second_selector, &other.c2, &b)?;
+        Fp2::enforce_not_equal(cs, &mut a, &mut b)
+    }
+
+    pub fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> {
+        let c0_is_zero = Fp2::is_zero(&mut self.c0, cs)?; 
+        let c1_is_zero = Fp2::is_zero(&mut self.c1, cs)?;
+        let c2_is_zero = Fp2::is_zero(&mut self.c2, cs)?;
+        let parital_res = Boolean::and(cs, &c0_is_zero, &c1_is_zero)?;
+        Boolean::and(cs, &parital_res, &c2_is_zero) 
+    }
+     
+    pub fn conditionally_select<CS: ConstraintSystem<E>>(
+        cs: &mut CS, flag: &Boolean, first: &Self, second: &Self
+    ) -> Result<Self, SynthesisError> {
+        let new_c0 = Fp2::conditionally_select(cs, flag, &first.c0, &second.c0)?;
+        let new_c1 = Fp2::conditionally_select(cs, flag, &first.c1, &second.c1)?;
+        let new_c2 = Fp2::conditionally_select(cs, flag, &first.c2, &second.c2)?;
+        Ok(Self::from_coordinates(new_c0, new_c1, new_c2))
+    }
+
+    pub fn normalize_coordinates<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {    
+        self.c0.normalize_coordinates(cs)?;
+        self.c1.normalize_coordinates(cs)?;
+        self.c2.normalize_coordinates(cs)
+    }
+    
+    pub fn zero(params: &'a RnsParameters<E, F>) -> Self {
+        Self::from_coordinates(Fp2::zero(params), Fp2::zero(params),Fp2::zero(params))
+    }
+
+    pub fn one(params: &'a RnsParameters<E, F>) -> Self {
+        Self::from_coordinates(Fp2::one(params), Fp2::zero(params), Fp2::zero(params))
+    }
+      
+    pub fn constant(value: T::Witness, params: &'a RnsParameters<E, F>) -> Self {
+        let x = T::convert_from_structured_witness(value);
+        Self::from_coordinates(
+            Fp2::constant(x[0], params), Fp2::constant(x[1], params), Fp2::constant(x[2], params)
+        )
+    }
+
+    pub fn is_constant(&self) -> bool {
+        self.c0.is_constant() && self.c1.is_constant() && self.c2.is_constant()
+    }
+    
+    pub fn double<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        let new_c0 = self.c0.double(cs)?;
+        let new_c1 = self.c1.double(cs)?;
+        let new_c2 = self.c2.double(cs)?;
+        Ok(Self::from_coordinates(new_c0, new_c1, new_c2))
+    }
+
+    pub fn negate<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        let new_c0 = self.c0.negate(cs)?;
+        let new_c1 = self.c1.negate(cs)?;
+        let new_c2 = self.c2.negate(cs)?;
+        Ok(Self::from_coordinates(new_c0, new_c1, new_c2))
+    }
+
+    pub fn conditionally_negate<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E> 
+    {
+        let new_c0 = self.c0.conditionally_negate(cs, flag)?;
+        let new_c1 = self.c1.conditionally_negate(cs, flag)?;
+        let new_c2 = self.c2.conditionally_negate(cs, flag)?;
+        Ok(Self::from_coordinates(new_c0, new_c1, new_c2))
+    }
+    
+    pub fn add<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
+        let new_c0 = self.c0.add(cs, &other.c0)?;
+        let new_c1 = self.c1.add(cs, &other.c1)?;
+        let new_c2 = self.c2.add(cs, &other.c2)?;
+        Ok(Self::from_coordinates(new_c0, new_c1, new_c2))
+    }
+
+    pub fn sub<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
+        let new_c0 = self.c0.sub(cs, &other.c0)?;
+        let new_c1 = self.c1.sub(cs, &other.c1)?;
+        let new_c2 = self.c2.sub(cs, &other.c2)?;
+        Ok(Self::from_coordinates(new_c0, new_c1, new_c2))
+    }
+
+    pub fn mul<CS: ConstraintSystem<E>>(cs: &mut CS, first: &Self, second: &Self) -> Result<Self, SynthesisError> 
+    {
+        Self::mul_with_chain(cs, first, second, Fp6Chain::new())
+    }
+
     #[track_caller]
-    fn mul_with_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, first: &Self, second: &Self, chain: FieldElementsChain<E, F, Self>
+    pub fn mul_with_chain<CS: ConstraintSystem<E>>(
+        cs: &mut CS, first: &Self, second: &Self, chain: Fp6Chain<'a, E, F, T>
     ) -> Result<Self, SynthesisError> 
     {
         // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.21
@@ -84,23 +328,21 @@ impl<E: Engine, F: Field, T: Extension6Params<E, F>> CircuitField<E, F> for ExtF
         // 4) c0 = ((a1 + a2) * (b1 + b2) - v1 - v2) * \alpha + v0
         // 5) c1 = (a0 + a1) * (b0 + b1) - v0 - v1 + \alpha * v2
         // 6) c2 = (a0 + a2) * (b0 + b2) - v0 - v2 + v1
-        let v0 = first[0].mul_by(cs, &second[0])?;  
-        let v1 = first[1].mul_by(cs, &second[1])?; 
-        let v2 = first[2].mul_by(cs, &second[2])?;
-        let tempa01 = first[0].add(cs, &first[1])?;  //tempaij=ai+aj
-        let tempa12 = first[1].add(cs, &first[2])?;  
-        let tempa02 = first[0].add(cs, &first[2])?; 
-        let tempb01 = second[0].add(cs, &second[1])?; //tempbij=bi+bj
-        let tempb12 = second[1].add(cs, &second[2])?;  
-        let tempb02 = second[0].add(cs, &second[2])?;
+        let v0 = first.c0.mul(cs, &second.c0)?;  
+        let v1 = first.c1.mul(cs, &second.c1)?; 
+        let v2 = first.c2.mul(cs, &second.c2)?;
+        let tempa01 = first.c0.add(cs, &first.c1)?;  //tempaij=ai+aj
+        let tempa12 = first.c1.add(cs, &first.c2)?;  
+        let tempa02 = first.c0.add(cs, &first.c2)?; 
+        let tempb01 = second.c0.add(cs, &second.c1)?; //tempbij=bi+bj
+        let tempb12 = second.c1.add(cs, &second.c2)?;  
+        let tempb02 = second.c0.add(cs, &second.c2)?;
         let alpha = T::non_residue();
 
         // c0 = ((a1 + a2) * (b1 + b2) - v1 - v2) * \alpha + v0
-        let mut sub_chain = FieldElementsChain::new();
+        let mut sub_chain = Fp2Chain::new();
         sub_chain.add_neg_term(&v1).add_neg_term(&v2);
-        let mut c0 = <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::mul_with_chain(
-            cs, &tempa12, &tempb12, sub_chain
-        )?;
+        let mut c0 = Fp2::mul_with_chain(cs, &tempa12, &tempb12, sub_chain)?;
         let mut sub_chain = chain.get_coordinate_subchain(0);
         sub_chain.add_pos_term(&v0);
         c0 = c0.mul_by_small_constant_with_chain(cs, alpha, sub_chain)?;
@@ -116,13 +358,13 @@ impl<E: Engine, F: Field, T: Extension6Params<E, F>> CircuitField<E, F> for ExtF
         sub_chain.add_neg_term(&v0).add_neg_term(&v2).add_pos_term(&v1);
         let c2 = Fp2::mul_with_chain(cs, &tempa02, &tempb02, sub_chain)?;
 
-        let res = Self::from_coordinates([c0, c1, c2]);
+        let res = Self::from_coordinates(c0, c1, c2);
         Ok(res)
     }
 
     #[track_caller]
-    fn constraint_fma<CS: ConstraintSystem<E>>(
-        cs: &mut CS, first: &Self, second: &Self, chain: FieldElementsChain<E, F, Self>
+    pub fn constraints_fma<CS: ConstraintSystem<E>>(
+        cs: &mut CS, first: &Self, second: &Self, chain: Fp6Chain<'a, E, F, T>
     ) -> Result<(), SynthesisError> 
     {
         // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.21
@@ -132,38 +374,38 @@ impl<E: Engine, F: Field, T: Extension6Params<E, F>> CircuitField<E, F> for ExtF
         // 4) c0 = ((a1 + a2) * (b1 + b2) - v1 - v2) * \alpha + v0
         // 5) c1 = (a0 + a1) * (b0 + b1) - v0 - v1 + \alpha * v2
         // 6) c2 = (a0 + a2) * (b0 + b2) - v0 - v2 + v1
-        let v0 = first[0].mul_by(cs, &second[0])?;  
-        let v1 = first[1].mul_by(cs, &second[1])?; 
-        let v2 = first[2].mul_by(cs, &second[2])?;
-        let tempa01 = first[0].add(cs, &first[1])?;  //tempaij=ai+aj
-        let tempa12 = first[1].add(cs, &first[2])?;  
-        let tempa02 = first[0].add(cs, &first[2])?; 
-        let tempb01 = second[0].add(cs, &second[1])?; //tempbij=bi+bj
-        let tempb12 = second[1].add(cs, &second[2])?;  
-        let tempb02 = second[0].add(cs, &second[2])?;
+        let v0 = first.c0.mul(cs, &second.c0)?;  
+        let v1 = first.c1.mul(cs, &second.c1)?; 
+        let v2 = first.c2.mul(cs, &second.c2)?;
+        let tempa01 = first.c0.add(cs, &first.c1)?;  //tempaij=ai+aj
+        let tempa12 = first.c1.add(cs, &first.c2)?;  
+        let tempa02 = first.c0.add(cs, &first.c2)?; 
+        let tempb01 = second.c0.add(cs, &second.c1)?; //tempbij=bi+bj
+        let tempb12 = second.c1.add(cs, &second.c2)?;  
+        let tempb02 = second.c0.add(cs, &second.c2)?;
         let alpha = T::non_residue();
 
         // c0 = ((a1 + a2) * (b1 + b2) - v1 - v2) * \alpha + v0
-        let mut subchain = FieldElementsChain::new();
+        let mut subchain = Fp2Chain::new();
         subchain.add_neg_term(&v1).add_neg_term(&v2);
-        let c0 = <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::mul_with_chain(cs, &tempa12, &tempb12, subchain)?;
+        let c0 = Fp2::mul_with_chain(cs, &tempa12, &tempb12, subchain)?;
         let mut subchain = chain.get_coordinate_subchain(0);
         subchain.add_pos_term(&v0);
-        <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::constraint_mul_by_small_constant_with_chain(cs, &c0, alpha, subchain)?;
+        Fp2::constraint_mul_by_small_constant_with_chain(cs, &c0, alpha, subchain)?;
         
         // c1 = (a0 + a1) * (b0 + b1) - v0 - v1 + \alpha * v2
         let scaled_v2 = v2.mul_by_small_constant(cs, alpha)?;
         let mut subchain = chain.get_coordinate_subchain(1);
         subchain.add_neg_term(&v0).add_neg_term(&v1).add_pos_term(&scaled_v2);
-        <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::constraint_fma(cs,  &tempa01, &tempb01, subchain)?;
+        Fp2::constraint_fma(cs,  &tempa01, &tempb01, subchain)?;
            
         // c2 = (a0 + a2) * (b0 + b2) - v0 - v2 + v1
         let mut subchain = chain.get_coordinate_subchain(2);
         subchain.add_neg_term(&v0).add_neg_term(&v2).add_pos_term(&v1);
-        <T as FieldExtensionParams<E, F, EXT_DEGREE>>::BaseCircuitField::constraint_fma(cs, &tempa02, &tempb02, subchain)
+        Fp2::constraint_fma(cs, &tempa02, &tempb02, subchain)
     }
  
-    fn square<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+    pub fn square<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
         // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.22
         // 1) v0 = 2 * a1 * a2
         // 2) v1 = a0^2
@@ -174,38 +416,49 @@ impl<E: Engine, F: Field, T: Extension6Params<E, F>> CircuitField<E, F> for ExtF
         // 7) v4 = a0 - a1 + q2
         // 8) c2 = v4^2 + v2 - v3 + v0 - v1
         let alpha = T::non_residue();
-        let a1_scaled = self[1].double(cs)?;
-        let v0 = a1_scaled.mul(cs, &self[2])?;
-        let v1 = self[0].square(cs)?;
-        let v2 = a1_scaled.mul(cs, &self[0])?;
-        let v3 = self[2].square(cs)?;
-        let mut chain = FieldElementsChain::new();
-        chain.add_pos_term(&self[0]).add_neg_term(&self[1]).add_pos_term(&self[2]);
+        let a1_scaled = self.c1.double(cs)?;
+        let v0 = a1_scaled.mul(cs, &self.c2)?;
+        let v1 = self.c0.square(cs)?;
+        let v2 = a1_scaled.mul(cs, &self.c0)?;
+        let v3 = self.c2.square(cs)?;
+        let mut chain = Fp2Chain::new();
+        chain.add_pos_term(&self.c0).add_neg_term(&self.c1).add_pos_term(&self.c2);
         let v4 = Fp2::collapse_chain(cs, chain)?;
         
         // c0 = \alpha * v0 + v1
-        let mut chain = FieldElementsChain::new();
+        let mut chain = Fp2Chain::new();
         chain.add_pos_term(&v1);
         let c0 = v0.mul_by_small_constant_with_chain(cs, alpha, chain)?;
 
         // c1 = \alpha * v2 + v3 
-        let mut chain = FieldElementsChain::new();
+        let mut chain = Fp2Chain::new();
         chain.add_pos_term(&v3);
         let c1 = v2.mul_by_small_constant_with_chain(cs, alpha, chain)?;
 
         // c2 = v4^2 + v2 - v3 + v0 - v1
-        let mut chain = FieldElementsChain::new();
+        let mut chain = Fp2Chain::new();
         chain.add_pos_term(&v2).add_neg_term(&v3).add_pos_term(&v0).add_neg_term(&v1);
         let c2 = v4.square_with_chain(cs, chain)?;
        
-        Ok(Self::from_coordinates([c0, c1, c2]))
+        Ok(Self::from_coordinates(c0, c1, c2))
+    }
+
+    pub fn inverse<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        let mut num = Self::one(self.c0.c0.representation_params);
+        Self::div(cs, &mut num, self)
+    }
+
+    pub fn div<CS: ConstraintSystem<E>>(cs: &mut CS, num: &Self, denom: &Self) -> Result<Self, SynthesisError> {
+        let mut chain = Fp6Chain::new();
+        chain.add_pos_term(num);
+        Self::div_with_chain(cs, chain, denom)
     }
 
     pub fn div_with_chain<CS: ConstraintSystem<E> >(
-        cs: &mut CS, num: FieldElementsChain<E, F, Self>, denom: &Self
+        cs: &mut CS, num: Fp6Chain<'a, E, F, T>, denom: &Self
     ) -> Result<Self, SynthesisError> 
     {
-        let params = denom[0][0].representation_params;
+        let params = denom.c0.c0.representation_params;
         let res_wit = match (num.get_value(), denom.get_value()) {
             (Some(num), Some(denom)) => {
                 let denom_inv = denom.inverse().unwrap();
@@ -228,7 +481,7 @@ impl<E: Engine, F: Field, T: Extension6Params<E, F>> CircuitField<E, F> for ExtF
         Ok(res)
     }
 
-    fn frobenius_power_map<CS>(&self, cs: &mut CS, power:usize)-> Result<Self, SynthesisError> 
+    pub fn frobenius_power_map<CS>(&self, cs: &mut CS, power:usize)-> Result<Self,SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         match power % 6 {
@@ -238,17 +491,17 @@ impl<E: Engine, F: Field, T: Extension6Params<E, F>> CircuitField<E, F> for ExtF
             }
         }
 
-        let params= self[0][0].representation_params;
+        let params= self.c0.c0.representation_params;
         let frob_c1 = Fp2::constant(T::FROBENIUS_COEFFS_C1[power % 6], params);
         let frob_c2 =  Fp2::constant(T::FROBENIUS_COEFFS_C2[power % 6], params);
 
-        let new_c0 = self[0].frobenius_power_map(cs, power)?;
-        let mut new_c1 = self[1].frobenius_power_map(cs, power)?;
-        let mut new_c2 = self[2].frobenius_power_map(cs, power)?;
+        let new_c0 = self.c0.frobenius_power_map(cs, power)?;
+        let mut new_c1 = self.c1.frobenius_power_map(cs, power)?;
+        let mut new_c2 = self.c2.frobenius_power_map(cs, power)?;
         new_c1 = new_c1.mul(cs, &frob_c1)?;
         new_c2 = new_c2.mul(cs, &frob_c2)?;
         
-        let res = Self::from_coordinates([new_c0, new_c1, new_c2]);
+        let res = Self::from_coordinates(new_c0, new_c1, new_c2);
         let actual_value = self.get_value().map(|x| {
             let mut tmp = x;
             tmp.frobenius_map(power);
@@ -269,13 +522,46 @@ impl<E: Engine, F: Field, T: Extension6Params<E, F>> CircuitField<E, F> for ExtF
         });
 
         Ok(res)
-    }   
+    }
 
-    fn square_with_chain<CS: ConstraintSystem<E>>(
-        &self, cs: &mut CS, chain: FieldElementsChain<E, F, Self>
-    ) -> Result<Self, SynthesisError> {
-        unimplemented!();
-    } 
+    pub fn collapse_chain<CS>(cs: &mut CS, chain: Fp6Chain<'a, E, F, T>) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        let mut coeffs = Vec::with_capacity(3); 
+        for i in 0..3 {
+            let subchain = chain.get_coordinate_subchain(i);
+            coeffs.push(Fp2::collapse_chain(cs, subchain)?);
+        }
+        Ok(Self::from_coordinates(coeffs[0].clone(), coeffs[1].clone(), coeffs[2].clone()))
+    }
+
+    pub fn enforce_chain_is_zero<CS: ConstraintSystem<E>>(
+        cs: &mut CS, chain: Fp6Chain<'a, E, F, T>, 
+    ) -> Result<(), SynthesisError> {
+        for i in 0..3 {
+            Fp2::enforce_chain_is_zero(cs, chain.get_coordinate_subchain(i))?;
+        }
+        Ok(())
+    }
+
+    pub fn from_boolean(flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
+        let c0 = Fp2::from_boolean(flag, params);
+        let c1 = Fp2::zero(params);
+        let c2 = Fp2::zero(params);
+        Self::from_coordinates(c0, c1, c2)
+    }
+
+    pub fn conditional_constant(value: T::Witness, flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
+        let c_arr = T::convert_from_structured_witness(value);
+        let c0 = Fp2::conditional_constant(c_arr[0], flag, params);
+        let c1 = Fp2::conditional_constant(c_arr[1], flag, params);
+        let c2 = Fp2::conditional_constant(c_arr[2], flag, params);
+        Self::from_coordinates(c0, c1, c2)
+    }
+
+    pub fn get_params(&self) -> &'a RnsParameters<E, F> {
+        self.c0.c0.representation_params
+    }
 }
 
 

@@ -171,7 +171,8 @@ impl<E: Engine> RnsParameters<E>{
 
 // Simple term and bit counter/max value counter that we can update
 #[derive(Clone, Debug)]
-pub struct Limb<E: Engine> {
+pub struct Limb<E: Engine>
+{
     pub term: Term<E>,
     pub max_value: BigUint
 }
@@ -280,7 +281,7 @@ impl Copy for ReductionStatus {}
 
 
 #[derive(Clone, Debug)]
-pub struct FieldElement<E: Engine, F: PrimeField>{
+pub struct FieldElement<E: Engine, F: Field>{
     binary_limbs: Vec<Limb<E>>,
     base_field_limb: Term<E>,
     representation_params: Arc<RnsParameters<E>>,

@@ -1505,7 +1505,8 @@ impl<E: Engine, F: PrimeField> FieldElement<E, F> {
 }
 
 
-impl<E: Engine, F: PrimeField> CoreCircuitField<E, F> for FieldElement<E, F> {
+impl<E: Engine, F: PrimeField> CoreCircuitField<E, F> for FieldElement<E, F>
+{
     // NB: we do not check for normalization on allocation
     #[track_caller]
     fn alloc<CS: ConstraintSystem<E>>(

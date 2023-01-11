@@ -1,9 +1,6 @@
 #![allow(dead_code, unused_imports, unused_macros)]
 #![allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
 #![warn(unused_assignments)]
-#![feature(unzip_option)]
-#![feature(associated_type_defaults)]
-#![feature(generic_const_exprs)]
 
 
 pub extern crate bellman;

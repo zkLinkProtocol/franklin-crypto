@@ -1,9 +1,10 @@
 use super::*;
 use crate::plonk::circuit::SomeArithmetizable;
 use std::{ops::Index, convert::TryInto};
+use std::iter::{once, repeat};
 
 
-pub struct FieldElementsChain<E: Engine, F: Field, T: CoreCircuitField<E, F>> {
+pub struct FieldElementsChain<E: Engine, F: Field, T> {
     pub elems_to_add: Vec<T>,
     pub elems_to_sub: Vec<T>,
     engine_marker: std::marker::PhantomData<E>,
@@ -69,7 +70,7 @@ impl<E: Engine, F: Field, T: CoreCircuitField<E, F>> FieldElementsChain<E, F, T>
 }
 
 
-impl<E: Engine, F: Field, T: FieldExtension<E, F>> FieldElementsChain<E, F, T>  
+impl<E: Engine, F: Field, T: CircuitFieldExt<E, F>> FieldElementsChain<E, F, T>  
 {
     pub fn get_coordinate_subchain(&self, i: usize) -> FieldElementsChain<E, T::BaseField, T::BaseCircuitField> 
     {
@@ -79,7 +80,7 @@ impl<E: Engine, F: Field, T: FieldExtension<E, F>> FieldElementsChain<E, F, T>
             elems_to_add,
             elems_to_sub,
             engine_marker: std::marker::PhantomData::<E>,
-            field_marker: std::marker::PhantomData::<T::BaseField>
+            field_marker: std::marker::PhantomData::<F::BaseField>
         }
     }
 }
@@ -196,23 +197,19 @@ pub trait CircuitField<E: Engine, F: Field> : CoreCircuitField<E, F>
 }
 
 
-pub trait FieldExtension<E, F> : Clone + Index<usize, Output = Self::BaseCircuitField>
-where E: Engine, F: Field
+pub trait CircuitFieldExt<E: Engine, F: Field> : Clone
 {
     type BaseField: Field;
-    type BaseCircuitField: CircuitField<E, Self::BaseField>;
-    const N: usize;
-    
-    fn convert_to_structured_witness(arr: [Self::BaseField; Self::N]) -> F;
-    fn convert_from_structured_witness(val: F) -> [Self::BaseField; Self::N];
-    fn from_coordinates(coordinates: [Self::BaseCircuitField; Self::N]) -> Self;
+    type BaseCircuitField: CircuitField<E, Self::BaseField>; 
 
+    fn from_iter<I: Iterator<Item = Self::BaseCircuitField>>(iter: I) -> Self;
+    fn get_ext_degree() -> usize;
+    
     fn from_base_field(x: Self::BaseCircuitField) -> Self {
         let params = x.get_rns_params();
         let zero = <Self::BaseCircuitField as CoreCircuitField<E, _>>::zero(params);
-        let mut coordinates: [Self::BaseCircuitField; Self::N] = array_init::array_init(|_i: usize| zero.clone());
-        coordinates[0] = x;
-        Self::from_coordinates(coordinates)
+        let iter = once(x).chain(repeat(zero.clone()).take(Self::get_ext_degree() - 1));
+        Self::from_iter(iter)
     }
 
     fn mul_by_base_field<CS: ConstraintSystem<E>>(
@@ -220,20 +217,16 @@ where E: Engine, F: Field
     ) -> Result<Self, SynthesisError> {
         let params = self.get_rns_params();
         let zero = <Self::BaseCircuitField as CoreCircuitField<E, _>>::zero(params);
-        let mut coordinates: [Self::BaseCircuitField; Self::N] = array_init::array_init(|_i: usize| zero.clone());
+        let iter = (0..Self::get_ext_degree()).map(|idx| {
+            <Self::BaseCircuitField as CircuitField<E, _>>::mul(cs, &self[idx], base_field_var)?
+        });
 
-        for idx in 0..Self::N {
-            coordinates[idx] = {
-                <Self::BaseCircuitField as CircuitField<E, _>>::mul(cs, &self[idx], base_field_var)?
-            };
-        }
-    
-        Ok(Self::from_coordinates(coordinates))
+        Ok(Self::from_iter(iter))
     }
 }
 
 
-impl<E: Engine, F: Field, T: FieldExtension<E, F>> CoreCircuitField<E, F> for T
+impl<E: Engine, F: Field, T: CircuitFieldExt<E, F>> CoreCircuitField<E, F> for T
 {
     fn alloc<CS: ConstraintSystem<E>>(
         cs: &mut CS, wit: Option<F>, params: Arc<RnsParameters<E>>
@@ -242,21 +235,19 @@ impl<E: Engine, F: Field, T: FieldExtension<E, F>> CoreCircuitField<E, F> for T
         let get_coordinate_wit = |idx: usize| raw_wit.map(|arr| arr[idx].clone());
 
         let zero = <T::BaseCircuitField as CoreCircuitField<E, _>>::zero(params.clone());
-        let mut coordinates: [T::BaseCircuitField; T::N] = array_init::array_init(|_idx: usize| zero.clone());
-        for idx in 0..T::N {
-            coordinates[idx] = T::BaseCircuitField::alloc(cs, get_coordinate_wit(idx), params.clone())?;
-        } 
-        Ok(Self::from_coordinates(coordinates))
+        let iter = (0..Self::get_ext_degree()).map(|idx| {
+            T::BaseCircuitField::alloc(cs, get_coordinate_wit(idx), params.clone())?
+        }); 
+        Ok(Self::from_iter(iter))
     }  
    
     fn constant(value: F, params: Arc<RnsParameters<E>>) -> Self {
         let arr = T::convert_from_structured_witness(value);
         let zero = <T::BaseCircuitField as CoreCircuitField<E, _>>::zero(params.clone());
-        let mut coordinates: [T::BaseCircuitField; T::N] = array_init::array_init(|_idx: usize| zero.clone());
-        for idx in 0..T::N {
-            coordinates[idx] = T::BaseCircuitField::constant(arr[idx], params.clone());
-        }
-        Ok(Self::from_coordinates(coordinates)) 
+        let iter = (0..Self::get_ext_degree()).map(|idx| {
+            T::BaseCircuitField::constant(arr[idx], params.clone())
+        });
+        Ok(Self::from_iter(iter)) 
     }
 
     fn zero(params: Arc<RnsParameters<E>>) -> Self {
@@ -296,21 +287,21 @@ impl<E: Engine, F: Field, T: FieldExtension<E, F>> CoreCircuitField<E, F> for T
     ) -> Result<Self, SynthesisError> {
         let params = first.get_rns_params();
         let zero = <T::BaseCircuitField as CoreCircuitField<E, _>>::zero(params);
-        let mut coordinates: [T::BaseCircuitField; T::N] = array_init::array_init(|_idx: usize| zero.clone());
-        for idx in 0..T::N {
-            coordinates[idx] = T::BaseCircuitField::conditionally_select(cs, flag, &first[idx], &second[idx])?;
-        } 
-        Ok(Self::from_coordinates(coordinates))
+        let iter = (0..Self::get_ext_degree()).map(|idx| {
+            T::BaseCircuitField::conditionally_select(cs, flag, &first[idx], &second[idx])?
+        });
+
+        Ok(Self::from_iter(iter))
     }  
    
     fn negate<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
         let params = self.get_rns_params();
         let zero = <T::BaseCircuitField as CoreCircuitField<E, _>>::zero(params);
-        let mut coordinates: [T::BaseCircuitField; T::N] = array_init::array_init(|_idx: usize| zero.clone());
-        for idx in 0..T::N {
-            coordinates[idx] = self[idx].negate(cs)?;
-        } 
-        Ok(Self::from_coordinates(coordinates))
+        let iter = (0..Self::get_ext_degree()).map(|idx| {
+            T::BaseCircuitField::negate(&self[idx], cs)?
+        });
+        
+        Ok(Self::from_iter(iter))
     }
 
     fn conditionally_negate<CS: ConstraintSystem<E>>(
@@ -318,11 +309,11 @@ impl<E: Engine, F: Field, T: FieldExtension<E, F>> CoreCircuitField<E, F> for T
     ) -> Result<Self, SynthesisError> {
         let params = self.get_rns_params();
         let zero = <T::BaseCircuitField as CoreCircuitField<E, _>>::zero(params);
-        let mut coordinates: [T::BaseCircuitField; T::N] = array_init::array_init(|_idx: usize| zero.clone());
-        for idx in 0..T::N {
-            coordinates[idx] = self[idx].conditionally_negate(cs, flag)?;
-        } 
-        Ok(Self::from_coordinates(coordinates))
+        let iter = (0..Self::get_ext_degree()).map(|idx| {
+            self[idx].conditionally_negate(cs, flag)?
+        }); 
+        
+        Ok(Self::from_iter(iter))
     }
     
     fn normalize<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {
@@ -332,31 +323,31 @@ impl<E: Engine, F: Field, T: FieldExtension<E, F>> CoreCircuitField<E, F> for T
     fn add<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
         let params = self.get_rns_params();
         let zero = <T::BaseCircuitField as CoreCircuitField<E, _>>::zero(params);
-        let mut coordinates: [T::BaseCircuitField; T::N] = array_init::array_init(|_idx: usize| zero.clone());
-        for idx in 0..T::N {
-            coordinates[idx] = self[idx].add(cs, &other[idx])?;
-        } 
-        Ok(Self::from_coordinates(coordinates))
+        let iter = (0..Self::get_ext_degree()).map(|idx| {
+            self[idx].add(cs, &other[idx])?
+        });
+
+        Ok(Self::from_iter(iter))
     }
 
     fn sub<CS: ConstraintSystem<E>>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> {
         let params = self.get_rns_params();
         let zero = <T::BaseCircuitField as CoreCircuitField<E, _>>::zero(params);
-        let mut coordinates: [T::BaseCircuitField; T::N] = array_init::array_init(|_idx: usize| zero.clone());
-        for idx in 0..T::N {
-            coordinates[idx] = self[idx].sub(cs, &other[idx])?;
-        } 
-        Ok(Self::from_coordinates(coordinates))
+        let iter = (0..Self::get_ext_degree()).map(|idx| {
+            self[idx].sub(cs, &other[idx])?
+        });
+
+        Ok(Self::from_iter(iter))
     }
    
     fn scale<CS: ConstraintSystem<E>>(&self, cs: &mut CS, factor: u64) -> Result<Self, SynthesisError> {
         let params = self.get_rns_params();
         let zero = <T::BaseCircuitField as CoreCircuitField<E, _>>::zero(params);
-        let mut coordinates: [T::BaseCircuitField; T::N] = array_init::array_init(|_idx: usize| zero.clone());
-        for idx in 0..T::N {
-            coordinates[idx] = self[idx].scale(cs, factor)?;
-        } 
-        Ok(Self::from_coordinates(coordinates))
+        let iter = (0..Self::get_ext_degree()).map(|idx| {
+            T::BaseCircuitField::scale(&self[idx], cs, factor)?
+        });
+        
+        Ok(Self::from_iter(iter))
     }
 
     fn enforce_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
@@ -420,14 +411,12 @@ impl<E: Engine, F: Field, T: FieldExtension<E, F>> CoreCircuitField<E, F> for T
     ) -> Result<Self, SynthesisError> {
         let params = chain.get_rns_params();
         let zero = <T::BaseCircuitField as CoreCircuitField<E, _>>::zero(params);
-        let mut coordinates: [T::BaseCircuitField; T::N] = array_init::array_init(|_idx: usize| zero.clone());
-       
-        for i in 0..T::N {
+        let iter = (0..Self::get_ext_degree()).map(|i| {
             let subchain = chain.get_coordinate_subchain(i);
-            coordinates[i] = T::BaseCircuitField::collapse_chain(cs, subchain)?;
-        }
+            T::BaseCircuitField::collapse_chain(cs, subchain)?
+        });
         
-        Ok(Self::from_coordinates(coordinates))
+        Ok(Self::from_iter(iter))
     }
 
     fn enforce_chain_is_zero<CS: ConstraintSystem<E>>(
@@ -448,10 +437,9 @@ impl<E: Engine, F: Field, T: FieldExtension<E, F>> CoreCircuitField<E, F> for T
     fn conditional_constant(value: F, flag: &Boolean, params: Arc<RnsParameters<E>>) -> Self {
         let arr = T::convert_from_structured_witness(value);
         let zero = <T::BaseCircuitField as CoreCircuitField<E, _>>::zero(params.clone());
-        let mut coordinates: [T::BaseCircuitField; T::N] = array_init::array_init(|_idx: usize| zero.clone());
-        for idx in 0..T::N {
-            coordinates[idx] = T::BaseCircuitField::conditional_constant(arr[idx], flag, params.clone());
-        } 
-        Self::from_coordinates(coordinates)
+        let iter = (0..Self::get_ext_degree()).map(|idx| {
+            T::BaseCircuitField::conditional_constant(arr[idx], flag, params.clone())
+        });
+        Self::from_iter(iter)
     }
 }

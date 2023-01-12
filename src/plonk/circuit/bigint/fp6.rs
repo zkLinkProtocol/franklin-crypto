@@ -1,6 +1,8 @@
 use super::*;
+use super::traits::CoreCircuitField;
 use std::ops::Index;
 use crate::plonk::circuit::SomeArithmetizable;
+use crate::plonk::circuit::bigint::traits::*;
 
 use crate::bellman::pairing::bn256::Fq as Bn256Fq;
 use crate::bellman::pairing::bn256::Fq2 as Bn256Fq2;
@@ -55,29 +57,29 @@ impl Extension6Params<Bn256Fq> for Bn256Extension6Params {
 
 
 #[derive(Clone)]
-pub struct Fp6<'a, E: Engine, F: PrimeField, T: Extension6Params<F>> {
-    pub c0: Fp2<'a, E, F, T::Ex2>,
-    pub c1: Fp2<'a, E, F, T::Ex2>,
-    pub c2: Fp2<'a, E, F, T::Ex2>,
+pub struct Fp6<E: Engine, F: PrimeField, T: Extension6Params<F>> {
+    pub c0: Fp2<E, F, T::Ex2>,
+    pub c1: Fp2<E, F, T::Ex2>,
+    pub c2: Fp2<E, F, T::Ex2>,
     _marker: std::marker::PhantomData<T>
 }
  
-impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>>std::fmt::Display for Fp6<'a, E, F, T> {
+impl<E:Engine, F:PrimeField, T: Extension6Params<F>>std::fmt::Display for Fp6<E, F, T> {
     #[inline(always)]
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         write!(f, "Fp6({} + {} * v+ {} * v^2)", self.c0, self.c1, self.c2)
     }
 }
 
-impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> std::fmt::Debug for Fp6<'a, E, F, T> {
+impl<E:Engine, F:PrimeField, T: Extension6Params<F>> std::fmt::Debug for Fp6<E, F, T> {
     #[inline(always)]
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         write!(f, "Fp6({} + {} * v + {} * v^2)", self.c0, self.c1, self.c2)
     }
 }
 
-impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Index<usize> for Fp6<'a, E, F, T> {
-    type Output = Fp2<'a, E, F, T::Ex2>;
+impl<E:Engine, F:PrimeField, T: Extension6Params<F>> Index<usize> for Fp6<E, F, T> {
+    type Output = Fp2<E, F, T::Ex2>;
 
     fn index(&self, idx: usize) -> &Self::Output {
         match idx {
@@ -89,26 +91,27 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Index<usize> for Fp6<'a
     }
 }
 
-impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F> > From<Fp2<'a, E, F, T::Ex2>> for Fp6<'a, E, F, T>
+impl<E:Engine, F:PrimeField, T: Extension6Params<F> > From<Fp2<E, F, T::Ex2>> for Fp6<E, F, T>
 {
-    fn from(x: Fp2<'a, E, F, T::Ex2>) -> Self {
-        let params = x.c0.representation_params;
-        Fp6::<E, F, T> {
+    fn from(x: Fp2<E, F, T::Ex2>) -> Self {
+        let params = x.c0.get_rns_params();
+        let zero = <Fp2::<E, F, T::Ex2> as CoreCircuitField<E, <T::Ex2 as Extension2Params<F>>::Witness>>::zero(params);
+        Fp6 {
             c0: x,
-            c1: Fp2::<E, F, T::Ex2>::zero(params),
-            c2: Fp2::<E, F, T::Ex2>::zero(params),
+            c1: zero.clone(),
+            c2: zero,
             _marker: std::marker::PhantomData::<T>
         }
     }    
 }
 
 
-pub struct Fp6Chain<'a, E: Engine, F: PrimeField, T: Extension6Params<F>> {
-    pub elems_to_add: Vec<Fp6<'a, E, F, T>>,
-    pub elems_to_sub: Vec<Fp6<'a, E, F, T>> 
+pub struct Fp6Chain<E: Engine, F: PrimeField, T: Extension6Params<F>> {
+    pub elems_to_add: Vec<Fp6<E, F, T>>,
+    pub elems_to_sub: Vec<Fp6<E, F, T>> 
 }
 
-impl<'a, E: Engine, F: PrimeField, T: Extension6Params<F>> Fp6Chain<'a, E, F, T> {
+impl<E: Engine, F: PrimeField, T: Extension6Params<F>> Fp6Chain<E, F, T> {
     pub fn new() -> Self {
         Fp6Chain::<E, F, T> {
             elems_to_add: vec![],
@@ -116,12 +119,12 @@ impl<'a, E: Engine, F: PrimeField, T: Extension6Params<F>> Fp6Chain<'a, E, F, T>
         }
     }
     
-    pub fn add_pos_term(&mut self, elem: &Fp6<'a, E, F, T>) -> &mut Self {
+    pub fn add_pos_term(&mut self, elem: &Fp6<E, F, T>) -> &mut Self {
         self.elems_to_add.push(elem.clone());
         self
     } 
 
-    pub fn add_neg_term(&mut self, elem: &Fp6<'a, E, F, T>) -> &mut Self {
+    pub fn add_neg_term(&mut self, elem: &Fp6<E, F, T>) -> &mut Self {
         self.elems_to_sub.push(elem.clone());
         self
     }
@@ -136,12 +139,14 @@ impl<'a, E: Engine, F: PrimeField, T: Extension6Params<F>> Fp6Chain<'a, E, F, T>
         pos.sub(&neg)
     }
 
-    pub fn get_coordinate_subchain(&self, i: usize) -> Fp2Chain<'a, E, F, T::Ex2> {
+    pub fn get_coordinate_subchain(&self, i: usize) -> FieldElementsChain<E, <T::Ex2 as Extension2Params<F>>::Witness, Fp2<E, F, T::Ex2>> {
         let elems_to_add = self.elems_to_add.iter().map(|x| x[i].clone()).collect();
         let elems_to_sub = self.elems_to_sub.iter().map(|x| x[i].clone()).collect();
-        Fp2Chain::<E, F, T::Ex2> {
+        FieldElementsChain {
             elems_to_add,
-            elems_to_sub
+            elems_to_sub,
+            engine_marker: std::marker::PhantomData::<E>,
+            field_marker: std::marker::PhantomData::<<T::Ex2 as Extension2Params<F>>::Witness>
         }
     }
 
@@ -155,17 +160,17 @@ impl<'a, E: Engine, F: PrimeField, T: Extension6Params<F>> Fp6Chain<'a, E, F, T>
 }
 
 
-impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
-    pub fn get_base_field_coordinates(&self) -> Vec<FieldElement<'a, E, F>> {
+impl<E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<E, F, T> {
+    pub fn get_base_field_coordinates(&self) -> Vec<FieldElement<E, F>> {
         (0..3).map(|i| self[i].get_base_field_coordinates()).flatten().collect()
     }
 
-    pub fn get_coordinates(&self) -> (Fp2<'a, E, F, T::Ex2>, Fp2<'a, E, F, T::Ex2>, Fp2<'a, E, F, T::Ex2>) {
+    pub fn get_coordinates(&self) -> (Fp2<E, F, T::Ex2>, Fp2<E, F, T::Ex2>, Fp2<E, F, T::Ex2>) {
         (self.c0.clone(), self.c1.clone(), self.c2.clone())
     }
 
     pub fn alloc<CS: ConstraintSystem<E>>(
-        cs: &mut CS, wit: Option<T::Witness>, params: &'a RnsParameters<E, F>
+        cs: &mut CS, wit: Option<T::Witness>, params: Arc<RnsParameters<E>>
     ) -> Result<Self, SynthesisError> {
         let (c0_wit, c1_wit, c2_wit) = if let Some(wit) = wit {
             let [c0, c1, c2] = T::convert_from_structured_witness(wit);
@@ -173,15 +178,15 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         } else {
             (None, None, None)
         };
-        let c0 = Fp2::alloc(cs, c0_wit, params)?;
-        let c1 = Fp2::alloc(cs, c1_wit, params)?;
+        let c0 = Fp2::alloc(cs, c0_wit, params.clone())?;
+        let c1 = Fp2::alloc(cs, c1_wit, params.clone())?;
         let c2 = Fp2::alloc(cs, c2_wit, params)?;
 
         Ok(Fp6{ c0, c1, c2, _marker: std::marker::PhantomData::<T>})
     } 
 
     pub fn from_coordinates(
-        c0: Fp2<'a, E, F, T::Ex2>, c1: Fp2<'a, E, F, T::Ex2>, c2: Fp2<'a, E, F, T::Ex2>
+        c0: Fp2<E, F, T::Ex2>, c1: Fp2<E, F, T::Ex2>, c2: Fp2<E, F, T::Ex2>
     ) -> Self {
         Fp6 { c0, c1, c2, _marker: std::marker::PhantomData::<T> }
     }
@@ -233,9 +238,9 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
     }
 
     pub fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> {
-        let c0_is_zero = Fp2::is_zero(&mut self.c0, cs)?; 
-        let c1_is_zero = Fp2::is_zero(&mut self.c1, cs)?;
-        let c2_is_zero = Fp2::is_zero(&mut self.c2, cs)?;
+        let c0_is_zero = <Fp2::<E, F, T::Ex2> as CoreCircuitField<E, <T::Ex2 as Extension2Params<F>>::Witness>>::is_zero(&mut self.c0, cs)?; 
+        let c1_is_zero = <Fp2::<E, F, T::Ex2> as CoreCircuitField<E, <T::Ex2 as Extension2Params<F>>::Witness>>::is_zero(&mut self.c1, cs)?;
+        let c2_is_zero = <Fp2::<E, F, T::Ex2> as CoreCircuitField<E, <T::Ex2 as Extension2Params<F>>::Witness>>::is_zero(&mut self.c2, cs)?;
         let parital_res = Boolean::and(cs, &c0_is_zero, &c1_is_zero)?;
         Boolean::and(cs, &parital_res, &c2_is_zero) 
     }
@@ -250,23 +255,26 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
     }
 
     pub fn normalize_coordinates<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<(), SynthesisError> {    
-        self.c0.normalize_coordinates(cs)?;
-        self.c1.normalize_coordinates(cs)?;
-        self.c2.normalize_coordinates(cs)
+        self.c0.normalize(cs)?;
+        self.c1.normalize(cs)?;
+        self.c2.normalize(cs)
     }
     
-    pub fn zero(params: &'a RnsParameters<E, F>) -> Self {
-        Self::from_coordinates(Fp2::zero(params), Fp2::zero(params),Fp2::zero(params))
+    pub fn zero(params: Arc<RnsParameters<E>>) -> Self {
+        let zero = <Fp2::<E, F, T::Ex2> as CoreCircuitField<E, <T::Ex2 as Extension2Params<F>>::Witness>>::zero(params); 
+        Self::from_coordinates(zero.clone(), zero.clone(), zero)
     }
 
-    pub fn one(params: &'a RnsParameters<E, F>) -> Self {
-        Self::from_coordinates(Fp2::one(params), Fp2::zero(params), Fp2::zero(params))
+    pub fn one(params: Arc<RnsParameters<E>>) -> Self {
+        let zero = <Fp2::<E, F, T::Ex2> as CoreCircuitField<E, <T::Ex2 as Extension2Params<F>>::Witness>>::zero(params.clone()); 
+        let one = <Fp2::<E, F, T::Ex2> as CoreCircuitField<E, <T::Ex2 as Extension2Params<F>>::Witness>>::one(params); 
+        Self::from_coordinates(one, zero.clone(), zero)
     }
       
-    pub fn constant(value: T::Witness, params: &'a RnsParameters<E, F>) -> Self {
+    pub fn constant(value: T::Witness, params: Arc<RnsParameters<E>>) -> Self {
         let x = T::convert_from_structured_witness(value);
         Self::from_coordinates(
-            Fp2::constant(x[0], params), Fp2::constant(x[1], params), Fp2::constant(x[2], params)
+            Fp2::constant(x[0], params.clone()), Fp2::constant(x[1], params.clone()), Fp2::constant(x[2], params)
         )
     }
 
@@ -318,7 +326,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
 
     #[track_caller]
     pub fn mul_with_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, first: &Self, second: &Self, chain: Fp6Chain<'a, E, F, T>
+        cs: &mut CS, first: &Self, second: &Self, chain: Fp6Chain<E, F, T>
     ) -> Result<Self, SynthesisError> 
     {
         // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.21
@@ -328,9 +336,9 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         // 4) c0 = ((a1 + a2) * (b1 + b2) - v1 - v2) * \alpha + v0
         // 5) c1 = (a0 + a1) * (b0 + b1) - v0 - v1 + \alpha * v2
         // 6) c2 = (a0 + a2) * (b0 + b2) - v0 - v2 + v1
-        let v0 = first.c0.mul(cs, &second.c0)?;  
-        let v1 = first.c1.mul(cs, &second.c1)?; 
-        let v2 = first.c2.mul(cs, &second.c2)?;
+        let v0 = first.c0.mul_by(cs, &second.c0)?;  
+        let v1 = first.c1.mul_by(cs, &second.c1)?; 
+        let v2 = first.c2.mul_by(cs, &second.c2)?;
         let tempa01 = first.c0.add(cs, &first.c1)?;  //tempaij=ai+aj
         let tempa12 = first.c1.add(cs, &first.c2)?;  
         let tempa02 = first.c0.add(cs, &first.c2)?; 
@@ -340,7 +348,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         let alpha = T::non_residue();
 
         // c0 = ((a1 + a2) * (b1 + b2) - v1 - v2) * \alpha + v0
-        let mut sub_chain = Fp2Chain::new();
+        let mut sub_chain = FieldElementsChain::new();
         sub_chain.add_neg_term(&v1).add_neg_term(&v2);
         let mut c0 = Fp2::mul_with_chain(cs, &tempa12, &tempb12, sub_chain)?;
         let mut sub_chain = chain.get_coordinate_subchain(0);
@@ -364,7 +372,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
 
     #[track_caller]
     pub fn constraints_fma<CS: ConstraintSystem<E>>(
-        cs: &mut CS, first: &Self, second: &Self, chain: Fp6Chain<'a, E, F, T>
+        cs: &mut CS, first: &Self, second: &Self, chain: Fp6Chain<E, F, T>
     ) -> Result<(), SynthesisError> 
     {
         // multiplication Guide to Pairing-based Cryptography, Mbrabet, Joye  Algorithm 5.21
@@ -374,9 +382,9 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         // 4) c0 = ((a1 + a2) * (b1 + b2) - v1 - v2) * \alpha + v0
         // 5) c1 = (a0 + a1) * (b0 + b1) - v0 - v1 + \alpha * v2
         // 6) c2 = (a0 + a2) * (b0 + b2) - v0 - v2 + v1
-        let v0 = first.c0.mul(cs, &second.c0)?;  
-        let v1 = first.c1.mul(cs, &second.c1)?; 
-        let v2 = first.c2.mul(cs, &second.c2)?;
+        let v0 = first.c0.mul_by(cs, &second.c0)?;  
+        let v1 = first.c1.mul_by(cs, &second.c1)?; 
+        let v2 = first.c2.mul_by(cs, &second.c2)?;
         let tempa01 = first.c0.add(cs, &first.c1)?;  //tempaij=ai+aj
         let tempa12 = first.c1.add(cs, &first.c2)?;  
         let tempa02 = first.c0.add(cs, &first.c2)?; 
@@ -386,7 +394,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         let alpha = T::non_residue();
 
         // c0 = ((a1 + a2) * (b1 + b2) - v1 - v2) * \alpha + v0
-        let mut subchain = Fp2Chain::new();
+        let mut subchain = FieldElementsChain::new();
         subchain.add_neg_term(&v1).add_neg_term(&v2);
         let c0 = Fp2::mul_with_chain(cs, &tempa12, &tempb12, subchain)?;
         let mut subchain = chain.get_coordinate_subchain(0);
@@ -417,26 +425,26 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         // 8) c2 = v4^2 + v2 - v3 + v0 - v1
         let alpha = T::non_residue();
         let a1_scaled = self.c1.double(cs)?;
-        let v0 = a1_scaled.mul(cs, &self.c2)?;
+        let v0 = a1_scaled.mul_by(cs, &self.c2)?;
         let v1 = self.c0.square(cs)?;
-        let v2 = a1_scaled.mul(cs, &self.c0)?;
+        let v2 = a1_scaled.mul_by(cs, &self.c0)?;
         let v3 = self.c2.square(cs)?;
-        let mut chain = Fp2Chain::new();
+        let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&self.c0).add_neg_term(&self.c1).add_pos_term(&self.c2);
         let v4 = Fp2::collapse_chain(cs, chain)?;
         
         // c0 = \alpha * v0 + v1
-        let mut chain = Fp2Chain::new();
+        let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&v1);
         let c0 = v0.mul_by_small_constant_with_chain(cs, alpha, chain)?;
 
         // c1 = \alpha * v2 + v3 
-        let mut chain = Fp2Chain::new();
+        let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&v3);
         let c1 = v2.mul_by_small_constant_with_chain(cs, alpha, chain)?;
 
         // c2 = v4^2 + v2 - v3 + v0 - v1
-        let mut chain = Fp2Chain::new();
+        let mut chain = FieldElementsChain::new();
         chain.add_pos_term(&v2).add_neg_term(&v3).add_pos_term(&v0).add_neg_term(&v1);
         let c2 = v4.square_with_chain(cs, chain)?;
        
@@ -444,7 +452,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
     }
 
     pub fn inverse<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        let mut num = Self::one(self.c0.c0.representation_params);
+        let mut num = Self::one(self.get_params());
         Self::div(cs, &mut num, self)
     }
 
@@ -455,10 +463,10 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
     }
 
     pub fn div_with_chain<CS: ConstraintSystem<E> >(
-        cs: &mut CS, num: Fp6Chain<'a, E, F, T>, denom: &Self
+        cs: &mut CS, num: Fp6Chain<E, F, T>, denom: &Self
     ) -> Result<Self, SynthesisError> 
     {
-        let params = denom.c0.c0.representation_params;
+        let params = denom.get_params();
         let res_wit = match (num.get_value(), denom.get_value()) {
             (Some(num), Some(denom)) => {
                 let denom_inv = denom.inverse().unwrap();
@@ -491,15 +499,15 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
             }
         }
 
-        let params= self.c0.c0.representation_params;
-        let frob_c1 = Fp2::constant(T::FROBENIUS_COEFFS_C1[power % 6], params);
-        let frob_c2 =  Fp2::constant(T::FROBENIUS_COEFFS_C2[power % 6], params);
+        let params= self.get_params();
+        let frob_c1 = Fp2::constant(T::FROBENIUS_COEFFS_C1[power % 6], params.clone());
+        let frob_c2 =  Fp2::constant(T::FROBENIUS_COEFFS_C2[power % 6], params.clone());
 
         let new_c0 = self.c0.frobenius_power_map(cs, power)?;
         let mut new_c1 = self.c1.frobenius_power_map(cs, power)?;
         let mut new_c2 = self.c2.frobenius_power_map(cs, power)?;
-        new_c1 = new_c1.mul(cs, &frob_c1)?;
-        new_c2 = new_c2.mul(cs, &frob_c2)?;
+        new_c1 = new_c1.mul_by(cs, &frob_c1)?;
+        new_c2 = new_c2.mul_by(cs, &frob_c2)?;
         
         let res = Self::from_coordinates(new_c0, new_c1, new_c2);
         let actual_value = self.get_value().map(|x| {
@@ -524,7 +532,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         Ok(res)
     }
 
-    pub fn collapse_chain<CS>(cs: &mut CS, chain: Fp6Chain<'a, E, F, T>) -> Result<Self, SynthesisError> 
+    pub fn collapse_chain<CS>(cs: &mut CS, chain: Fp6Chain<E, F, T>) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         let mut coeffs = Vec::with_capacity(3); 
@@ -536,7 +544,7 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
     }
 
     pub fn enforce_chain_is_zero<CS: ConstraintSystem<E>>(
-        cs: &mut CS, chain: Fp6Chain<'a, E, F, T>, 
+        cs: &mut CS, chain: Fp6Chain<E, F, T>, 
     ) -> Result<(), SynthesisError> {
         for i in 0..3 {
             Fp2::enforce_chain_is_zero(cs, chain.get_coordinate_subchain(i))?;
@@ -544,69 +552,26 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
         Ok(())
     }
 
-    pub fn from_boolean(flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
-        let c0 = Fp2::from_boolean(flag, params);
-        let c1 = Fp2::zero(params);
-        let c2 = Fp2::zero(params);
+    pub fn from_boolean(flag: &Boolean, params: Arc<RnsParameters<E>>) -> Self {
+        let c0 = Fp2::from_boolean(flag, params.clone());
+        let c1 = <Fp2::<E, F, T::Ex2> as CoreCircuitField<E, <T::Ex2 as Extension2Params<F>>::Witness>>::zero(params.clone());
+        let c2 = <Fp2::<E, F, T::Ex2> as CoreCircuitField<E, <T::Ex2 as Extension2Params<F>>::Witness>>::zero(params);
         Self::from_coordinates(c0, c1, c2)
     }
 
-    pub fn conditional_constant(value: T::Witness, flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
+    pub fn conditional_constant(value: T::Witness, flag: &Boolean, params: Arc<RnsParameters<E>>) -> Self {
         let c_arr = T::convert_from_structured_witness(value);
-        let c0 = Fp2::conditional_constant(c_arr[0], flag, params);
-        let c1 = Fp2::conditional_constant(c_arr[1], flag, params);
+        let c0 = Fp2::conditional_constant(c_arr[0], flag, params.clone());
+        let c1 = Fp2::conditional_constant(c_arr[1], flag, params.clone());
         let c2 = Fp2::conditional_constant(c_arr[2], flag, params);
         Self::from_coordinates(c0, c1, c2)
     }
 
-    pub fn get_params(&self) -> &'a RnsParameters<E, F> {
-        self.c0.c0.representation_params
+    pub fn get_params(&self) -> Arc<RnsParameters<E>> {
+        self.c0.get_rns_params().clone()
     }
 }
 
 
-#[cfg(test)]
-mod test {
-    use super::*;
-    use crate::bellman::pairing::bn256::*;
-    use crate::bellman::pairing::bn256::fq6::Fq6 as Bn256Fq6;
-    use crate::plonk::circuit::curve::*;
-    use crate::plonk::circuit::Width4WithCustomGates;
-    use crate::bellman::plonk::better_better_cs::gates::selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext;
-    use rand::{XorShiftRng, SeedableRng, Rng};
-    use crate::bellman::plonk::better_better_cs::cs::*;
-    use crate::bellman::kate_commitment::{Crs, CrsForMonomialForm};
-    use crate::bellman::worker::Worker;
 
-    #[test]
-    fn test_fp6_arithmetic_for_bn256_curve() {
-        const LIMB_SIZE: usize = 80;
-
-        let mut cs = TrivialAssembly::<
-            Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
-        >::new();
-        inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let circuit_params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
-
-        let mut rng = rand::thread_rng();
-        let a_wit: Bn256Fq6 = rng.gen();
-        let b_wit: Bn256Fq6 = rng.gen();
-        let mut res_wit = a_wit.clone();
-        res_wit.mul_assign(&b_wit);
-
-        let a = Fp6::<_, _, Bn256Extension6Params>::alloc(
-            &mut cs, Some(a_wit), &circuit_params.base_field_rns_params
-        ).unwrap();
-        let b = Fp6::alloc(&mut cs, Some(b_wit), &circuit_params.base_field_rns_params).unwrap();  
-        let mut actual_res = Fp6::alloc(&mut cs, Some(res_wit), &circuit_params.base_field_rns_params).unwrap();  
-        
-        let counter_start = cs.get_current_step_number();
-        let mut res = Fp6::mul(&mut cs, &a, &b).unwrap();
-        let counter_end = cs.get_current_step_number();
-        println!("num of gates: {}", counter_end - counter_start);
-        
-        Fp6::enforce_equal(&mut cs, &mut res, &mut actual_res).unwrap();
-        assert!(cs.is_satisfied()); 
-    }
-}
   

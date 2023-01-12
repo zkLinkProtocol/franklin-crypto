@@ -36,8 +36,6 @@ addchain = "0.2"
 smallvec = "1.9"
 num-iter = "0.1"
 array-init = "2.1"
-paste = "1.0"
-sealed = "0.4"
 
 # bellman = { package = "bellman_ce", path = "../../bellman/plonk" }
 bellman = { package = "bellman_ce", path = "../../bellman/bellman"}

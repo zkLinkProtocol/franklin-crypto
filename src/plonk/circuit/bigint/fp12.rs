@@ -1,6 +1,7 @@
 use super::*;
 use std::ops::Index;
 use crate::plonk::circuit::SomeArithmetizable;
+use crate::plonk::circuit::bigint::traits::{CoreCircuitField, CircuitField};
 
 use crate::bellman::pairing::bn256::Fq as Bn256Fq;
 use crate::bellman::pairing::bn256::Fq6 as Bn256Fq6;
@@ -37,12 +38,12 @@ impl Extension12Params<Bn256Fq> for Bn256Extension12Params
 }
 
 
-pub struct Fp12Chain<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> {
-    pub elems_to_add: Vec<Fp12<'a, E, F, T>>,
-    pub elems_to_sub: Vec<Fp12<'a, E, F, T>> 
+pub struct Fp12Chain<E: Engine, F: PrimeField, T: Extension12Params<F>> {
+    pub elems_to_add: Vec<Fp12<E, F, T>>,
+    pub elems_to_sub: Vec<Fp12<E, F, T>> 
 }
 
-impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> Fp12Chain<'a, E, F, T> {
+impl<E: Engine, F: PrimeField, T: Extension12Params<F>> Fp12Chain<E, F, T> {
     pub fn new() -> Self {
         Fp12Chain::<E, F, T> {
             elems_to_add: vec![],
@@ -50,12 +51,12 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> Fp12Chain<'a, E, F, 
         }
     }
     
-    pub fn add_pos_term(&mut self, elem: &Fp12<'a, E, F, T>) -> &mut Self {
+    pub fn add_pos_term(&mut self, elem: &Fp12<E, F, T>) -> &mut Self {
         self.elems_to_add.push(elem.clone());
         self
     } 
 
-    pub fn add_neg_term(&mut self, elem: &Fp12<'a, E, F, T>) -> &mut Self {
+    pub fn add_neg_term(&mut self, elem: &Fp12<E, F, T>) -> &mut Self {
         self.elems_to_sub.push(elem.clone());
         self
     }
@@ -70,7 +71,7 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> Fp12Chain<'a, E, F, 
         pos.sub(&neg)
     }
 
-    pub fn get_coordinate_subchain(&self, i: usize) -> Fp6Chain<'a, E, F, T::Ex6> {
+    pub fn get_coordinate_subchain(&self, i: usize) -> Fp6Chain<E, F, T::Ex6> {
         let elems_to_add = self.elems_to_add.iter().map(|x| x[i].clone()).collect();
         let elems_to_sub = self.elems_to_sub.iter().map(|x| x[i].clone()).collect();
         Fp6Chain::<E, F, T::Ex6> {
@@ -90,28 +91,28 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> Fp12Chain<'a, E, F, 
 
 
 #[derive(Clone)]
-pub struct Fp12<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> {
-    pub c0: Fp6<'a, E, F, T::Ex6>,
-    pub c1: Fp6<'a, E, F, T::Ex6>,
+pub struct Fp12<E: Engine, F: PrimeField, T: Extension12Params<F>> {
+    pub c0: Fp6<E, F, T::Ex6>,
+    pub c1: Fp6<E, F, T::Ex6>,
     _marker: std::marker::PhantomData<T>
 }
  
-impl<'a, E:Engine, F:PrimeField, T:   Extension12Params<F>>std::fmt::Display for Fp12<'a, E, F, T> {
+impl<E:Engine, F:PrimeField, T:   Extension12Params<F>>std::fmt::Display for Fp12<E, F, T> {
     #[inline(always)]
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         write!(f, "Fp12({} + {} * w)", self.c0, self.c1)
     }
 }
 
-impl<'a, E:Engine, F:PrimeField, T:   Extension12Params<F>> std::fmt::Debug for Fp12<'a, E, F, T> {
+impl<E:Engine, F:PrimeField, T:   Extension12Params<F>> std::fmt::Debug for Fp12<E, F, T> {
     #[inline(always)]
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         write!(f, "Fp12({} + {} * w)", self.c0, self.c1)
     }
 }
 
-impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F>> Index<usize> for Fp12<'a, E, F, T> {
-    type Output = Fp6<'a, E, F, T::Ex6>;
+impl<E:Engine, F:PrimeField, T:  Extension12Params<F>> Index<usize> for Fp12<E, F, T> {
+    type Output = Fp6<E, F, T::Ex6>;
 
     fn index(&self, idx: usize) -> &Self::Output {
         match idx {
@@ -122,10 +123,10 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F>> Index<usize> for Fp12
     }
 }
 
-impl<'a, E:Engine, F:PrimeField, T:   Extension12Params<F> > From<Fp6<'a, E, F, T::Ex6>> for Fp12<'a, E, F, T>
+impl<E:Engine, F:PrimeField, T:   Extension12Params<F> > From<Fp6<E, F, T::Ex6>> for Fp12<E, F, T>
 {
-    fn from(x: Fp6<'a, E, F, T::Ex6>) -> Self {
-        let params = x.c0.c0.representation_params;
+    fn from(x: Fp6<E, F, T::Ex6>) -> Self {
+        let params = x.get_params();
         Fp12::<E, F, T> {
             c0: x,
             c1: Fp6::<E, F, T::Ex6>::zero(params),
@@ -135,28 +136,28 @@ impl<'a, E:Engine, F:PrimeField, T:   Extension12Params<F> > From<Fp6<'a, E, F, 
 }
 
 
-impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
-    pub fn get_base_field_coordinates(&self) -> Vec<FieldElement<'a, E, F>> {
+impl<E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<E, F, T> {
+    pub fn get_base_field_coordinates(&self) -> Vec<FieldElement<E, F>> {
         (0..2).map(|i| self[i].get_base_field_coordinates()).flatten().collect()
     }
 
     pub fn alloc<CS: ConstraintSystem<E>>(
-        cs: &mut CS, wit: Option<T::Witness>, params: &'a RnsParameters<E, F>
+        cs: &mut CS, wit: Option<T::Witness>, params: Arc<RnsParameters<E>>
     ) -> Result<Self, SynthesisError> {
         let (c0_wit, c1_wit) = wit.map(|x| T::convert_from_structured_witness(x)).unzip();
-        let c0 = Fp6::alloc(cs, c0_wit, params)?;
+        let c0 = Fp6::alloc(cs, c0_wit, params.clone())?;
         let c1 = Fp6::alloc(cs, c1_wit, params)?;
         Ok(Fp12{ c0, c1, _marker: std::marker::PhantomData::<T>})
     }
 
-    pub fn from_coordinates(c0: Fp6<'a, E, F, T::Ex6>, c1: Fp6<'a, E, F, T::Ex6>) -> Self {
+    pub fn from_coordinates(c0: Fp6<E, F, T::Ex6>, c1: Fp6<E, F, T::Ex6>) -> Self {
         Fp12 { c0, c1,  _marker: std::marker::PhantomData::<T> }
     }
 
-    pub fn constant(value: T::Witness, params: &'a RnsParameters<E, F>) -> Self {
+    pub fn constant(value: T::Witness, params: Arc<RnsParameters<E>>) -> Self {
         let x = T::convert_from_structured_witness(value);
         Self::from_coordinates(
-            Fp6::constant(x.0, params), Fp6::constant(x.1, params)
+            Fp6::constant(x.0, params.clone()), Fp6::constant(x.1, params)
         )
     }
 
@@ -230,12 +231,12 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
         Ok(Self::from_coordinates(new_c0, new_c1))
     }
 
-    pub fn zero(params: &'a RnsParameters<E, F>) -> Self {
-        Self::from_coordinates(Fp6::zero(params), Fp6::zero(params))
+    pub fn zero(params: Arc<RnsParameters<E>>) -> Self {
+        Self::from_coordinates(Fp6::zero(params.clone()), Fp6::zero(params))
     }
 
-    pub fn one(params: &'a RnsParameters<E, F>) -> Self {
-        Self::from_coordinates(Fp6::one(params), Fp6::zero(params))
+    pub fn one(params: Arc<RnsParameters<E>>) -> Self {
+        Self::from_coordinates(Fp6::one(params.clone()), Fp6::zero(params))
     }
     
     pub fn double<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
@@ -257,8 +258,8 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
     }
 
     pub fn fp6_mul_subroutine<CS: ConstraintSystem<E>>(
-        cs: &mut CS, element: &Fp6<'a, E, F, T::Ex6>
-    ) -> Result<Fp6<'a, E, F, T::Ex6>, SynthesisError> {
+        cs: &mut CS, element: &Fp6<E, F, T::Ex6>
+    ) -> Result<Fp6<E, F, T::Ex6>, SynthesisError> {
         // we have the following tower of extensions:
         // F_p -> u^2 - \beta -> F_p2 -> t^3 - \alpha -> F_p6 -> w^2 - t -> Fp12
         // assume we want to multipy two elements of Fp12:
@@ -281,7 +282,7 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
 
     #[track_caller]
     pub fn mul_with_chain<CS: ConstraintSystem<E>>(
-        cs: &mut CS, first: &Self, second: &Self, chain: Fp12Chain<'a, E, F, T>
+        cs: &mut CS, first: &Self, second: &Self, chain: Fp12Chain<E, F, T>
     ) -> Result<Self, SynthesisError> {
         //Same as quadratic extension
         // 1) v0 = a0 * b0
@@ -332,7 +333,7 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
     pub fn div<CS>(cs: &mut CS, num: &mut Self, denom: &mut Self) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
-        let params = num.c0.c0.c0.representation_params;
+        let params = num.get_params();
         let res_wit = match (num.get_value(), denom.get_value()) {
             (Some(num), Some(denom)) => {
                 let denom_inv = denom.inverse().unwrap();
@@ -352,7 +353,7 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
     }
 
     pub fn inverse<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        let mut num = Self::one(self.c0.c0.c0.representation_params);
+        let mut num = Self::one(self.get_params());
         Self::div(cs, &mut num, self)
     }
 
@@ -365,23 +366,23 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
                 unreachable!("can not reach power {}", power);
             }
         }
-        let params = self.c0.c0.c0.representation_params;
+        let params = self.get_params();
         let mut frob_c1 = vec![];
         for i in 0..12 {
-            let r1 = Fp2::constant(<T::Ex6 as Extension6Params<F>>::FROBENIUS_COEFFS_FQ12_C1[i], params);
+            let r1 = Fp2::constant(<T::Ex6 as Extension6Params<F>>::FROBENIUS_COEFFS_FQ12_C1[i], params.clone());
             frob_c1.push(r1);
         }
         let new_c0 = self.c0.frobenius_power_map(cs, power)?;    
         let c_1 = self.c1.frobenius_power_map(cs, power)?;
-        let result_c1_0 = c_1.c0.mul(cs, &frob_c1[power % 12] )?;
-        let result_c1_1 = c_1.c1.mul(cs, &frob_c1[power % 12] )?;
-        let result_c1_2 = c_1.c2.mul(cs, &frob_c1[power % 12] )?;
+        let result_c1_0 = c_1.c0.mul_by(cs, &frob_c1[power % 12] )?;
+        let result_c1_1 = c_1.c1.mul_by(cs, &frob_c1[power % 12] )?;
+        let result_c1_2 = c_1.c2.mul_by(cs, &frob_c1[power % 12] )?;
         let new_c1= Fp6::from_coordinates(result_c1_0, result_c1_1, result_c1_2);
         
         Ok(Self::from_coordinates(new_c0, new_c1))  
     }
 
-    pub fn collapse_chain<CS>(cs: &mut CS, chain: Fp12Chain<'a, E, F, T>) -> Result<Self, SynthesisError> 
+    pub fn collapse_chain<CS>(cs: &mut CS, chain: Fp12Chain<E, F, T>) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
         let subchain = chain.get_coordinate_subchain(0);
@@ -391,20 +392,20 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
         Ok(Self::from_coordinates(c0, c1))
     }
 
-    pub fn from_boolean(flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
-        let c0 = Fp6::from_boolean(flag, params);
+    pub fn from_boolean(flag: &Boolean, params: Arc<RnsParameters<E>>) -> Self {
+        let c0 = Fp6::from_boolean(flag, params.clone());
         let c1 = Fp6::zero(params);
         Self::from_coordinates(c0, c1)
     }
 
-    pub fn conditional_constant(value: T::Witness, flag: &Boolean, params: &'a RnsParameters<E, F>) -> Self {
+    pub fn conditional_constant(value: T::Witness, flag: &Boolean, params: Arc<RnsParameters<E>>) -> Self {
         let (c0, c1) = T::convert_from_structured_witness(value);
-        let c0 = Fp6::conditional_constant(c0, flag, params);
+        let c0 = Fp6::conditional_constant(c0, flag, params.clone());
         let c1 = Fp6::conditional_constant(c1, flag, params);
         Self::from_coordinates(c0, c1)
     }
 
-    pub fn get_params(&self) -> &'a RnsParameters<E, F> {
-        self.c0.c0.c0.representation_params
+    pub fn get_params(&self) -> Arc<RnsParameters<E>> {
+        self.c0.get_params().clone()
     }
 }

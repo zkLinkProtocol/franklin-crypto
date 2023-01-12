@@ -28,26 +28,14 @@ use crate::plonk::circuit::SomeArithmetizable;
 // this module implements exception-free wrapper for G_6,2 which could handle all the values including {-1, +1}
 // TODO: probably better to make it more generic and work for any field in the towes and not only for Fp12
 #[derive(Clone, Debug)]
-pub struct TorusWrapper<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> {
-    encoding: Fp6<'a, E, F, T::Ex6>,
+pub struct TorusWrapper<E: Engine, F: PrimeField, T: Extension12Params<F>> {
+    encoding: Fp6<E, F, T::Ex6>,
     pub value: Option<T::Witness>,
 }
 
-impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, F, T> {
-    fn debug_check_value_coherency(&self) {
-        // decompress:
-        // g -> (g + w)/(g - w)
-        let mut tmp = <T::Ex6 as Extension6Params<F>>::Witness::one();
-        let mut res = T::convert_to_structured_witness(self.encoding.get_value().unwrap(), tmp);
-        tmp.negate();
-        let denom = T::convert_to_structured_witness(self.encoding.get_value().unwrap(), tmp);
-        let denom_inverse = denom.inverse().unwrap();
-        res.mul_assign(&denom_inverse);
-        assert_eq!(res, self.value.unwrap());
-    }
-
-    pub fn get_params(&self) -> &'a RnsParameters<E, F> {
-        self.encoding.get_params()
+impl<E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<E, F, T> {
+    pub fn get_params(&self) -> Arc<RnsParameters<E>> {
+        self.encoding.get_params().clone()
     }
 
     pub fn mask<CS: ConstraintSystem<E>>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> {
@@ -89,13 +77,12 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
         Ok((res, is_trivial))
     }
 
-    pub fn new(encoding: Fp6<'a, E, F, T::Ex6>, value: Option<T::Witness>) -> Self {
+    pub fn new(encoding: Fp6<E, F, T::Ex6>, value: Option<T::Witness>) -> Self {
         let res = TorusWrapper { encoding, value };
-        res.debug_check_value_coherency();
         res
     }
 
-    pub fn uninitialized(params: &'a RnsParameters<E, F>) -> Self {
+    pub fn uninitialized(params: Arc<RnsParameters<E>>) -> Self {
         TorusWrapper {
             encoding: Fp6::<E, F, T::Ex6>::zero(params),
             value: None
@@ -103,18 +90,18 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
     }
 
     pub fn compress<CS: ConstraintSystem<E>>(
-        cs: &mut CS, elem: &mut Fp12<'a, E, F, T>, is_safe_version: bool
+        cs: &mut CS, elem: &mut Fp12<E, F, T>, is_safe_version: bool
     ) -> Result<Self, SynthesisError> {
         let params = elem.get_params();
         let res = if is_safe_version {
             // conversion is a bit expensive, but we are okay to pay this one-time-cost
             let is_exceptional = Fp6::is_zero(&mut elem.c1, cs)?;
-            let c0_is_one = Fp6::equals(cs, &mut elem.c1, &mut Fp6::one(params))?;
-            let c0_is_one_as_fp6 = Fp6::from_boolean(&c0_is_one, params);
+            let c0_is_one = Fp6::equals(cs, &mut elem.c1, &mut Fp6::one(params.clone()))?;
+            let c0_is_one_as_fp6 = Fp6::from_boolean(&c0_is_one, params.clone());
 
             // m -> (1 + c0 - 2 * c0_is_one) / (c1 + is_exceptional) works for all values including {+1, -1}
             let mut num = Fp6Chain::new();
-            num.add_pos_term(&Fp6::one(params)).add_pos_term(&elem.c0).add_neg_term(&c0_is_one_as_fp6.double(cs)?);
+            num.add_pos_term(&Fp6::one(params.clone())).add_pos_term(&elem.c0).add_neg_term(&c0_is_one_as_fp6.double(cs)?);
             let denom = elem.c1.add(cs, &Fp6::from_boolean(&is_exceptional, params))?;
             let encoding = Fp6::div_with_chain(cs, num, &denom)?;
 
@@ -123,17 +110,16 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
             // m -> (1 + m_0) / m1 = g is constrained as g * m1 = 1 + m0;
             // if m = -1, then m1 = 0, 1 + m0 = 0 and hence g would be unconstrained variable: g * 0 = 0
             // we want to exclude this case ad hence we explicitely prove that there is no exception, i.e. m1 != 0
-            Fp6::enforce_not_equal(cs, &mut elem.c1, &mut Fp6::zero(params))?;
+            Fp6::enforce_not_equal(cs, &mut elem.c1, &mut Fp6::zero(params.clone()))?;
             let tmp = elem.c0.add(cs, &Fp6::one(params))?;
             let encoding = Fp6::div(cs, &tmp, &elem.c0)?;
             Self { encoding, value: elem.get_value() }
         };
 
-        res.debug_check_value_coherency();
         Ok(res)
     }
 
-    pub fn decompress<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Fp12<'a, E, F, T>, SynthesisError> 
+    pub fn decompress<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Fp12<E, F, T>, SynthesisError> 
     {
         let params = self.encoding.get_params();
         let fp_6_one = Fp6::one(params);
@@ -183,10 +169,10 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
             let mut lhs = left.encoding.clone();
             let mut rhs = Fp6::negate(&right.encoding, cs)?;
             let exc_flag = Fp6::equals(cs, &mut lhs, &mut rhs)?;
-            let flag_as_fe = Fp6::from_boolean(&exc_flag, params);
+            let flag_as_fe = Fp6::from_boolean(&exc_flag, params.clone());
            
             let mut chain = Fp6Chain::new();
-            chain.add_pos_term(&Fp6::constant(gamma, params));
+            chain.add_pos_term(&Fp6::constant(gamma, params.clone()));
             let x = Fp6::mul_with_chain(cs, &left.encoding, &right.encoding, chain)?;
             let y = Fp6::conditionally_select(cs, &exc_flag, &x, &Fp6::zero(params))?;
             let mut num_chain = Fp6Chain::new();
@@ -214,7 +200,6 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
             Self { encoding, value }
         };
 
-        res.debug_check_value_coherency();
         Ok(res)
     }
 
@@ -247,7 +232,6 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
             tmp
         });
         
-        result.debug_check_value_coherency();
         Ok(result)
     } 
 
@@ -264,10 +248,10 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
         // where tmp := (\gamma * flag!) / (g + flag) in the first case and tmp := \gamma / g in the second
         let tmp = if is_safe_version {
             let is_exceptional = Fp6::is_zero(&mut self.encoding, cs)?;
-            let denom = self.encoding.add(cs, &Fp6::from_boolean(&is_exceptional, params))?;
-            Fp6::div(cs, &Fp6::conditional_constant(gamma, &is_exceptional.not(), params), &denom)?
+            let denom = self.encoding.add(cs, &Fp6::from_boolean(&is_exceptional, params.clone()))?;
+            Fp6::div(cs, &Fp6::conditional_constant(gamma, &is_exceptional.not(), params.clone()), &denom)?
         } else {
-            Fp6::div(cs, &Fp6::constant(gamma, params), &self.encoding)?
+            Fp6::div(cs, &Fp6::constant(gamma, params.clone()), &self.encoding)?
         };
 
         let res_wit = self.encoding.get_value().add(&tmp.get_value()).map(|mut x| {
@@ -278,7 +262,7 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
             x
         });
         let encoding = if self.encoding.is_constant() && tmp.is_constant() {
-            Fp6::constant(res_wit.unwrap(), params)
+            Fp6::constant(res_wit.unwrap(), params.clone())
         } else {
             let res = Fp6::alloc(cs, res_wit, params)?;
             let mut chain = Fp6Chain::new();
@@ -288,7 +272,6 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
         };
 
         let res = Self { encoding, value };
-        res.debug_check_value_coherency();
         Ok(res)
     }
 
@@ -296,7 +279,7 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
         &mut self, cs: &mut CS, exp: &BigUint, decomposition: &[i64], is_safe_version: bool
     ) -> Result<Self,SynthesisError> {
         assert!(!exp.is_zero());
-        let mut res : TorusWrapper<'a, E, F, T> = self.clone();
+        let mut res : TorusWrapper<E, F, T> = self.clone();
         let mut self_inv = self.conjugation(cs)?;
         for bit in decomposition.iter().skip(1) {
             res = res.square(cs, is_safe_version)?;
@@ -309,7 +292,6 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
         }
         res.value = self.value.map(|x| x.pow(exp.to_u64_digits()));
 
-        res.debug_check_value_coherency();
         Ok(res)
     }
 }

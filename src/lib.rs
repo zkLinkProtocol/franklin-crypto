@@ -36,12 +36,6 @@ extern crate lazy_static;
 #[macro_use]
 extern crate arr_macro;
 
-#[macro_use]
-extern crate paste;
-
-#[macro_use]
-extern crate sealed;
-
 
 #[cfg(test)]
 extern crate hex;

@@ -16,10 +16,10 @@ pub use self::multiexp::*;
 pub mod ram_via_hashes;
 pub use self::ram_via_hashes::*;
 
+pub mod twisted_curve;
+pub use self::twisted_curve::*;
+
 pub mod pairing;
 pub use self::pairing::*;
-
-// pub mod pairing_experiements;
-// pub use self::pairing_experiements::*;
 
 pub mod tests;

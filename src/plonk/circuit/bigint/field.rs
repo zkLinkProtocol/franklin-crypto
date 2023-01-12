@@ -17,6 +17,7 @@ use crate::plonk::circuit::SomeArithmetizable;
 
 use std::sync::Once;
 static INIT_IS_ZERO_CHECK: Once = Once::new();
+static mut USE_OPT_IS_ZERO_CHECK: bool = false;
 static INIT_ENFORCE_EQUAL_CHECK: Once = Once::new();
 static mut NUM_BINARY_LIMBS_FOR_ENFORCE_EQUAL_CHECK: usize = 0;
 
@@ -751,7 +752,32 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         assert_eq!(lhs, rhs);
     }
 
-    pub fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
+    pub fn is_zero<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> {
+        let use_opt_version = unsafe {
+            INIT_IS_ZERO_CHECK.call_once(|| {
+                // (verifying that k * Fr::modulus != 0 (mod 2^{limb_width}) for all positive values of k, 
+                // such that: bitlength(k * Fr::modulus) <= represented_field_modulus_bitlength bits
+                let params = self.representation_params;
+                let shift = BigUint::one() << params.binary_limb_width;
+                let mut multiple_of_fr_char = params.native_field_modulus.clone();
+                while multiple_of_fr_char.bits() as usize <= params.represented_field_modulus_bitlength {
+                    if (multiple_of_fr_char.clone() % shift.clone()).is_zero() {
+                        panic!("k * Fr::modulus == 0 (mod 2^limb_width)");
+                    }
+                    multiple_of_fr_char += params.native_field_modulus.clone(); 
+                }
+            });
+            USE_OPT_IS_ZERO_CHECK
+        };
+
+        if use_opt_version {
+            self.is_zero_optimized(cs)
+        } else {
+            self.is_zero_unopt(cs)
+        }
+    }
+
+    fn is_zero_unopt<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
     {
         self.normalize(cs)?;
         let least_significant_binary_limb = self.binary_limbs[0].term.collapse_into_num(cs)?;
@@ -768,8 +794,7 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
 
     // this method requires x to be either loosely refuced or normalized, if it is in fact not - we do
     // normalization ourselves, and that's why referece is mutable
-    #[deprecated(note="should be double-checked before usage, call ordinary is_zero for now")]
-    pub fn is_zero_optimized<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
+    fn is_zero_optimized<CS: ConstraintSystem<E>>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
     {
         let params = self.representation_params;
         let is_normalized = self.reduction_status == ReductionStatus::Normalized;
@@ -786,20 +811,6 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         // params.represented_field_modulus_bitlength bits
         // if the value was in normalized form from the beginning than checking that
         // field_limb == 0 and least_significant_binary_limb == 0 is enough 
-
-        INIT_IS_ZERO_CHECK.call_once(|| {
-            // (verifying that k * Fr::modulus != 0 (mod 2^{limb_width}) for all positive values of k, such that:
-            // bitlength(k * Fr::modulus) <= represented_field_modulus_bitlength bits
-            let shift = BigUint::one() << params.binary_limb_width;
-            let mut multiple_of_fr_char = params.native_field_modulus.clone();
-            while multiple_of_fr_char.bits() as usize <= params.represented_field_modulus_bitlength {
-                if (multiple_of_fr_char.clone() % shift.clone()).is_zero() {
-                    panic!("k * Fr::modulus == 0 (mod 2^limb_width)");
-                }
-                multiple_of_fr_char += params.native_field_modulus.clone(); 
-            }
-        });
-
         let least_significant_binary_limb = self.binary_limbs[0].term.collapse_into_num(cs)?;
         let base_field_limb = self.base_field_limb.collapse_into_num(cs)?;
         self.binary_limbs[0].term = Term::from_num(least_significant_binary_limb.clone());

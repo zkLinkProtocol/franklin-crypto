@@ -1,16 +1,14 @@
 use super::*;
 use crate::bellman::pairing::bn256::*;
 use crate::plonk::circuit::BigUint;
-use crate::plonk::circuit::bigint::Extension6Params;
+use crate::plonk::circuit::bigint::*;
 use crate::bellman::SynthesisError;
 use crate::plonk::circuit::Engine;
 use crate::bellman::GenericCurveAffine;
-use crate::plonk::circuit::bigint::*;
 use crate::bellman::plonk::better_better_cs::cs::ConstraintSystem;
-use crate::plonk::circuit::PrimeField;
-use crate::plonk::circuit::boolean::Boolean;
-use crate::bellman::Field;
+use crate::bellman::{Field, PrimeField};
 use crate::plonk::circuit::hashes_with_tables::utils::IdentifyFirstLast;
+use crate::plonk::circuit::boolean::Boolean;
 
 use std::str::FromStr;
 
@@ -26,74 +24,78 @@ pub enum Ops {
 }
 
 
-// prepared point is exactly point in Jacobian coordinates defined over Fq2
-#[derive(Clone, Debug)]
-pub struct PreparedPoint<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> 
-where G::Base : PrimeField
-{
-    x: Fp2<'a, E, G::Base, T>,
-    y: Fp2<'a, E, G::Base, T>,
-    z: Fp2<'a, E, G::Base, T>
+pub struct LineFunctionEvaluation<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> {
+    c0: FieldElement<'a, E, F>,
+    c3: Fp2<'a, E, F, T>,
+    c4: Fp2<'a, E, F, T>,
 }
 
-impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> PreparedPoint<'a, E, G, T> 
-where G::Base : PrimeField
-{
-    fn from_coordinates(x: Fp2<'a, E, G::Base, T>, y: Fp2<'a, E, G::Base, T>, z: Fp2<'a, E, G::Base, T>) -> Self {
-        PreparedPoint { x, y, z }
-    }
-    
-    fn assert_if_normalized(&self) {
-        assert!(self.z.is_constant());
-        assert_eq!(self.z.get_value().unwrap(), T::Witness::one());
-    }
+impl<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> LineFunctionEvaluation<'a, E, F, T> {
+    fn construct<
+        CS: ConstraintSystem<E>, G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T::Witness>
+    >(
+        cs: &mut CS,
+        q: &TwistedCurvePoint<'a, E, G2, F, T>,
+        p: &AffinePoint<'a, E, G1, T>,
+        lambda: &Fp2<'a, E, F, T>, 
+    ) -> Result<Self, SynthesisError> {
+        let mut chain = Fp2Chain::new();
+        chain.add_pos_term(&q.y);
+        let t1 = Fp2::mul_with_chain(cs, &lambda, &q.x, chain)?;
 
-    fn negate<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        let mut res = self.clone();
-        res.y = res.y.negate(cs)?;
-        Ok(res)
-    }
+        let mut t0 = lambda.mul_by_base_field(cs, &p.x)?;
+        t0 = t0.negate(cs)?;
 
-    fn frobenius_power_map<CS: ConstraintSystem<E>>(
-        &self, cs: &mut CS, power:usize
-    )-> Result<Self, SynthesisError> {
-        let x = self.x.frobenius_power_map(cs, power)?;
-        let y = self.y.frobenius_power_map(cs, power)?; 
-        let z = self.z.frobenius_power_map(cs, power)?;
-        Ok(Self::from_coordinates(x, y, z))  
+        // line_function := [yp, 0, 0, - lambda * xp, t, 0]
+        Ok(LineFunctionEvaluation {
+            c0: p.y.clone(),
+            c3: t0,
+            c4: t1
+        })
     }
 }
 
 
-pub trait PairingParams<E: Engine, G: GenericCurveAffine, T: Extension12Params<G::Base>> 
-where G::Base : PrimeField
+pub trait PairingParams<
+    E: Engine, F: PrimeField, G1, G2, T12, T6, T2
+>  
+where T12: Extension12Params<F, Ex6 = T6>, T6: Extension6Params<F, Ex2 = T2>, T2: Extension2Params<F>, 
+G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
 {
     fn get_miller_loop_scalar_decomposition() -> Vec<i64>; 
     fn get_x() -> BigUint;
     fn get_x_ternary_decomposition(&self) -> &[i64]; 
     fn get_hard_part_ops_chain(&self) -> (Vec<Ops>, usize);
-    fn get_hard_part_generator() -> T::Witness;
+    fn get_hard_part_generator() -> T12::Witness;
     
     // require: Q \in E(Fq2) and P \in E(Fq),
     // ensure: T = 2Q and l_Q,Q(P) \in Fq12 , where l_Q,Q is tangent line to the curve at Q
     fn double_and_eval<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS,
-        q: &mut PreparedPoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>, 
-        p: &AffinePoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>
-    ) -> Result<Fp12<'a, E, G::Base, T>, SynthesisError>;
+        q: &mut TwistedCurvePoint<'a, E, G2, F, T2>, 
+        p: &AffinePoint<'a, E, G1, T2>
+    ) -> Result<LineFunctionEvaluation<'a, E, F, T2>, SynthesisError> {
+        let (doubled_q, lambda) = q.double_and_return_slope(cs)?;
+        *q = doubled_q;
+        LineFunctionEvaluation::construct(cs, q, p, &lambda)
+    }
 
     // require: Q, R \in E(Fq2) and P \in E(Fp),
     // ensure: T = Q + R and l_R,Q(P) \in Fp12 , where l is a unique line function passing through R and Q
     fn add_and_eval<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS,
-        q: &mut PreparedPoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>, 
-        r: &PreparedPoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>,
-        p: &AffinePoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>
-    ) -> Result<Fp12<'a, E, G::Base, T>, SynthesisError>;
+        q: &mut TwistedCurvePoint<'a, E, G2, F, T2>, 
+        r: &TwistedCurvePoint<'a, E, G2, F, T2>,
+        p: &AffinePoint<'a, E, G1, T2>
+    ) -> Result<LineFunctionEvaluation<'a, E, F, T2>, SynthesisError> {
+        let (new_q, lambda) = q.add_unequal_unchecked_and_return_slope(cs, r)?;
+        *q = new_q;
+        LineFunctionEvaluation::construct(cs, q, p, &lambda)
+    }
 
     fn final_exp_easy_part<'a, CS: ConstraintSystem<E>>(
-        cs: &mut CS, elem: &mut Fp12<'a, E, G::Base, T>, is_safe_version: bool
-    ) -> Result<(TorusWrapper<'a, E, G::Base, T>, Boolean), SynthesisError> {
+        cs: &mut CS, elem: &mut Fp12<'a, E, F, T12>, is_safe_version: bool
+    ) -> Result<(TorusWrapper<'a, E, F, T12>, Boolean), SynthesisError> {
         // easy part: result = f^((q^6-1)*(q^2+1))
         // we use that one-time torus compression cost can be absorbed directly in the easy part computation as follows:
         // let m = m0 + w * m1 \in Fp12 be the Miller loop result, then:
@@ -119,9 +121,9 @@ where G::Base : PrimeField
         // the result of Miller loop belongs to Fp12* and hence is never zero, 
         // hence m0 and m1 can't be zero simultaneously
         let value = elem.get_value().map(|x| {
-            let (c0, mut c1) = T::convert_from_structured_witness(x);
+            let (c0, mut c1) = T12::convert_from_structured_witness(x);
             c1.negate();
-            let mut res = T::convert_to_structured_witness(c0, c1);
+            let mut res = T12::convert_to_structured_witness(c0, c1);
             let x_inv = x.inverse().unwrap();
             res.mul_assign(&x_inv);
             res
@@ -140,13 +142,13 @@ where G::Base : PrimeField
     }
 
     fn final_exp_hard_part<'a, CS: ConstraintSystem<E>>(
-        &self, cs: &mut CS, elem: &TorusWrapper<'a, E, G::Base, T>, is_safe_version: bool
-    ) -> Result<TorusWrapper<'a, E, G::Base, T>, SynthesisError> {
+        &self, cs: &mut CS, elem: &TorusWrapper<'a, E, F, T12>, is_safe_version: bool
+    ) -> Result<TorusWrapper<'a, E, F, T12>, SynthesisError> {
         let params = elem.get_params();
         let (ops_chain, num_of_variables) = self.get_hard_part_ops_chain();
         let x = Self::get_x();
         let x_decomposition = self.get_x_ternary_decomposition();
-        let mut scratchpad = vec![TorusWrapper::<'a, E, G::Base, T>::uninitialized(params); num_of_variables];
+        let mut scratchpad = vec![TorusWrapper::<'a, E, F, T12>::uninitialized(params); num_of_variables];
         scratchpad[0] = elem.clone();
         for (_is_first, is_last, op) in ops_chain.into_iter().identify_first_last() {
             let may_cause_exp = is_safe_version && is_last;
@@ -176,14 +178,22 @@ where G::Base : PrimeField
         Ok(scratchpad[0].clone())
     }
 
+    fn convert_line_function_eval_into_fp12<'a>(x: LineFunctionEvaluation<'a, E, F, T2>) -> Fp12<'a, E, F, T12> {
+        let LineFunctionEvaluation { c0, c3, c4} = x;
+        let zero = Fp2::zero(&c0.representation_params); 
+        let fp6_x = Fp6::from_coordinates(Fp2::from(c0), zero.clone(), zero.clone());
+        let fp6_y = Fp6::from_coordinates(c3, c4, zero);
+        Fp12::from_coordinates(fp6_x, fp6_y)
+    }
+
     fn mul_by_sparse_01<'a, CS: ConstraintSystem<E>>(
-        cs: &mut CS, full_elem: &Fp6<'a, E, G::Base, T::Ex6>, sparse_elem: &Fp6<'a, E, G::Base, T::Ex6>
-    ) -> Result<Fp6<'a, E, G::Base, T::Ex6>, SynthesisError> {
+        cs: &mut CS, full_elem: &Fp6<'a, E, F, T12::Ex6>, sparse_elem: &Fp6<'a, E, F, T12::Ex6>
+    ) -> Result<Fp6<'a, E, F, T12::Ex6>, SynthesisError> {
         let (c0, c1, c2) = full_elem.get_coordinates();
         let (a, b, c) = sparse_elem.get_coordinates();
         assert!(c.is_constant());
         assert!(c.get_value().unwrap().is_zero());
-        let alpha = T::Ex6::non_residue();
+        let alpha = T12::Ex6::non_residue();
 
         let v0 = Fp2::mul(&c0, cs, &a)?;
         let v1 = Fp2::mul(&c1, cs, &b)?;
@@ -216,70 +226,55 @@ where G::Base : PrimeField
     }
 
     // implementaiion of sparse multiplication by element c = [c0, 0, 0, c3, c4, 0]
-    fn mul_by_sparse_034<'a, CS: ConstraintSystem<E>>(
+    fn mul_by_line_function_eval<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS,
-        full_elem: &Fp12<'a, E, G::Base, T>,
-        sparse_elem: &Fp12<'a, E, G::Base, T>
-    ) -> Result<Fp12<'a, E, G::Base, T>, SynthesisError> {
-        let z: Vec<Fp2<E, G::Base, <T::Ex6 as Extension6Params<G::Base>>::Ex2>> = {
+        full_elem: &Fp12<'a, E, F, T12>,
+        x: LineFunctionEvaluation<'a, E, F, T2>
+    ) -> Result<Fp12<'a, E, F, T12>, SynthesisError> {
+        let z: Vec<Fp2<E, F, <T12::Ex6 as Extension6Params<F>>::Ex2>> = {
             full_elem.get_base_field_coordinates().chunks(2).map(|ch| {
                 Fp2::from_coordinates(ch[0].clone(), ch[1].clone())
             }).collect()
         };
-        let x: Vec<Fp2<E, G::Base, <T::Ex6 as Extension6Params<G::Base>>::Ex2>> = {
-            sparse_elem.get_base_field_coordinates().chunks(2).map(
-                |ch| Fp2::from_coordinates(ch[0].clone(), ch[1].clone())
-            ).collect()
-        };
-        for idx in [1, 2, 5].iter() {
-            assert!(x[*idx].is_constant());
-            assert!(x[*idx].get_value().unwrap().is_zero());
-        }
         let params = full_elem.get_params();
 
-        let fp6_sparse_elem = Fp6::from_coordinates(x[3].clone(), x[4].clone(), Fp2::zero(params));
+        let fp6_sparse_elem = Fp6::from_coordinates(x.c3.clone(), x.c4.clone(), Fp2::zero(params));
         let b = Self::mul_by_sparse_01(cs, &full_elem.c1, &fp6_sparse_elem)?;
 
-        let tmp = x[0].add(cs, &x[3])?;
-        let fp6_sparse_elem = Fp6::from_coordinates(tmp, x[4].clone(), Fp2::zero(params));
+        let tmp = Fp2::from(x.c0.clone()).add(cs, &x.c3)?;
+        let fp6_sparse_elem = Fp6::from_coordinates(tmp, x.c4.clone(), Fp2::zero(params));
         let fp6_full_elem = full_elem.c0.add(cs, &full_elem.c1)?;
         let e = Self::mul_by_sparse_01(cs, &fp6_full_elem, &fp6_sparse_elem)?;
 
-        let a0 = z[0].mul_by_base_field(cs, &x[0].c0)?;
-        let a1 = z[1].mul_by_base_field(cs, &x[0].c0)?;
-        let a2 = z[2].mul_by_base_field(cs, &x[0].c0)?;
+        let a0 = z[0].mul_by_base_field(cs, &x.c0)?;
+        let a1 = z[1].mul_by_base_field(cs, &x.c0)?;
+        let a2 = z[2].mul_by_base_field(cs, &x.c0)?;
         let a = Fp6::from_coordinates(a0, a1, a2);
         
         let mut chain = Fp6Chain::new();
         chain.add_pos_term(&e).add_neg_term(&a).add_neg_term(&b);
         let t1 = Fp6::collapse_chain(cs, chain)?;
        
-        let mut t0 = Fp12::<'a, E, G::Base, T>::fp6_mul_subroutine(cs, &b)?;
+        let mut t0 = Fp12::<'a, E, F, T12>::fp6_mul_subroutine(cs, &b)?;
         t0 = t0.add(cs, &a)?;
        
         let res = Fp12::from_coordinates(t0, t1);
-        let mut actual_res = full_elem.get_value().unwrap();
-        actual_res.mul_assign(&sparse_elem.get_value().unwrap());
-        assert_eq!(res.get_value().unwrap(), actual_res);
         Ok(res)
     }
 
     fn miller_loop_postprocess<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS,
-        p: &AffinePoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>,
-        q: &PreparedPoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>,
-        t: &mut PreparedPoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>,
-        f: &Fp12<'a, E, G::Base, T>,
-    ) -> Result<Fp12<'a, E, G::Base, T>, SynthesisError>;
+        p: &AffinePoint<'a, E, G1, T2>,
+        q: &TwistedCurvePoint<'a, E, G2, F, T2>,
+        t: &mut TwistedCurvePoint<'a, E, G2, F, T2>,
+        f: &Fp12<'a, E, F, T12>,
+    ) -> Result<Fp12<'a, E, F, T12>, SynthesisError>;
 
     fn miller_loop<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS, 
-        p: &AffinePoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>,
-        q: &PreparedPoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>
-    ) -> Result<
-        (Fp12<'a, E, G::Base, T>, PreparedPoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>), 
-        SynthesisError
-    > {
+        p: &AffinePoint<'a, E, G1, T2>,
+        q: &TwistedCurvePoint<'a, E, G2, F, T2>
+    ) -> Result<(Fp12<'a, E, F, T12>, TwistedCurvePoint<'a, E, G2, F, T2>), SynthesisError> {
         // we should enforce that addition and doubling in Jacobian coordinates are exception free
         let params = &p.circuit_params.base_field_rns_params;
         let mut f = Fp12::one(params);
@@ -289,10 +284,10 @@ where G::Base : PrimeField
         for (is_first, _is_last, bit) in iter {
             let line_eval = Self::double_and_eval(cs, &mut t, &p)?;
             if is_first {
-                f = line_eval;
+                f = Self::convert_line_function_eval_into_fp12(line_eval);
             } else {
                 f = f.square(cs)?;
-                f = Self::mul_by_sparse_034(cs, &f, &line_eval)?;
+                f = Self::mul_by_line_function_eval(cs, &f, line_eval)?;
             }
            
             let mut to_add = q.clone();
@@ -301,7 +296,7 @@ where G::Base : PrimeField
             }
             if bit == 1 || bit == -1 {
                 let line_eval = Self::add_and_eval(cs, &mut t, &to_add, &p)?;
-                f = Self::mul_by_sparse_034(cs, &f, &line_eval)?;
+                f = Self::mul_by_line_function_eval(cs, &f, line_eval)?;
             }
         }
         Ok((f, t))
@@ -309,10 +304,10 @@ where G::Base : PrimeField
 
     fn pairing<'a, CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, 
-        p: &AffinePoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>,
-        q: &PreparedPoint<'a, E, G, <T::Ex6 as Extension6Params<G::Base>>::Ex2>,
+        p: &AffinePoint<'a, E, G1, T2>,
+        q: &TwistedCurvePoint<'a, E, G2, F, T2>,
         is_safe_version: bool
-    ) -> Result<TorusWrapper<'a, E, G::Base, T>, SynthesisError> {
+    ) -> Result<TorusWrapper<'a, E, F, T12>, SynthesisError> {
         // based on "High-Speed Software Implementation of the Optimal Ate Pairing over Barreto–Naehrig Curves"
         // by Jean-Luc Beuchat et. al. (Algorithm 1)
         let (mut f, mut t) = Self::miller_loop(cs, p, q)?;
@@ -422,7 +417,10 @@ impl<E: Engine> Bn256PairingParams<E> {
 }
 
 
-impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Params> for Bn256PairingParams<E> {
+impl<E: Engine> PairingParams<
+    E, <Bn256 as Engine>::Fq, <Bn256 as Engine>::G1Affine, <Bn256 as Engine>::G2Affine, Bn256Extension12Params, 
+    Bn256Extension6Params, Bn256Extension2Params
+> for Bn256PairingParams<E> {
     fn get_x() -> BigUint {
         BigUint::from_str("4965661367192848881").expect("should parse")
     }
@@ -453,247 +451,11 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
         ]
     }
     
-    fn double_and_eval<'a, CS: ConstraintSystem<E>>(
-        cs: &mut CS,
-        q: &mut PreparedPoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>,
-        p: &AffinePoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>,
-    ) -> Result<Fp12<'a, E, <Bn256 as Engine>::Fq, Bn256Extension12Params>, SynthesisError>
-    {
-        // let Q = (X : Y: Z) and P = (x, y); T = 2Q = (X3 : Y3 : Z3) 
-        // High-Speed Software Implementation of the Optimal Ate Pairing over Barreto–Naehrig Curves" (alg. 26)
-        // TODO: compare with our current implementation of projective doubling - may be this one is more effective
-        // cost of the implementation: 2M + 7S + 5A 
-        // and using our projecitve curve module the cost would be: 6M + 3S + 3A
-        // so it bolis down to comparison of cost of squaring againts cost of multiplication
-        // TODO: optimize later! (notice that z2 occures two often)
-
-        // use bellman::GenericCurveProjective;
-        // let mut old_q = <Bn256 as Engine>::G2::from_xyz_unchecked(
-        //     q.x.get_value().unwrap(), q.y.get_value().unwrap(), q.z.get_value().unwrap()
-        // );
-        let x_squared = q.x.square(cs)?;
-        let num = x_squared.scale(cs, 3)?;
-        let two_y = q.y.double(cs)?;
-        let lambda = Fp2::div(&num, cs, &two_y)?;
-
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&q.x).add_neg_term(&q.x);
-        let new_x = lambda.square_with_chain(cs, chain)?;
-
-        let x_minus_new_x = q.x.sub(cs, &new_x)?;
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&q.y);
-        let new_y = Fp2::mul_with_chain(cs, &lambda, &x_minus_new_x, chain)?;
-
-        let mut chain = Fp2Chain::new();
-        chain.add_pos_term(&new_y);
-        let t1 = Fp2::mul_with_chain(cs, &lambda, &new_x, chain)?;
-
-        let mut t0 = lambda.mul_by_base_field(cs, &p.x)?;
-        t0 = t0.negate(cs)?;
-
-        // line_function := [yp, 0, 0, - lambda * xp, t, 0]
-        let zero = Fp2::zero(q.x.get_params()); 
-        let fp6_x = Fp6::from_coordinates(Fp2::from(p.y.clone()), zero.clone(), zero.clone());
-        let fp6_y = Fp6::from_coordinates(t0, t1, zero.clone());
-
-        // TODO: we have to convert from Fp actually.
-        *q = PreparedPoint { x: Fp2::from(new_x), y: new_y, z: zero };
-        Ok(Fp12::from_coordinates(fp6_x, fp6_y))
-    
-        // // 1. tmp0 := X^2
-        // let tmp0 = q.x.square(cs)?;
-        // // 2. tmp1 := Y^2
-        // let tmp1 = q.y.square(cs)?;
-        // // 3. tmp2 := tmp1^2
-        // let tmp2 = tmp1.square(cs)?;
-        // // 4. tmp3 := (tmp1 + X)^2 - tmp0 - tmp2;
-        // let tmp = tmp1.add(cs, &q.x)?;
-        // let mut chain = Fp2Chain::new();
-        // chain.add_neg_term(&tmp0).add_neg_term(&tmp2);
-        // let tmp3 = tmp.square_with_chain(cs, chain)?; 
-        // // 5. tmp3 := 2 * tmp3;
-        // let tmp3 = tmp3.double(cs)?;
-        // // 6. tmp4 := 3 * tmp0;
-        // let tmp4 = tmp0.scale(cs, 3)?;
-        // // 7. tmp6 := X + tmp4;
-        // let tmp6 = q.x.add(cs, &tmp4)?;
-        // // 8. tmp5 := tmp4^2
-        // let tmp5 = tmp4.square(cs)?;
-        // // 9.  X3 := tmp5 - 2*tmp3
-        // let tmp = tmp3.double(cs)?;
-        // let new_x = tmp5.sub(cs, &tmp)?;
-        // // 10. Z3 := (Y+Z)^2 - tmp1 - Z^2
-        // let z_squared = q.z.square(cs)?;
-        // let tmp = q.y.add(cs, &q.z)?;
-        // let mut chain = Fp2Chain::new();
-        // chain.add_neg_term(&tmp1).add_neg_term(&z_squared);
-        // let new_z = tmp.square_with_chain(cs, chain)?;
-        // // 11. Y3 := (tmp3 - X1) * tmp4 - 8 * tmp2;
-        // let tmp = tmp3.sub(cs, &new_x)?;
-        // let mut chain = Fp2Chain::new();
-        // chain.add_neg_term(&tmp2.scale(cs, 8)?);
-        // let new_y = Fp2::mul_with_chain(cs, &tmp, &tmp4, chain)?;
-        // // 12. tmp3 := -2 * (tmp4 * Z^2)
-        // let tmp = tmp4.negate(cs)?;
-        // let tmp = tmp.double(cs)?;
-        // let tmp3 = tmp.mul(cs, &z_squared)?;
-        // // 13. tmp3 := tmp3 * xp (mul by base Field)
-        // let tmp3 = tmp3.mul_by_base_field(cs, &p.x)?;
-        // // 14. tmp6 := tmp6^2 - tmp0 - tmp5 - 4 * tmp1
-        // let mut chain = Fp2Chain::new();
-        // chain.add_neg_term(&tmp0).add_neg_term(&tmp5).add_neg_term(&tmp1.scale(cs, 4)?);
-        // let tmp6 = tmp6.square_with_chain(cs, chain)?;
-        // // 16. tmp0 := 2 * zt * zy^2 * yp (mul ny base Field)
-        // let mut tmp0 = new_z.double(cs)?;
-        // tmp0 = tmp0.mul(cs, &z_squared)?;
-        // tmp0 = tmp0.mul_by_base_field(cs, &p.y)?;
-        // // 17. line_function := [tmp0, 0, 0, tmp3, tmp6, 0]
-        // let zero = Fp2::zero(q.x.get_params()); 
-        // let fp6_x = Fp6::from_coordinates(tmp0, zero.clone(), zero.clone());
-        // let fp6_y = Fp6::from_coordinates(tmp3, tmp6, zero);
-
-        // let new_q = <Bn256 as Engine>::G2::from_xyz_unchecked(
-        //     new_x.get_value().unwrap(), new_y.get_value().unwrap(), new_z.get_value().unwrap()
-        // );
-        // old_q.double();
-        // assert_eq!(old_q, new_q);
-        
-        // *q = PreparedPoint { x: new_x, y: new_y, z: new_z };
-        // Ok(Fp12::from_coordinates(fp6_x, fp6_y))
-    }
-
-    fn add_and_eval<'a, CS: ConstraintSystem<E>>(
-        cs: &mut CS,
-        acc: &mut PreparedPoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>, 
-        to_add: &PreparedPoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>,
-        p: &AffinePoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>
-    ) -> Result<Fp12<'a, E, <Bn256 as Engine>::Fq, Bn256Extension12Params>, SynthesisError> {
-        // also is airthmetic in jacobian coordinates exception free?
-        // TODO: invetigate comparison between this approach and using formulas from projective curve crate
-        // High-Speed Software Implementation of the Optimal Ate Pairing over Barreto–Naehrig Curves" (alg. 27)
-        // Q = (xq : yq : zq), R = (xr : yr : 1) and P = (xp, yp), T = Q + R = (xt: yt: zt)
-        // 1) t2 = xq - xr
-        // Z_R can be saved for later use
-        // line function in affine coordinates:
-        // yp + (−\lambda * xp + v * (\lambda *  x_Q − y_Q)) * w
-        // t = (\lambda *  x_Q − y_Q)
-        let other_x_minus_this_x = to_add.x.sub(cs, &acc.x)?;
-        let mut chain = Fp2Chain::new();
-        chain.add_pos_term(&to_add.y).add_neg_term(&acc.y);
-        let lambda = Fp2::div_with_chain(cs, chain, &other_x_minus_this_x)?;
-        
-        // lambda^2 + (-x' - x)
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&to_add.x).add_neg_term(&acc.x);
-        let new_x = lambda.square_with_chain(cs, chain)?;
-
-        // lambda * (x - new_x) + (- y) = lambda * x_q - y_q - lambda * new_x = t1 - lambda * new_x =>
-        // t1 = new_y + lambda * new_x
-        let this_x_minus_new_x = acc.x.sub(cs, &new_x)?;
-        let mut chain = Fp2Chain::new();
-        chain.add_neg_term(&acc.y);
-        let new_y = Fp2::mul_with_chain(cs, &lambda, &this_x_minus_new_x, chain)?;
-
-        let mut chain = Fp2Chain::new();
-        chain.add_pos_term(&new_y);
-        let t1 = Fp2::mul_with_chain(cs, &lambda, &new_x, chain)?;
-
-        let mut t0 = lambda.mul_by_base_field(cs, &p.x)?;
-        t0 = t0.negate(cs)?;
-
-        // line_function := [yp, 0, 0, - lambda * xp, t, 0]
-        let zero = Fp2::zero(acc.x.get_params()); 
-        let fp6_x = Fp6::from_coordinates(Fp2::from(p.y.clone()), zero.clone(), zero.clone());
-        let fp6_y = Fp6::from_coordinates(t0, t1, zero.clone());
-
-        // TODO: we have to convert from Fp actually.
-        *acc = PreparedPoint { x: Fp2::from(new_x), y: new_y, z: zero };
-        Ok(Fp12::from_coordinates(fp6_x, fp6_y))
-        
-
-        // let new = Self { x: new_x, y: new_y, circuit_params: self.circuit_params };
-        // Ok(new)
-
-        // we assume that q is actuallu affine
-        // let q = &to_add;
-        // let r = &acc;
-        // q.assert_if_normalized();
-        // let z_r_squared = r.z.square(cs)?;
-        // let y_q_squared = q.y.square(cs)?;
-        
-        // let tmp = q.y.add(cs, &r.z)?;
-        // let mut chain = Fp2Chain::new();
-        // chain.add_neg_term(&z_r_squared).add_neg_term(&y_q_squared);
-        // let t1 = tmp.square_with_chain(cs, chain)?;
-
-        // let mut chain = Fp2Chain::new();
-        // chain.add_neg_term(&r.x);
-        // let t2 = Fp2::mul_with_chain(cs, &q.x, &z_r_squared, chain)?;
-
-        // let t3 = t2.square(cs)?;
-        // let t4 = t3.scale(cs, 4)?;
-        // let t5 = t4.mul(cs, &t2)?;
-
-        // // t6 = t1 * z_r^2 − 2 y_r;
-        // let mut chain = Fp2Chain::new();
-        // chain.add_neg_term(&r.y.double(cs)?);
-        // let t6 = Fp2::mul_with_chain(cs, &t1, &z_r_squared, chain)?;
-    
-        // let t9 = t6.mul(cs, &q.x)?;
-        // let t7 = r.x.mul(cs, &t4)?;
-
-        // // tx = t6^2 - t5 - 2 * t7
-        // let mut chain = Fp2Chain::new();
-        // chain.add_neg_term(&t5).add_neg_term(&t7.double(cs)?);
-        // let tx = t6.square_with_chain(cs, chain)?;
-
-        // // tz = (z.r + t2)^2 - z.r^2 - t3
-        // let mut chain = Fp2Chain::new();
-        // chain.add_neg_term(&z_r_squared).add_neg_term(&t3);
-        // let tmp = r.z.add(cs, &t2)?;
-        // let tz = tmp.square_with_chain(cs, chain)?;
-        
-        // // 9) t10 = yq + tz
-        // let t10 = q.y.add(cs, &tz)?;
-        // // 10) t8 = (t7 - tx) * t6
-        // let tmp = t7.sub(cs, &tx)?;
-        // let t8 = tmp.mul(cs, &t6)?;
-        // // 11) t0 = 2 * yr * t5
-        // let mut t0 = r.y.mul(cs, &t5)?;
-        // t0 = t0.double(cs)?;
-        // // 12) ty = t8 - t0
-        // let ty = t8.sub(cs, &t0)?;
-        // // 13) t10 = t10^2 - yq^2 -tz^2
-        // let qy_squared = q.y.square(cs)?;
-        // let tz_squared = tz.square(cs)?;
-        // let mut chain = Fp2Chain::new();
-        // chain.add_neg_term(&qy_squared).add_neg_term(&tz_squared);
-        // let t10 = t10.square_with_chain(cs, chain)?;
-        // // 14) t9 = 2 * t9 - t10
-        // let t9 = t9.double(cs)?.sub(cs, &t10)?;
-        // // 15) t10 = 2 * tz * yp
-        // let mut t10 = tz.mul_by_base_field(cs, &p.y)?;
-        // t10 = t10.double(cs)?; 
-        // // 17) t1 = - 2 * t6 * xp
-        // let mut t1 = t6.mul_by_base_field(cs, &p.x)?;
-        // t1 = t1.negate(cs)?;
-        // t1 = t1.double(cs)?;
-        // // 18) line_function := [t10, 0, 0, t1, t9, 0]
-        // let zero = Fp2::zero(q.x.get_params()); 
-        // let fp6_x = Fp6::from_coordinates(t10, zero.clone(), zero.clone());
-        // let fp6_y = Fp6::from_coordinates(t1, t9, zero);
-
-        // *acc = PreparedPoint { x: tx, y: ty, z: tz };
-        // Ok(Fp12::from_coordinates(fp6_x, fp6_y))
-    } 
-
-    
     fn miller_loop_postprocess<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS,
         p: &AffinePoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>,
-        q: &PreparedPoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>, 
-        t: &mut PreparedPoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>, 
+        q: &TwistedCurvePoint<'a, E, <Bn256 as Engine>::G2Affine, <Bn256 as Engine>::Fq, Bn256Extension2Params>, 
+        t: &mut TwistedCurvePoint<'a, E, <Bn256 as Engine>::G2Affine, <Bn256 as Engine>::Fq, Bn256Extension2Params>, 
         f: &Fp12<'a, E, <Bn256 as Engine>::Fq, Bn256Extension12Params>
     ) -> Result<Fp12<'a, E, <Bn256 as Engine>::Fq, Bn256Extension12Params>, SynthesisError> {
         let params = q.x.get_params();
@@ -710,8 +472,8 @@ impl<E: Engine> PairingParams<E, <Bn256 as Engine>::G1Affine, Bn256Extension12Pa
 
         let line_eval_1 = Self::add_and_eval(cs, t, &q1, p)?;
         let line_eval_2 = Self::add_and_eval(cs, t, &q2, p)?;
-        let mut f = Self::mul_by_sparse_034(cs, &f, &line_eval_1)?;
-        f = Self::mul_by_sparse_034(cs, &f, &line_eval_2)?;
+        let mut f = Self::mul_by_line_function_eval(cs, &f, line_eval_1)?;
+        f = Self::mul_by_line_function_eval(cs, &f, line_eval_2)?;
 
         Ok(f)
     }
@@ -753,8 +515,7 @@ mod test {
         let p = AffinePoint::alloc(&mut cs, Some(p_wit), &circuit_params).unwrap();
         let q_x = Fp2::alloc(&mut cs, Some(*q_wit_x), &circuit_params.base_field_rns_params).unwrap();
         let q_y = Fp2::alloc(&mut cs, Some(*q_wit_y), &circuit_params.base_field_rns_params).unwrap();  
-        let q_z = Fp2::one(&circuit_params.base_field_rns_params);
-        let q = PreparedPoint::from_coordinates(q_x, q_y, q_z);
+        let q = TwistedCurvePoint::from_coordinates(q_x, q_y);
         
         let counter_start = cs.get_current_step_number();
         //let wrapped_pairing_res = pairing_params.pairing(&mut cs, &p, &q, SAFE_VERSION).unwrap();
@@ -837,8 +598,7 @@ mod test {
         let p = AffinePoint::alloc(&mut cs, Some(p_wit), &circuit_params).unwrap();
         let q_x = Fp2::alloc(&mut cs, Some(*q_wit_x), &circuit_params.base_field_rns_params).unwrap();
         let q_y = Fp2::alloc(&mut cs, Some(*q_wit_y), &circuit_params.base_field_rns_params).unwrap();  
-        let q_z = Fp2::one(&circuit_params.base_field_rns_params);
-        let q = PreparedPoint::from_coordinates(q_x, q_y, q_z);
+        let q = TwistedCurvePoint::from_coordinates(q_x, q_y);
         
         let counter_start = cs.get_current_step_number();
         let wrapped_res = pairing_params.pairing(&mut cs, &p, &q, SAFE_VERSION).unwrap();

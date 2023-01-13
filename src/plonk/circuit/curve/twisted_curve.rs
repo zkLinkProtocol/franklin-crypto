@@ -21,6 +21,7 @@ use crate::bellman::{
 use plonk::circuit::bigint::*;
 
 
+#[derive(Clone, Debug)]
 pub struct TwistedCurvePoint<'a, E: Engine, G: GenericCurveAffine, F: PrimeField, T: Extension2Params<F, Witness = G::Base>>
 {
     pub x: Fp2<'a, E, F, T>,
@@ -41,6 +42,13 @@ where T: Extension2Params<F, Witness = G::Base>
 
     pub fn get_value(&self) -> Option<G> {
         self.value
+    }
+
+    pub fn from_coordinates(x: Fp2<'a, E, F, T>, y: Fp2<'a, E, F, T>) -> Self {
+        let witness = x.get_value().zip(y.get_value()).map(|(x, y)| {
+            G::from_xy_checked(x, y).expect("should be a valid point")
+        });
+        Self { x, y, value: witness }
     }
 
     #[track_caller]

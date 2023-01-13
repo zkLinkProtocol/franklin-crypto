@@ -759,12 +759,15 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
                 // such that: bitlength(k * Fr::modulus) <= represented_field_modulus_bitlength bits
                 let params = self.representation_params;
                 let shift = BigUint::one() << params.binary_limb_width;
-                let mut multiple_of_fr_char = params.native_field_modulus.clone();
-                while multiple_of_fr_char.bits() as usize <= params.represented_field_modulus_bitlength {
-                    if (multiple_of_fr_char.clone() % shift.clone()).is_zero() {
-                        panic!("k * Fr::modulus == 0 (mod 2^limb_width)");
+                if params.native_field_modulus_bitlength == params.represented_field_modulus_bitlength {
+                    let mut multiple_of_fr_char = params.native_field_modulus.clone();
+                    while multiple_of_fr_char.bits() as usize <= params.represented_field_modulus_bitlength {
+                        if (multiple_of_fr_char.clone() % shift.clone()).is_zero() {
+                            return;
+                        }
+                        multiple_of_fr_char += params.native_field_modulus.clone(); 
                     }
-                    multiple_of_fr_char += params.native_field_modulus.clone(); 
+                    USE_OPT_IS_ZERO_CHECK = true;
                 }
             });
             USE_OPT_IS_ZERO_CHECK

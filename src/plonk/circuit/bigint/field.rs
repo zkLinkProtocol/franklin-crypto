@@ -2255,9 +2255,7 @@ mod test {
         let b = FieldElement::alloc(&mut cs, Some(b), &params).unwrap();
         let mut actual_result = FieldElement::alloc(&mut cs, Some(actual_result), &params).unwrap();
         let mut res = FieldElement::mul(&a, &mut cs, &b).unwrap();
-        println!("before eq");
         FieldElement::enforce_equal(&mut cs, &mut res, &mut actual_result).unwrap();
-        println!("after eq");
        
         assert!(cs.is_satisfied());
     }   

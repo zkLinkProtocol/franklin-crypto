@@ -67,6 +67,9 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
     fn get_x_ternary_decomposition(&self) -> &[i64]; 
     fn get_hard_part_ops_chain(&self) -> (Vec<Ops>, usize);
     fn get_hard_part_generator() -> T12::Witness;
+    fn g1_subgroup_check_and_replace<'a, CS: ConstraintSystem<E>>(
+        cs: &mut CS, p: &mut AffinePoint<'a, E, G1, T2>
+    ) -> Result<Boolean, SynthesisError>;
     
     // require: Q \in E(Fq2) and P \in E(Fq),
     // ensure: T = 2Q and l_Q,Q(P) \in Fq12 , where l_Q,Q is tangent line to the curve at Q
@@ -449,6 +452,12 @@ impl<E: Engine> PairingParams<
             0, 0, 0, 1, 0, 1, 0, -1, 0, 0, 1, -1, 0, 0, 1, 0, 0, 1, 1, 0, -1, 0, 0, 1, 0, -1, 0, 0, 0, 0, 1, 1,
 	        1, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 1, 0, 0, -1, 0, 0, 0, 1, 1, 0, -1, 0, 0, 1, 0, 1, 1
         ]
+    }
+
+    fn g1_subgroup_check_and_replace<'a, CS: ConstraintSystem<E>>(
+        _cs: &mut CS, _p: &mut AffinePoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>
+    ) -> Result<Boolean, SynthesisError> {
+        Ok(Boolean::constant(false))
     }
     
     fn miller_loop_postprocess<'a, CS: ConstraintSystem<E>>(

@@ -46,7 +46,7 @@ where T: Extension2Params<F, Witness = G::Base>
 
     pub fn from_coordinates(x: Fp2<'a, E, F, T>, y: Fp2<'a, E, F, T>) -> Self {
         let witness = x.get_value().zip(y.get_value()).map(|(x, y)| {
-            G::from_xy_checked(x, y).expect("should be a valid point")
+            G::from_xy_unchecked(x, y)
         });
         Self { x, y, value: witness }
     }
@@ -72,24 +72,48 @@ where T: Extension2Params<F, Witness = G::Base>
     } 
 
     #[track_caller]
-    pub fn enforce_if_on_curve<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+    fn is_on_curve_prepare<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS
+    ) -> Result<(Fp2<'a, E, F, T>, Fp2<'a, E, F, T>), SynthesisError> {
         let rns_params = self.x.c0.representation_params;
         let a = Fp2::<E, F, T>::constant(G::a_coeff(), rns_params);
         let b = Fp2::constant(G::b_coeff(), rns_params);
 
-        let mut lhs = self.y.square(cs)?;
+        let lhs = self.y.square(cs)?;
         let x_squared = self.x.square(cs)?;
         let x_cubed = x_squared.mul(cs, &self.x)?;
-        let mut rhs = if a.get_value().unwrap().is_zero() {
+        let rhs = if a.get_value().unwrap().is_zero() {
             x_cubed.add(cs, &b)?
         } else {
             let mut chain = Fp2Chain::new();
             chain.add_pos_term(&x_cubed).add_pos_term(&b);
             Fp2::mul_with_chain(cs, &self.x, &a, chain)?
         };
+        Ok((lhs, rhs))
+    }
 
+    #[track_caller]
+    pub fn enforce_if_on_curve<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+        let (mut lhs, mut rhs) = self.is_on_curve_prepare(cs)?;
         Fp2::enforce_equal(cs, &mut lhs, &mut rhs)
     }
+
+    #[track_caller]
+    pub fn is_on_curve<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Boolean, SynthesisError> {
+        let (mut lhs, mut rhs) = self.is_on_curve_prepare(cs)?;
+        Fp2::equals(cs, &mut lhs, &mut rhs)
+    }
+
+    // pub fn generator(params: &'a CurveCircuitParameters<E, G, T>) -> Self {
+    //     Self::constant(G::one(), params)
+    // }
+
+    // pub fn check_is_on_curve_and_replace<CS>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
+    // where CS: ConstraintSystem<E> {
+    //     let invalid_point = self.is_on_curve(cs)?;
+    //     *self = Self::conditionally_select(cs, &invalid_point, &Self::generator(params), &self)?;
+    //     Ok(invalid_point)
+    // }
 
     #[track_caller]
     pub fn enforce_equal<CS>(cs: &mut CS, left: &mut Self, right: &mut Self) -> Result<(), SynthesisError> 

@@ -431,22 +431,13 @@ where <G as GenericCurveAffine>::Base: PrimeField
     pub fn alloc<CS: ConstraintSystem<E>>(
         cs: &mut CS, value: Option<G>, params: &'a CurveCircuitParameters<E, G, T>
     ) -> Result<Self, SynthesisError> {
-        let (new, _x_decomposition, _y_decomposition) = Self::alloc_ext(cs, value, params, true)?;
-        Ok(new)
-    }
-
-    // allocation without checking that point is indeed on curve and in the right subgroup
-    #[track_caller]
-    pub fn alloc_unchecked<CS: ConstraintSystem<E>>(
-        cs: &mut CS, value: Option<G>, params: &'a CurveCircuitParameters<E, G, T>
-    ) -> Result<Self, SynthesisError> {
-        let (new, _x_decomposition, _y_decomposition) = Self::alloc_ext(cs, value, params, false)?;
+        let (new, _x_decomposition, _y_decomposition) = Self::alloc_ext(cs, value, params)?;
         Ok(new)
     }
 
     #[track_caller]
     pub fn alloc_ext<CS: ConstraintSystem<E>>(
-        cs: &mut CS, value: Option<G>, params: &'a CurveCircuitParameters<E, G, T>, require_checks: bool
+        cs: &mut CS, value: Option<G>, params: &'a CurveCircuitParameters<E, G, T>
     ) -> Result<(Self, RangeCheckDecomposition<E>, RangeCheckDecomposition<E>), SynthesisError>  {
         let (x, y) = match value {
             Some(v) => {
@@ -464,10 +455,6 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let circuit_params = params;
         let new = Self { x, y, value, circuit_params};
 
-        if require_checks {
-            new.enforce_if_on_curve(cs)?;
-            //new.enforce_if_in_subgroup(cs)?;
-        }
         Ok((new, x_decomposition, y_decomposition))
     }
 
@@ -497,6 +484,10 @@ where <G as GenericCurveAffine>::Base: PrimeField
         let new = Self { x, y, value: Some(value), circuit_params: params };
 
         new
+    }
+
+    pub fn generator(params: &'a CurveCircuitParameters<E, G, T>) -> Self {
+        Self::constant(G::one(), params)
     }
 
     // uninitialized point may be also treated as point at infitnity: 
@@ -615,22 +606,45 @@ where <G as GenericCurveAffine>::Base: PrimeField
     }
 
     #[track_caller]
-    pub fn enforce_if_on_curve<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+    fn is_on_curve_prepare<CS: ConstraintSystem<E>>(
+        &self, cs: &mut CS
+    ) -> Result<(FieldElement<'a, E, G::Base>, FieldElement<'a, E, G::Base>), SynthesisError> 
+    {
         let params = &self.x.representation_params;
         let a = FieldElement::constant(G::a_coeff(), params);
         let b = FieldElement::constant(G::b_coeff(), params);
 
-        let mut lhs = self.y.square(cs)?;
+        let lhs = self.y.square(cs)?;
         let x_squared = self.x.square(cs)?;
         let x_cubed = x_squared.mul(cs, &self.x)?;
-        let mut rhs = if a.get_field_value().unwrap().is_zero() {
+        let rhs = if a.get_field_value().unwrap().is_zero() {
             x_cubed.add(cs, &b)?
         } else {
             let mut chain = FieldElementsChain::new();
             chain.add_pos_term(&x_cubed).add_pos_term(&b);
             FieldElement::mul_with_chain(cs, &self.x, &a, chain)?
         };
+        Ok((lhs, rhs))
+    }
+
+    pub fn enforce_if_on_curve<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<(), SynthesisError> {
+        let (mut lhs, mut rhs) = self.is_on_curve_prepare(cs)?;
         FieldElement::enforce_equal(cs, &mut lhs, &mut rhs)
+    }
+
+    pub fn is_on_curve<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Boolean, SynthesisError> {
+        let (mut lhs, mut rhs) = self.is_on_curve_prepare(cs)?;
+        FieldElement::equals(cs, &mut lhs, &mut rhs)
+    }
+
+    // if current point is not on the curve: we return the flag indication that point is invalid
+    // and replace the point with generator
+    pub fn check_is_on_curve_and_replace<CS>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
+    where CS: ConstraintSystem<E> {
+        let params = self.circuit_params;
+        let invalid_point = self.is_on_curve(cs)?;
+        *self = Self::conditionally_select(cs, &invalid_point, &Self::generator(params), &self)?;
+        Ok(invalid_point)
     }
 
     #[track_caller]

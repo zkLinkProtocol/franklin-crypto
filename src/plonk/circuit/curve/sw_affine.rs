@@ -642,7 +642,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
     pub fn check_is_on_curve_and_replace<CS>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
     where CS: ConstraintSystem<E> {
         let params = self.circuit_params;
-        let invalid_point = self.is_on_curve(cs)?;
+        let invalid_point = self.is_on_curve(cs)?.not();
         *self = Self::conditionally_select(cs, &invalid_point, &Self::generator(params), &self)?;
         Ok(invalid_point)
     }

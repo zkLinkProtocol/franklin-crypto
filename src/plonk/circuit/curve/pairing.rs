@@ -62,13 +62,12 @@ pub trait PairingParams<
 where T12: Extension12Params<F, Ex6 = T6>, T6: Extension6Params<F, Ex2 = T2>, T2: Extension2Params<F>, 
 G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
 {
-    fn get_miller_loop_scalar_decomposition() -> Vec<i64>; 
     fn get_x() -> BigUint;
-    fn get_x_ternary_decomposition(&self) -> &[i64]; 
+    fn get_x_ternary_decomposition() -> &'static [i64]; 
     fn get_hard_part_ops_chain(&self) -> (Vec<Ops>, usize);
     fn get_hard_part_generator() -> T12::Witness;
-    fn g1_subgroup_check_and_replace<'a, CS: ConstraintSystem<E>>(
-        cs: &mut CS, p: &mut AffinePoint<'a, E, G1, T2>
+    fn g1_subgroup_check<'a, CS: ConstraintSystem<E>>(
+        cs: &mut CS, p: &AffinePoint<'a, E, G1, T2>
     ) -> Result<Boolean, SynthesisError>;
     
     // require: Q \in E(Fq2) and P \in E(Fq),
@@ -150,7 +149,7 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
         let params = elem.get_params();
         let (ops_chain, num_of_variables) = self.get_hard_part_ops_chain();
         let x = Self::get_x();
-        let x_decomposition = self.get_x_ternary_decomposition();
+        let x_decomposition = Self::get_x_ternary_decomposition();
         let mut scratchpad = vec![TorusWrapper::<'a, E, F, T12>::uninitialized(params); num_of_variables];
         scratchpad[0] = elem.clone();
         for (_is_first, is_last, op) in ops_chain.into_iter().identify_first_last() {
@@ -271,7 +270,8 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
         q: &TwistedCurvePoint<'a, E, G2, F, T2>,
         t: &mut TwistedCurvePoint<'a, E, G2, F, T2>,
         f: &Fp12<'a, E, F, T12>,
-    ) -> Result<Fp12<'a, E, F, T12>, SynthesisError>;
+        is_safe_version: bool
+    ) -> Result<(Fp12<'a, E, F, T12>, Boolean), SynthesisError>;
 
     fn miller_loop<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS, 
@@ -283,7 +283,7 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
         let mut f = Fp12::one(params);
         let mut t = q.clone();
 
-        let iter = Self::get_miller_loop_scalar_decomposition().into_iter().rev().skip(1).identify_first_last();
+        let iter = Self::get_x_ternary_decomposition().into_iter().skip(1).identify_first_last();
         for (is_first, _is_last, bit) in iter {
             let line_eval = Self::double_and_eval(cs, &mut t, &p)?;
             if is_first {
@@ -294,10 +294,10 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
             }
            
             let mut to_add = q.clone();
-            if bit == -1 {
+            if *bit == -1 {
                 to_add = to_add.negate(cs)?;
             }
-            if bit == 1 || bit == -1 {
+            if *bit == 1 || *bit == -1 {
                 let line_eval = Self::add_and_eval(cs, &mut t, &to_add, &p)?;
                 f = Self::mul_by_line_function_eval(cs, &f, line_eval)?;
             }
@@ -307,17 +307,32 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
 
     fn pairing<'a, CS: ConstraintSystem<E>>(
         &self, cs: &mut CS, 
-        p: &AffinePoint<'a, E, G1, T2>,
-        q: &TwistedCurvePoint<'a, E, G2, F, T2>,
+        p: &mut AffinePoint<'a, E, G1, T2>,
+        q: &mut TwistedCurvePoint<'a, E, G2, F, T2>,
         is_safe_version: bool
-    ) -> Result<TorusWrapper<'a, E, F, T12>, SynthesisError> {
+    ) -> Result<(TorusWrapper<'a, E, F, T12>, Boolean), SynthesisError> {
+        let mut exception = Boolean::constant(false);
+        if is_safe_version {
+            let p_is_on_curve_exc = p.check_is_on_curve_and_replace(cs)?;
+            let q_is_on_curve_exc = q.check_is_on_curve_and_replace(cs)?;
+            let p_is_in_subgroup_exc = Self::g1_subgroup_check(cs, p)?;
+            
+            for new_exc in [p_is_on_curve_exc, q_is_on_curve_exc, p_is_in_subgroup_exc] {
+                println!("exc value: {}", new_exc.get_value().unwrap());
+                exception = Boolean::or(cs, &exception, &new_exc)?;
+            }
+        } 
         // based on "High-Speed Software Implementation of the Optimal Ate Pairing over Barreto–Naehrig Curves"
         // by Jean-Luc Beuchat et. al. (Algorithm 1)
-        let (mut f, mut t) = Self::miller_loop(cs, p, q)?;
-        f = Self::miller_loop_postprocess(cs, &p, &q, &mut t, &f)?;
+        let (f, mut t) = Self::miller_loop(cs, p, q)?;
+        let (mut f, q_is_in_subgroup_exc) = Self::miller_loop_postprocess(cs, &p, &q, &mut t, &f, is_safe_version)?;
         let (wrapped_f, is_trivial) = Self::final_exp_easy_part(cs, &mut f, is_safe_version)?;
         let candidate = self.final_exp_hard_part(cs, &wrapped_f, is_safe_version)?;
-        candidate.mask(cs, &is_trivial.not())
+        
+        let res = candidate.mask(cs, &is_trivial.not())?;
+        exception = Boolean::or(cs, &exception, &q_is_in_subgroup_exc)?;
+
+        Ok((res, exception))
     }
 }
 
@@ -428,11 +443,12 @@ impl<E: Engine> PairingParams<
         BigUint::from_str("4965661367192848881").expect("should parse")
     }
 
-    fn get_x_ternary_decomposition(&self) -> &[i64] {
-        &[
+    fn get_x_ternary_decomposition() -> &'static [i64] {
+        const ARR : [i64; 63] =  [
             1, 0, 0, 0, 1, 0, 1, 0, 0, -1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 
             1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 1
-        ]
+        ];
+        &ARR
     } 
 
     fn get_hard_part_generator() -> crate::bellman::pairing::bn256::Fq12 {
@@ -447,15 +463,8 @@ impl<E: Engine> PairingParams<
         }
     }
 
-    fn get_miller_loop_scalar_decomposition() -> Vec<i64> {
-        vec![
-            0, 0, 0, 1, 0, 1, 0, -1, 0, 0, 1, -1, 0, 0, 1, 0, 0, 1, 1, 0, -1, 0, 0, 1, 0, -1, 0, 0, 0, 0, 1, 1,
-	        1, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 1, 0, 0, -1, 0, 0, 0, 1, 1, 0, -1, 0, 0, 1, 0, 1, 1
-        ]
-    }
-
-    fn g1_subgroup_check_and_replace<'a, CS: ConstraintSystem<E>>(
-        _cs: &mut CS, _p: &mut AffinePoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>
+    fn g1_subgroup_check<'a, CS: ConstraintSystem<E>>(
+        _cs: &mut CS, _p: &AffinePoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>
     ) -> Result<Boolean, SynthesisError> {
         Ok(Boolean::constant(false))
     }
@@ -465,26 +474,67 @@ impl<E: Engine> PairingParams<
         p: &AffinePoint<'a, E, <Bn256 as Engine>::G1Affine, Bn256Extension2Params>,
         q: &TwistedCurvePoint<'a, E, <Bn256 as Engine>::G2Affine, <Bn256 as Engine>::Fq, Bn256Extension2Params>, 
         t: &mut TwistedCurvePoint<'a, E, <Bn256 as Engine>::G2Affine, <Bn256 as Engine>::Fq, Bn256Extension2Params>, 
-        f: &Fp12<'a, E, <Bn256 as Engine>::Fq, Bn256Extension12Params>
-    ) -> Result<Fp12<'a, E, <Bn256 as Engine>::Fq, Bn256Extension12Params>, SynthesisError> {
-        let params = q.x.get_params();
-        let mut q1 = q.clone();
-        q1.x.c1 = q1.x.c1.negate(cs)?;
-        let cnst = <Bn256Extension12Params as Extension12Params<<Bn256 as Engine>::Fq>>::Ex6::FROBENIUS_COEFFS_C1[1];
-        q1.x = q1.x.mul(cs, &Fp2::constant(cnst, params))?;
-        q1.y.c1 = q1.y.c1.negate(cs)?;
-        q1.y = q1.y.mul(cs, &Fp2::constant(XI_TO_Q_MINUS_1_OVER_2, params))?;
+        f: &Fp12<'a, E, <Bn256 as Engine>::Fq, Bn256Extension12Params>,
+        is_safe_version: bool,
+    ) -> Result<(Fp12<'a, E, <Bn256 as Engine>::Fq, Bn256Extension12Params>, Boolean), SynthesisError> {
+        // subgroup check for BN256 curve is of the form: 
+        // twisted_frob(Q) = [u]*Q
+        let mut q_u = t.clone();
+        
+        // # remaining addition chain from u to t = 6 * u + 2
+        // # u -> 2 * u -> 3u = 2u + u -> 3u + 1 -> 6u + 2
+        // during main cycle of Miller_loop we have computed f_t, and t*Q to compute the relation:
+        // f_{a+b} = f_a * f_b * line_function_{a*Q, b*Q}, hence:
+        // f_{2 * u} = (f_u)^2 * line_function(u*Q, u*Q)
+        // f_{3 * u} = f_{2 * u} * f_u * line_function(2u * Q, u*Q)
+        // f_{3u + 1} = f_{3u} *f_1 * line_function(3u*Q, Q) = f_{3u} * line_function(3u*Q, Q)
+        // f_{6u + 2} = f_{3u+1}^2 * line_function((3u+1)Q, (3u+1)Q)
+        
+        // computing f_{2u}
+        let line_eval = Self::double_and_eval(cs, t, &p)?;
+        let mut acc = f.square(cs)?;
+        acc = Self::mul_by_line_function_eval(cs, &acc, line_eval)?;
 
+        // computing f_{3u}
+        let line_eval = Self::add_and_eval(cs, t, &q_u, p)?;
+        acc = Fp12::mul(cs, &acc, &f)?;
+        acc = Self::mul_by_line_function_eval(cs, &acc, line_eval)?;
+
+        // computing f_{3u+1}
+        let line_eval = Self::add_and_eval(cs, t, &q, p)?;
+        acc = Self::mul_by_line_function_eval(cs, &acc, line_eval)?;
+
+        // computing f_{6u+2}
+        let line_eval = Self::double_and_eval(cs, t, &p)?;
+        acc = acc.square(cs)?;
+        acc = Self::mul_by_line_function_eval(cs, &acc, line_eval)?;
+
+        let params = q.x.get_params();
+        let mut q_frob = q.clone();
+        q_frob.x.c1 = q_frob.x.c1.negate(cs)?;
+        let cnst = <Bn256Extension12Params as Extension12Params<<Bn256 as Engine>::Fq>>::Ex6::FROBENIUS_COEFFS_C1[1];
+        q_frob.x = q_frob.x.mul(cs, &Fp2::constant(cnst, params))?;
+        q_frob.y.c1 = q_frob.y.c1.negate(cs)?;
+        q_frob.y = q_frob.y.mul(cs, &Fp2::constant(XI_TO_Q_MINUS_1_OVER_2, params))?;
+      
         let mut q2 = q.clone();
         let cnst = <Bn256Extension12Params as Extension12Params<<Bn256 as Engine>::Fq>>::Ex6::FROBENIUS_COEFFS_C1[2];
         q2.x = q2.x.mul(cs, &Fp2::constant(cnst, params))?;
 
-        let line_eval_1 = Self::add_and_eval(cs, t, &q1, p)?;
+        let line_eval_1 = Self::add_and_eval(cs, t, &q_frob, p)?;
         let line_eval_2 = Self::add_and_eval(cs, t, &q2, p)?;
-        let mut f = Self::mul_by_line_function_eval(cs, &f, line_eval_1)?;
-        f = Self::mul_by_line_function_eval(cs, &f, line_eval_2)?;
+        acc = Self::mul_by_line_function_eval(cs, &acc, line_eval_1)?;
+        acc = Self::mul_by_line_function_eval(cs, &acc, line_eval_2)?;
 
-        Ok(f)
+        let q2_subgroup_exception = if is_safe_version {
+            //TwistedCurvePoint::equals(cs, &mut q2, &mut q_u)?.not()
+            Boolean::constant(false)
+        } else {
+            Boolean::constant(false)
+        };
+        println!("q2 subgroup check: {}", q2_subgroup_exception.get_value().unwrap());
+
+        Ok((acc, q2_subgroup_exception))
     }
 }
 
@@ -529,8 +579,8 @@ mod test {
         let counter_start = cs.get_current_step_number();
         //let wrapped_pairing_res = pairing_params.pairing(&mut cs, &p, &q, SAFE_VERSION).unwrap();
         //let mut pairing_res = wrapped_pairing_res.decompress(&mut cs).unwrap();
-        let (mut f, mut t) = Bn256PairingParams::miller_loop(&mut cs, &p, &q).unwrap();
-        f = Bn256PairingParams::miller_loop_postprocess(&mut cs, &p, &q, &mut t, &f).unwrap();
+        let (f, mut t) = Bn256PairingParams::miller_loop(&mut cs, &p, &q).unwrap();
+        let (mut f, _exc) = Bn256PairingParams::miller_loop_postprocess(&mut cs, &p, &q, &mut t, &f, SAFE_VERSION).unwrap();
         let counter_end = cs.get_current_step_number();
         println!("num of gates: {}", counter_end - counter_start);
         
@@ -604,13 +654,13 @@ mod test {
 
         let (q_wit_x, q_wit_y) = bellman::CurveAffine::as_xy(&q_wit); 
 
-        let p = AffinePoint::alloc(&mut cs, Some(p_wit), &circuit_params).unwrap();
+        let mut p = AffinePoint::alloc(&mut cs, Some(p_wit), &circuit_params).unwrap();
         let q_x = Fp2::alloc(&mut cs, Some(*q_wit_x), &circuit_params.base_field_rns_params).unwrap();
         let q_y = Fp2::alloc(&mut cs, Some(*q_wit_y), &circuit_params.base_field_rns_params).unwrap();  
-        let q = TwistedCurvePoint::from_coordinates(q_x, q_y);
+        let mut q = TwistedCurvePoint::from_coordinates(q_x, q_y);
         
         let counter_start = cs.get_current_step_number();
-        let wrapped_res = pairing_params.pairing(&mut cs, &p, &q, SAFE_VERSION).unwrap();
+        let (wrapped_res, any_exception) = pairing_params.pairing(&mut cs, &mut p, &mut q, SAFE_VERSION).unwrap();
         let mut res = wrapped_res.decompress(&mut cs).unwrap();
         let counter_end = cs.get_current_step_number();
         println!("num of gates: {}", counter_end - counter_start);
@@ -619,6 +669,7 @@ mod test {
             &mut cs, Some(res_wit), &circuit_params.base_field_rns_params
         ).unwrap();
         Fp12::enforce_equal(&mut cs, &mut res, &mut actual_pairing_res).unwrap();
+        Boolean::enforce_equal(&mut cs, &any_exception, &Boolean::Constant(false)).unwrap();
 
         assert!(cs.is_satisfied()); 
     }

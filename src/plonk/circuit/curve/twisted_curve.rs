@@ -104,16 +104,17 @@ where T: Extension2Params<F, Witness = G::Base>
         Fp2::equals(cs, &mut lhs, &mut rhs)
     }
 
-    // pub fn generator(params: &'a CurveCircuitParameters<E, G, T>) -> Self {
-    //     Self::constant(G::one(), params)
-    // }
+    pub fn generator(params: &'a RnsParameters<E, F>) -> Self {
+        Self::constant(G::one(), params)
+    }
 
-    // pub fn check_is_on_curve_and_replace<CS>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
-    // where CS: ConstraintSystem<E> {
-    //     let invalid_point = self.is_on_curve(cs)?;
-    //     *self = Self::conditionally_select(cs, &invalid_point, &Self::generator(params), &self)?;
-    //     Ok(invalid_point)
-    // }
+    pub fn check_is_on_curve_and_replace<CS>(&mut self, cs: &mut CS) -> Result<Boolean, SynthesisError> 
+    where CS: ConstraintSystem<E> {
+        let invalid_point = self.is_on_curve(cs)?.not();
+        let params = self.x.get_params();
+        *self = Self::conditionally_select(cs, &invalid_point, &Self::generator(params), &self)?;
+        Ok(invalid_point)
+    }
 
     #[track_caller]
     pub fn enforce_equal<CS>(cs: &mut CS, left: &mut Self, right: &mut Self) -> Result<(), SynthesisError> 
@@ -365,5 +366,17 @@ where T: Extension2Params<F, Witness = G::Base>
             _ => None,
         };
         Ok(Self {x, y, value })
+    }
+
+    pub fn equals<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<Boolean, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        let x_check = Fp2::equals(cs, &mut this.x, &mut other.x)?;
+        let y_check = Fp2::equals(cs, &mut this.y, &mut other.y)?;
+        println!(" x check: {}", x_check.get_value().unwrap());
+        println!(" y check: {}", y_check.get_value().unwrap());
+        let equals = Boolean::and(cs, &x_check, &y_check)?;
+        
+        Ok(equals)
     }
 }

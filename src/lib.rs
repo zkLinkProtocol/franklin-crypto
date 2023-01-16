@@ -23,6 +23,7 @@ extern crate indexmap;
 extern crate smallvec;
 extern crate addchain;
 extern crate num_iter;
+extern crate rand_pcg;
 
 use bellman::pairing;
 use bellman::pairing::ff;

@@ -580,7 +580,7 @@ mod test {
 
     #[test]
     fn test_fp6_arithmetic_for_bn256_curve() {
-        const LIMB_SIZE: usize = 80;
+        const LIMB_SIZE: usize = 72;
 
         let mut cs = TrivialAssembly::<
             Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext

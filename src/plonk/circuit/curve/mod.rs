@@ -7,6 +7,9 @@ pub use self::sw_projective::*;
 pub mod sw_affine_ext;
 pub use self::sw_affine_ext::*;
 
+// pub mod sw_affine_checked;
+// pub use self::sw_affine_checked::*;
+
 pub mod secp256k1;
 pub use self::secp256k1::*;
 

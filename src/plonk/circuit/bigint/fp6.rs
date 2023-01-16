@@ -7,6 +7,9 @@ use crate::bellman::pairing::bn256::Fq2 as Bn256Fq2;
 use crate::bellman::pairing::bn256::fq::FROBENIUS_COEFF_FQ6_C1 as BN256_FROBENIUS_COEFF_FQ6_C1;
 use crate::bellman::pairing::bn256::fq::FROBENIUS_COEFF_FQ6_C2 as BN256_FROBENIUS_COEFF_FQ6_C2;
 use crate::bellman::pairing::bn256::fq::FROBENIUS_COEFF_FQ12_C1 as BN256_FROBENIUS_COEFF_FQ12_C1;
+use crate::bellman::pairing::bls12_381::fq::FROBENIUS_COEFF_FQ6_C1 as BLS12_FROBENIUS_COEFF_FQ6_C1;
+use crate::bellman::pairing::bls12_381::fq::FROBENIUS_COEFF_FQ6_C2 as BLS12_FROBENIUS_COEFF_FQ6_C2;
+use crate::bellman::pairing::bls12_381::fq::FROBENIUS_COEFF_FQ12_C1 as BLS12_FROBENIUS_COEFF_FQ12_C1;
 
 use crate::bellman::pairing::bls12_381::Fq as Bls12Fq;
 use crate::bellman::pairing::bls12_381::Fq2 as Bls12Fq2;
@@ -49,6 +52,27 @@ impl Extension6Params<Bn256Fq> for Bn256Extension6Params {
     }
 
     fn convert_from_structured_witness(x: Self::Witness) -> [Bn256Fq2; 3] {
+        [x.c0, x.c1, x.c2]
+    }
+}
+
+#[derive(Clone)]
+pub struct BLS12Extension6Params {}
+impl Extension6Params<Bls12Fq> for BLS12Extension6Params {
+    type Ex2 = BLS12Extension2Params;
+    type Witness = crate::bellman::pairing::bls12_381::Fq6;
+
+    const NON_RESIDUE: (u64, u64) = (9, 1);
+    const FROBENIUS_COEFFS_C1: [Bls12Fq2; 6] = BLS12_FROBENIUS_COEFF_FQ6_C1;
+    const FROBENIUS_COEFFS_C2: [Bls12Fq2; 6] = BLS12_FROBENIUS_COEFF_FQ6_C2;
+    const FROBENIUS_COEFFS_FQ12_C1: [Bls12Fq2; 12] = BLS12_FROBENIUS_COEFF_FQ12_C1;
+   
+    fn convert_to_structured_witness(c0: Bls12Fq2, c1: Bls12Fq2, c2: Bls12Fq2) -> Self::Witness 
+    {
+        Self::Witness { c0, c1, c2 }
+    }
+
+    fn convert_from_structured_witness(x: Self::Witness) -> [Bls12Fq2; 3] {
         [x.c0, x.c1, x.c2]
     }
 }
@@ -569,7 +593,9 @@ impl<'a, E:Engine, F:PrimeField, T: Extension6Params<F>> Fp6<'a, E, F, T> {
 mod test {
     use super::*;
     use crate::bellman::pairing::bn256::*;
+    use crate::bellman::pairing::bls12_381::*;
     use crate::bellman::pairing::bn256::fq6::Fq6 as Bn256Fq6;
+    use crate::bellman::pairing::bls12_381::fq6::Fq6 as Bls12Fq6;
     use crate::plonk::circuit::curve::*;
     use crate::plonk::circuit::Width4WithCustomGates;
     use crate::bellman::plonk::better_better_cs::gates::selector_optimized_with_d_next::SelectorOptimizedWidth4MainGateWithDNext;
@@ -595,6 +621,36 @@ mod test {
         res_wit.mul_assign(&b_wit);
 
         let a = Fp6::<_, _, Bn256Extension6Params>::alloc(
+            &mut cs, Some(a_wit), &circuit_params.base_field_rns_params
+        ).unwrap();
+        let b = Fp6::alloc(&mut cs, Some(b_wit), &circuit_params.base_field_rns_params).unwrap();  
+        let mut actual_res = Fp6::alloc(&mut cs, Some(res_wit), &circuit_params.base_field_rns_params).unwrap();  
+        
+        let counter_start = cs.get_current_step_number();
+        let mut res = Fp6::mul(&mut cs, &a, &b).unwrap();
+        let counter_end = cs.get_current_step_number();
+        println!("num of gates: {}", counter_end - counter_start);
+        
+        Fp6::enforce_equal(&mut cs, &mut res, &mut actual_res).unwrap();
+        assert!(cs.is_satisfied()); 
+    }
+    #[test]
+    fn test_fp6_arithmetic_for_bls12_curve() {
+        const LIMB_SIZE: usize = 80;
+
+        let mut cs = TrivialAssembly::<
+            Bls12, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
+        >::new();
+        inscribe_default_bitop_range_table(&mut cs).unwrap();
+        let circuit_params = generate_optimal_circuit_params_for_bls12::<Bls12, _>(&mut cs, LIMB_SIZE, LIMB_SIZE);
+
+        let mut rng = rand::thread_rng();
+        let a_wit: Bls12Fq6 = rng.gen();
+        let b_wit: Bls12Fq6 = rng.gen();
+        let mut res_wit = a_wit.clone();
+        res_wit.mul_assign(&b_wit);
+
+        let a = Fp6::<_, _, BLS12Extension6Params>::alloc(
             &mut cs, Some(a_wit), &circuit_params.base_field_rns_params
         ).unwrap();
         let b = Fp6::alloc(&mut cs, Some(b_wit), &circuit_params.base_field_rns_params).unwrap();  

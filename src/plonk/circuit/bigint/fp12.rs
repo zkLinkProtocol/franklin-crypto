@@ -5,6 +5,8 @@ use crate::plonk::circuit::SomeArithmetizable;
 use crate::bellman::pairing::bn256::Fq as Bn256Fq;
 use crate::bellman::pairing::bn256::Fq6 as Bn256Fq6;
 
+use crate::bellman::pairing::bls12_381::Fq as Bls12Fq;
+use crate::bellman::pairing::bls12_381::Fq6 as Bls12Fq6;
 
 pub trait Extension12Params<F:PrimeField>: Clone {
     type Ex6: Extension6Params<F>;
@@ -32,6 +34,23 @@ impl Extension12Params<Bn256Fq> for Bn256Extension12Params
     }
 
     fn convert_from_structured_witness(x: Self::Witness) -> (Bn256Fq6, Bn256Fq6) {
+        (x.c0, x.c1)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Bls12Extension12Params {}
+impl Extension12Params<Bls12Fq> for Bls12Extension12Params 
+{
+    type Ex6 = BLS12Extension6Params;
+    type Witness = crate::bellman::pairing::bls12_381::Fq12;
+
+    fn convert_to_structured_witness(c0: Bls12Fq6, c1: Bls12Fq6) -> Self::Witness 
+    {
+        Self::Witness { c0, c1}
+    }
+
+    fn convert_from_structured_witness(x: Self::Witness) -> (Bls12Fq6, Bls12Fq6) {
         (x.c0, x.c1)
     }
 }

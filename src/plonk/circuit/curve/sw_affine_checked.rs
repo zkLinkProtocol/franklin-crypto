@@ -22,162 +22,170 @@ use plonk::circuit::bigint::*;
 
 
 #[derive(Clone, Debug)]
-pub enum MaskType {
-    MaskByZero,
-    MaskByOne,
-}
-
-
-#[derive(Clone, Debug)]
 pub struct AffinePointChecked<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>>  
 where <G as GenericCurveAffine>::Base: PrimeField 
 {
     inner: AffinePoint<'a, E, G, T>,
     is_infty: Boolean,
-    mask_type: MaskType
+}
+
+impl<'a, E, G, T> From<AffinePoint<'a, E, G, T>> for AffinePointChecked<'a, E, G, T>
+where E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>, <G as GenericCurveAffine>::Base: PrimeField {
+    fn from(value: AffinePoint<'a, E, G, T>) -> Self {
+        AffinePointChecked {
+            inner: value,
+            is_infty: Boolean::Constant(false),
+        }
+    }
 }
 
 impl<'a, E: Engine, G: GenericCurveAffine, T: Extension2Params<G::Base>> AffinePointChecked<'a, E, G, T>
-where <G as GenericCurveAffine>::Base: PrimeField {
-    #[track_caller]
-    pub fn from_point_and_mask_type(
-        point: AffinePoint<'a, E, G, T>, mask_type: MaskType
-    ) -> Self {
+where <G as GenericCurveAffine>::Base: PrimeField, G: rand::Rand {
+    pub fn infty(circuit_params: &'a CurveCircuitParameters<E, G, T>) -> Self {
         AffinePointChecked {
-            inner: point,
-            is_infty: Boolean::Constant(false),
-            mask_type
-        }
-    }
-
-    fn construct_masked_x(
-        rns_params: &'a RnsParameters<E, G::Base>, mask_type: MaskType
-    ) -> FieldElement<'a, E, G::Base> {
-        match mask_type {
-            MaskType::MaskByZero => FieldElement::zero(rns_params),
-            MaskType::MaskByOne => FieldElement::one(rns_params),
-            _ => unreachable!()
-        }
-    } 
-
-    pub fn infty(circuit_params: &'a CurveCircuitParameters<E, G, T>, mask_type: MaskType) -> Self {
-        let x = Self::construct_masked_x(circuit_params.base_field_rns_params, mask_type);
-        let y = FieldElement::zero(circuit_params.base_field_rns_params);
-        AffinePointChecked {
-            inner: AffinePoint::from_coordinates(x, y),
+            inner: AffinePoint::generator(circuit_params),
             is_infty: Boolean::Constant(true),
-            mask_type
         }
     }
 
     pub fn is_constant(&self) -> bool {
-        self.x.is_constant() & self.y.is_constant()
+        self.inner.is_constant()
     }
 
     pub fn get_value(&self) -> Option<G> {
-        self.value
-    }
-
-    pub fn enforce_equal<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<(), SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {
-        FieldElement::enforce_equal(cs, &mut this.x, &mut other.x)?;
-        FieldElement::enforce_equal(cs, &mut this.y, &mut other.y)
-    }
-
-    pub fn equals<CS>(cs: &mut CS, this: &mut Self, other: &mut Self) -> Result<Boolean, SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {
-        let x_check = FieldElement::equals(cs, &mut this.x, &mut other.x)?;
-        let y_check = FieldElement::equals(cs, &mut this.y, &mut other.y)?;
-        let equals = Boolean::and(cs, &x_check, &y_check)?;
-        
-        Ok(equals)
+        self.is_infty.get_value().map(|flag| if flag { Some(G::zero()) } else { self.inner.value } ).flatten()
     }
 
     pub fn negate<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
-        let y_negated = self.y.negate(cs)?;
-        let new_value = self.value.map(|x| {
-            let mut tmp = x;
-            tmp.negate();
-            tmp
-        });
-        let new = Self {
-            x: self.x.clone(),
-            y: y_negated,
-            value: new_value,
-            circuit_params: self.circuit_params
-        };
-
-        Ok(new)
+        let mut res = self.clone();
+        res.inner = res.inner.negate(cs)?;
+        Ok(res)
     }
 
     pub fn conditionally_negate<CS>(&self, cs: &mut CS, flag: &Boolean) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E>
     {
-        let y_negated = self.y.conditionally_negate(cs, flag)?;
-        let new_value = match (flag.get_value(), self.value) {
-            (Some(flag), Some(x)) => {
-                let mut tmp = x;
-                if flag { tmp.negate() };
-                Some(tmp)
-            },
-            _ => None,
-        };
-           
-        let new = Self {
-            x: self.x.clone(),
-            y: y_negated,
-            value: new_value,
-            circuit_params: self.circuit_params,
-        };
-
-        Ok(new)
+        let mut res = self.clone();
+        res.inner = res.inner.conditionally_negate(cs, flag)?;
+        Ok(res)
     }
-
+   
     pub fn conditionally_select<CS: ConstraintSystem<E>>(
         cs: &mut CS, flag: &Boolean, first: &Self, second: &Self
     ) -> Result<Self, SynthesisError> 
     {
-        let first_value = first.get_value();
-        let second_value = second.get_value();
-        let x = FieldElement::conditionally_select(cs, flag, &first.x, &second.x)?;
-        let y = FieldElement::conditionally_select(cs, flag, &first.y, &second.y)?;
+        let inner = AffinePoint::conditionally_select(cs, flag, &first.inner, &second.inner)?;
+        let is_infty = Boolean::conditionally_select(cs, flag, &first.is_infty, &second.is_infty)?;
+        Ok(AffinePointChecked { inner, is_infty })
+    }
 
-        let value = match (flag.get_value(), first_value, second_value) {
-            (Some(true), Some(p), _) => Some(p),
-            (Some(false), _, Some(p)) => Some(p),
-            (_, _, _) => None
+    #[track_caller]
+    pub fn double<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {
+        let mut res = self.clone();
+        res.inner = res.inner.double(cs)?;
+        Ok(res)
+    }
+
+    #[track_caller]
+    pub fn add_mixed<CS>(&mut self, cs: &mut CS, other: &mut AffinePoint<'a, E, G, T>) -> Result<Self, SynthesisError> 
+    where CS: ConstraintSystem<E>
+    {
+        let xs_are_equal = FieldElement::equals(cs, &mut self.inner.x, &mut other.x)?;
+        let mut other_negated_y = other.y.negate(cs)?;
+        let ys_are_equal = FieldElement::equals(cs, &mut self.inner.y, &mut other_negated_y)?;
+        let coords_are_equal = Boolean::and(cs, &xs_are_equal, &ys_are_equal)?;
+
+        let lambda_for_double = {
+            // lambda = (3 x^2) / (2 * y) 
+            let x_squared = self.inner.x.square(cs)?;
+            let x_squared_mul_3 = x_squared.scale(cs, 3)?;
+            let two_y = self.inner.y.double(cs)?;
+            FieldElement::div(&x_squared_mul_3, cs, &two_y)?
         };
-        let selected = AffinePoint { x, y, value, circuit_params: first.circuit_params };
+        let lambda_for_add = {
+            let mut chain = FieldElementsChain::new();
+            let x_eq_flag_as_fe = FieldElement::from_boolean(&xs_are_equal, &other.circuit_params.base_field_rns_params);
+            chain.add_pos_term(&other.x).add_neg_term(&self.inner.x).add_pos_term(&x_eq_flag_as_fe);
+            let denom = FieldElement::collapse_chain(cs, chain)?;
+            let mut chain = FieldElementsChain::new();
+            chain.add_pos_term(&other.y).add_neg_term(&self.inner.y);
+            FieldElement::div_with_chain(cs, chain, &denom)?
+        };
+        let lambda = FieldElement::conditionally_select(cs, &xs_are_equal, &lambda_for_double, &lambda_for_add)?;
 
-        Ok(selected)
+        let mut chain = FieldElementsChain::new();
+        chain.add_neg_term(&self.inner.x).add_neg_term(&other.x);
+        let new_x = lambda.square_with_chain(cs, chain)?;
+
+        // lambda * -(x - new_x) + (- y)
+        let new_x_minus_this_x = new_x.sub(cs, &self.inner.x)?;
+        let mut chain = FieldElementsChain::new();
+        chain.add_neg_term(&self.inner.y);
+        let new_y = FieldElement::mul_with_chain(cs, &lambda, &new_x_minus_this_x, chain)?;
+
+        let selected_x = FieldElement::conditionally_select(cs, &self.is_infty, &other.x, &new_x)?;
+        let selected_y = FieldElement::conditionally_select(cs, &self.is_infty, &other.y, &new_y)?;  
+
+        println!("before error");
+        let inner = unsafe { AffinePoint::from_xy_unchecked(selected_x, selected_y, self.inner.circuit_params) };
+        println!("after error");
+        let is_infty = Boolean::and(cs, &coords_are_equal, &self.is_infty.not())?;
+        Ok(AffinePointChecked { inner, is_infty})
+    }
+
+    pub fn double_and_add_mixed<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, other: &mut AffinePoint<'a, E, G, T>
+    ) -> Result<Self, SynthesisError> {
+        let mut tmp = Self::double(&self, cs)?;
+        tmp.add_mixed(cs, other)
+    }  
+
+    pub fn sub_mixed<CS: ConstraintSystem<E>>(
+        &mut self, cs: &mut CS, other: &mut AffinePoint<'a, E, G, T>
+    ) -> Result<Self, SynthesisError> {
+        let mut tmp = AffinePoint::negate(other, cs)?;
+        self.add_mixed(cs, &mut tmp)
     }
 
     #[track_caller]
-    pub fn add_unequal<CS>(&mut self, cs: &mut CS, other: &mut Self) -> Result<Self, SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {
-        // only enforce that x != x'
-        FieldElement::enforce_not_equal(cs, &mut self.x, &mut other.x)?;
-        self.add_unequal_unchecked(cs, other)
+    pub fn mul_by_scalar_checked<CS: ConstraintSystem<E>>(
+        cs: &mut CS, point: &mut AffinePoint<'a, E, G, T>, scalar: &mut FieldElement<'a, E, G::Scalar> 
+    ) -> Result<(AffinePoint<'a, E, G, T>, Boolean), SynthesisError> {
+        if scalar.is_constant() {
+            unimplemented!();
+        }
+        let params = point.circuit_params;
+        let aux_data = AffinePoint::compute_endo_aux_data(cs, point, scalar)?;
+        let point_minus_point_endo = aux_data.point.sub_unequal_unchecked(cs, &aux_data.point_endo)?;
+        let point_plus_point_endo = aux_data.point.add_unequal_unchecked(cs, &aux_data.point_endo)?;
+
+        let mut acc = Self::from(point_plus_point_endo.clone());
+        let iter = aux_data.point_scalar_decomposition[1..].iter().zip(
+            aux_data.point_endo_scalar_decomposition[1..].iter()
+        ).rev();
+
+        for (k1_bit, k2_bit) in iter {
+            let xor_flag = Boolean::xor(cs, &k1_bit, &k2_bit)?;
+            let selected_x = FieldElement:: conditionally_select(
+                cs, &xor_flag, &point_minus_point_endo.get_x(), &point_plus_point_endo.get_x()
+            )?;
+            let tmp_y = FieldElement::conditionally_select(
+                cs, &xor_flag, &point_minus_point_endo.get_y(), &point_plus_point_endo.get_y()
+            )?;
+            let selected_y = tmp_y.conditionally_negate(cs, &k1_bit.not())?;
+            let mut tmp = unsafe { AffinePoint::from_xy_unchecked(selected_x, selected_y, params) };
+            acc = acc.double_and_add_mixed(cs, &mut tmp)?;
+        }
+
+        let k1_bit = aux_data.point_scalar_decomposition.first().unwrap();
+        let k2_bit = aux_data.point_endo_scalar_decomposition.first().unwrap();
+        let acc_is_unchanged = Boolean::and(cs, &k1_bit, &k2_bit)?; 
+        let mut tmp = AffinePoint::conditionally_select(cs, &k2_bit, &aux_data.point, &point_plus_point_endo)?;
+        tmp = AffinePoint::conditionally_select(cs, &k1_bit, &aux_data.point_endo, &tmp)?;
+        let skew_acc = acc.sub_mixed(cs, &mut tmp)?;
+        acc = Self::conditionally_select(cs, &acc_is_unchanged, &acc, &skew_acc)?;
+
+        let AffinePointChecked { inner, is_infty } = acc;
+        Ok((inner, is_infty))
     }
-
-    #[track_caller]
-    pub fn sub_unequal<CS>(&mut self, cs: &mut CS, other: &mut Self) -> Result<Self, SynthesisError> 
-    where CS: ConstraintSystem<E>
-    {
-        // only enforce that x != x'
-        FieldElement::enforce_not_equal(cs, &mut self.x, &mut other.x)?;
-        self.sub_unequal_unchecked(cs, other)
-    }
-
-    #[track_caller]
-    pub fn double<CS: ConstraintSystem<E>>(&self, cs: &mut CS) -> Result<Self, SynthesisError> {}
-
-    #[track_caller]
-    pub fn double_and_add_unequal<CS>(&mut self, cs: &mut CS, other: &mut Self) -> Result<Self, SynthesisError> 
-    where CS: ConstraintSystem<E>
 }
-
-

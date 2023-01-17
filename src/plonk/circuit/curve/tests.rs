@@ -82,7 +82,7 @@ mod test {
             Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
         >::new();
         inscribe_default_bitop_range_table(&mut cs).unwrap();
-        let params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, 80usize, 80usize);
+        let params = generate_optimal_circuit_params_for_bn256::<Bn256, _>(&mut cs, 72usize, 72usize);
 
         let a_x_c0 = "11947046220310406338075336430452637192462772637241719407011734688739628070508";
         let a_x_c1 = "10557742219851096102260847081504953836102098067687282141689259525204118168143";
@@ -120,11 +120,18 @@ mod test {
         }
 
         let counter_start = cs.get_current_step_number();
-        let mut result = a.double_and_add_unequal_unchecked(&mut cs, &mut b).unwrap(); 
+        let mut result_fast = a.double_and_add_unequal_unchecked(&mut cs, &mut b).unwrap(); 
         let counter_end = cs.get_current_step_number();
-        println!("num of gates: {}", counter_end - counter_start);
+        println!("num of gates for fast double_and_add: {}", counter_end - counter_start);
 
-        AffinePointExt::enforce_equal(&mut cs, &mut result, &mut c).unwrap();
+        let counter_start = cs.get_current_step_number();
+        let mut result_slow = a.double(&mut cs).unwrap();
+        result_slow = result_slow.add_unequal_unchecked(&mut cs, &mut b).unwrap(); 
+        let counter_end = cs.get_current_step_number();
+        println!("num of gates for slow double_and_add: {}", counter_end - counter_start);
+
+        AffinePointExt::enforce_equal(&mut cs, &mut result_fast, &mut c).unwrap();
+        AffinePointExt::enforce_equal(&mut cs, &mut result_slow, &mut c).unwrap();
         assert!(cs.is_satisfied()); 
     }
 
@@ -412,6 +419,12 @@ mod test {
             println!("num of gates for non-complete scalar multiplication: {}", counter_end - counter_start);
             AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
 
+            let counter_start = cs.get_current_step_number();
+            let (mut result, _) = AffinePointChecked::mul_by_scalar_checked(cs, &mut a, &mut scalar)?;
+            let counter_end = cs.get_current_step_number();
+            println!("num of gates for checked scalar multiplication: {}", counter_end - counter_start);
+            AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+
             Ok(())
         }
     }
@@ -419,7 +432,7 @@ mod test {
     #[test]
     fn test_scalar_multiplication_for_bn256() {
         use self::bn256::Bn256;
-        const LIMB_SIZE: usize = 80;
+        const LIMB_SIZE: usize = 72;
 
         let mut cs = TrivialAssembly::<
             Bn256, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext

@@ -10,6 +10,8 @@ use crate::bellman::plonk::better_better_cs::cs::ConstraintSystem;
 use crate::bellman::{Field, PrimeField};
 use crate::plonk::circuit::hashes_with_tables::utils::IdentifyFirstLast;
 use crate::plonk::circuit::boolean::Boolean;
+use rand::{Rng, SeedableRng};
+use rand::chacha::ChaChaRng;
 
 use std::str::FromStr;
 
@@ -456,7 +458,7 @@ impl<E: Engine> Bn256PairingParams<E> {
 
 use std::sync::Once;
 static INIT_HARD_PART_GEN: Once = Once::new();
-static mut HARD_PART_GEN: Fq12 = Fq12::one();
+static mut HARD_PART_GEN: Option<Fq12> = None;
 
 
 impl<E: Engine> PairingParams<
@@ -482,10 +484,7 @@ impl<E: Engine> PairingParams<
     fn get_hard_part_generator() -> crate::bellman::pairing::bn256::Fq12 {
         unsafe {
             INIT_HARD_PART_GEN.call_once(|| {
-                use rand_pcg::Pcg32;
-                use rand::{Rng, SeedableRng};
-                use rand_core::SeedableRng;
-                let mut rng = Pcg32::seed_from_u64(42);
+                let mut rng = ChaChaRng::from_seed(&[42]);
                 let mut found = false;
                 let chains = [
                     Bn256PairingParams::<Bn256>::devegili_method(), 
@@ -535,17 +534,16 @@ impl<E: Engine> PairingParams<
                             };
                             
                             if scratchpad[*out_idx] == Fq12::one() {
-                                println!("Fq12::one() occured");
                                 continue;
                             }
                         }
                     }
 
                     found = true;
-                    HARD_PART_GEN = cand;
+                    HARD_PART_GEN = Some(cand);
                 };
             });
-            HARD_PART_GEN
+            HARD_PART_GEN.unwrap()
         }
     }
 
@@ -622,7 +620,6 @@ impl<E: Engine> PairingParams<
         } else {
             Boolean::constant(false)
         };
-        println!("q2 subgroup check: {}", q2_subgroup_exception.get_value().unwrap());
 
         Ok((acc, q2_subgroup_exception))
     }

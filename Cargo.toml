@@ -35,7 +35,6 @@ indexmap = "1.9"
 addchain = "0.2"
 smallvec = "1.9"
 num-iter = "0.1"
-rand_pcg = "0.3.1"
 
 # bellman = { package = "bellman_ce", path = "../../bellman/plonk" }
 # bellman = { package = "bellman_ce", path = "../../bellman/bellman"}

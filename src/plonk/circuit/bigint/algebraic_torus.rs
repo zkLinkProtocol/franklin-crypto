@@ -313,4 +313,3 @@ impl<'a, E: Engine, F: PrimeField, T: Extension12Params<F>> TorusWrapper<'a, E, 
         Ok(res)
     }
 }
-

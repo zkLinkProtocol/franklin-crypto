@@ -12,6 +12,7 @@ use num_bigint::BigUint;
 use super::super::allocated_num::{AllocatedNum, Num};
 use super::super::linear_combination::LinearCombination;
 use super::super::simple_term::Term;
+use crate::plonk::circuit::byte::Byte;
 use crate::plonk::circuit::hashes_with_tables::utils::IdentifyFirstLast;
 use crate::plonk::circuit::SomeArithmetizable;
 
@@ -593,6 +594,83 @@ impl<'a, E: Engine, F: PrimeField> FieldElement<'a, E, F> {
         
         Ok((new, total_decomposition))
     }
+
+    // coarsely allocate from bytes
+    // #[track_caller]
+    // fn from_bytes<CS: ConstraintSystem<E>>(
+    //     cs: &mut CS, bytes: Vec<Byte<E>>, params: &'a RnsParameters<E, F>, 
+    // ) -> Result<(Self, RangeCheckDecomposition<E>), SynthesisError> {
+    //     let total_num_nonzero_bytes = (params.represented_field_modulus_bitlength + 7) / 8;
+    //     let bytes_per_limb = params.binary_limb_width / 8;
+    //     assert_eq!(params.binary_limb_width % 8, 0);
+
+    //     let mut idx = 0;
+    //     let mut value = Some(BigUint::zero());
+    //     let mut base_field_lc = LinearCombination::<E>::zero();
+    //     let byte_offset = u64_to_fe(8);
+
+    //     for byte in bytes.iter().skip(total_num_nonzero_bytes) {
+    //         Num::enforce_equal(cs, &mut byte.inner, &Num::zero());
+    //     }
+    //     while idx < total_num_nonzero_bytes {
+    //         let slice_len = std::min(bytes_per_limb, total_num_nonzero_bytes - i);
+    //         let mut binary_limb_lc = LinearCombination::zero();
+    //         for (idx, byte) in bytes[idx..idx+slice_len].iter().enumerate() {
+
+    //         }
+    //     }
+      
+
+
+
+    //     let shift_constant = params.shift_left_by_limb_constant;
+    //     let mut current_constant = E::Fr::one();
+
+    //     let (limb_values, msl_width) = slice_some_into_limbs_non_exact(
+    //         value.clone(), bit_width, params.binary_limb_width
+    //     );
+    //     let msl_width_padded = if coarsely { round_up(msl_width, params.range_check_granularity) } else { msl_width };
+    //     let msl_max_val = get_max_possible_value_for_bit_width(msl_width_padded);
+
+    //     for (_is_first, is_last, value) in limb_values.into_iter().identify_first_last() 
+    //     {
+    //         let value_as_fe = some_biguint_to_fe::<E::Fr>(&value);
+    //         let a = AllocatedNum::alloc(cs, || Ok(*value_as_fe.get()?))?;
+
+    //         let max_value = if is_last { msl_max_val.clone() } else { params.max_ordinary_limb_val_on_alloc.clone() };
+    //         let bitlength = if is_last { msl_width } else { params.binary_limb_width };
+    //         let decomposition = constraint_bit_length_ext_with_strategy(
+    //             cs, &a, bitlength, params.range_check_strategy, coarsely, granularity
+    //         )?;
+    //         decompositions.push(decomposition);
+
+    //         let term = Term::<E>::from_allocated_num(a.clone());
+    //         let limb = Limb::<E>::new(term, max_value);
+
+    //         binary_limbs_allocated.push(limb);
+
+    //         base_field_lc.add_assign_variable_with_coeff(&a, current_constant);
+    //         current_constant.mul_assign(&shift_constant);
+    //     }
+    //     if binary_limbs_allocated.len() < params.num_binary_limbs {
+    //         binary_limbs_allocated.resize(params.num_binary_limbs, Limb::zero());
+    //     }
+        
+    //     let base_field_limb_num = base_field_lc.into_num(cs)?;
+    //     let base_field_term = Term::<E>::from_num(base_field_limb_num);
+    //     let field_value = value.map(|x| biguint_to_fe::<F>(x));
+        
+    //     let new = Self {
+    //         binary_limbs: binary_limbs_allocated,
+    //         base_field_limb: base_field_term,
+    //         representation_params: params,
+    //         value: field_value,
+    //         reduction_status: ReductionStatus::Loose
+    //     };
+    //     let total_decomposition = RangeCheckDecomposition::combine(&decompositions);
+        
+    //     Ok((new, total_decomposition))
+    // }
 
     // NB: we do not check for normalization on allocation
     #[track_caller]

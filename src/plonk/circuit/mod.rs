@@ -10,7 +10,6 @@ pub mod blake2s;
 pub mod bigint;
 pub mod simple_term;
 pub mod curve;
-pub mod tables;
 pub mod counter;
 pub mod byte;
 pub mod utils;

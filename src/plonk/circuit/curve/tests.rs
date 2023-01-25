@@ -520,6 +520,15 @@ mod test {
                 let num_of_gates = counter_end - counter_start;
                 println!("non-complete multiexp via {} for {} points takes {} gates", strategy, width, num_of_gates);
                 AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
+
+                let counter_start = cs.get_current_step_number();
+                let (mut result, _is_infty) = AffinePointChecked::multiexp_checked(
+                    cs, &mut points[0..width], &mut scalars[0..width], geometry
+                )?;
+                let counter_end = cs.get_current_step_number();
+                let num_of_gates = counter_end - counter_start;
+                println!("complete checked-affine multiexp via {} for {} points takes {} gates", strategy, width, num_of_gates);
+                AffinePoint::enforce_equal(cs, &mut result, &mut actual_result)?;
             }
 
             let mut actual_result = partial_multiexps.pop().unwrap();
@@ -535,7 +544,7 @@ mod test {
     #[test]
     fn test_multiexp_for_bn256() {
         use self::bn256::Bn256;
-        const LIMB_SIZE: usize = 80;
+        const LIMB_SIZE: usize = 72;
         const NUM_OF_POINTS: usize = 4;
 
         let mut cs = TrivialAssembly::<

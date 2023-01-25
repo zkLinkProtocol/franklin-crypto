@@ -571,6 +571,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         });
 
         let halved = AffinePoint::alloc(cs, wit, self.circuit_params)?;
+        halved.enforce_if_on_curve(cs)?;
         let mut initial = halved.double(cs)?;
         AffinePoint::enforce_equal(cs, &mut affine_point, &mut initial)?;
 

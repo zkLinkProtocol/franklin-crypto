@@ -458,7 +458,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
     ) -> Self {
         let value = match (x.get_field_value(), y.get_field_value()) {
             (Some(x), Some(y)) => {
-                Some(G::from_xy_checked(x, y).expect("should be on curve"))
+                Some(G::from_xy_unchecked(x, y))
             },
             _ => {
                 None
@@ -994,6 +994,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
         });
 
         let halved = AffinePoint::alloc(cs, wit, self.circuit_params)?;
+        halved.enforce_if_on_curve(cs)?;
         let mut initial = halved.double(cs)?;
         AffinePoint::enforce_equal(cs, self, &mut initial)?;
         

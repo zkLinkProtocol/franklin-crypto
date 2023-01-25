@@ -362,7 +362,11 @@ impl<'a, E:Engine, F:PrimeField, T:  Extension12Params<F> > Fp12<'a, E, F, T> {
             _ => None
         };
         
-        let res = Self::alloc(cs, res_wit, params)?;
+        let res = if num.is_constant() && denom.is_constant() {
+            Self::constant(res_wit.unwrap(), params)
+        } else {
+            Self::alloc(cs, res_wit, params)?
+        };
         
         // TODO: this could be optimized even further
         let mut num_actual = Self::mul(cs, &res, &denom)?;

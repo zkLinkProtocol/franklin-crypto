@@ -239,7 +239,7 @@ where T: Extension2Params<F, Witness = G::Base>
         self.sub_unequal_unchecked(cs, other)
     }
 
-    pub fn sub_unequal_unchecked<CS>(&mut self, cs: &mut CS, other: &mut Self) -> Result<Self, SynthesisError> 
+    pub fn sub_unequal_unchecked<CS>(&self, cs: &mut CS, other: &Self) -> Result<Self, SynthesisError> 
     where CS: ConstraintSystem<E> {
         let (res, _slope) = self.sub_unequal_unchecked_and_return_slope(cs, other)?;
         Ok(res)
@@ -373,8 +373,6 @@ where T: Extension2Params<F, Witness = G::Base>
     {
         let x_check = Fp2::equals(cs, &mut this.x, &mut other.x)?;
         let y_check = Fp2::equals(cs, &mut this.y, &mut other.y)?;
-        println!(" x check: {}", x_check.get_value().unwrap());
-        println!(" y check: {}", y_check.get_value().unwrap());
         let equals = Boolean::and(cs, &x_check, &y_check)?;
         
         Ok(equals)

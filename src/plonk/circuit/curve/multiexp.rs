@@ -47,7 +47,7 @@ where <G as GenericCurveAffine>::Base: PrimeField
 impl<'a, E: Engine, G: GenericCurveAffine + rand::Rand, T: Extension2Params<G::Base>> AffinePoint<'a, E, G, T> 
 where <G as GenericCurveAffine>::Base: PrimeField 
 {
-    fn compute_endo_aux_data<CS: ConstraintSystem<E>>(
+    pub fn compute_endo_aux_data<CS: ConstraintSystem<E>>(
         cs: &mut CS, point: &Self, scalar: &FieldElement<'a, E, G::Scalar>
     ) -> Result<EndoAuxData<'a, E, G, T>, SynthesisError> {
         const HEIGHT: usize = 1;

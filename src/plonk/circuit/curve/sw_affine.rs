@@ -342,7 +342,6 @@ pub fn generate_optimal_circuit_params_for_bls12<E: Engine, CS: ConstraintSystem
 {
     type Fq = <<Bls12 as Engine>::G1Affine as GenericCurveAffine>::Base;
     type Fr = <<Bls12 as Engine>::G1Affine as GenericCurveAffine>::Scalar;
-    println!("AAA");
 
     let fp2_offset_generator_x_c0 = Fq::from_str(
         "1067264685030724708538788882656460381104931541603938723410358338973606906391679083715376977125266347261808406513360"
@@ -353,8 +352,6 @@ pub fn generate_optimal_circuit_params_for_bls12<E: Engine, CS: ConstraintSystem
     ).expect("should parse");
     let fp2_offset_generator_y_c1 = Fq::zero();
 
-    println!("AAA");
-    
     let fp2_pt_ord3_x_c0 = Fq::zero();
     let fp2_pt_ord3_x_c1 = Fq::zero();
     let mut fp2_pt_ord3_y_c0 = Fq::one();
@@ -368,8 +365,6 @@ pub fn generate_optimal_circuit_params_for_bls12<E: Engine, CS: ConstraintSystem
         "793479390729215512621379701633421447060886740281060493010456487427281649075476305620758731620350"
     ).expect("should parse");
 
-    println!("AAA");
-
     let a1 = BigUint::from_str("228988810152649578064853576960394133503").expect("should parse");
     let a2 = BigUint::one();
     let minus_b1 = BigUint::one();
@@ -378,8 +373,6 @@ pub fn generate_optimal_circuit_params_for_bls12<E: Engine, CS: ConstraintSystem
     let opt_multiexp_geometry = MultiExpGeometry { 
         width: 4, strategy: MultiexpStrategy::SelectionTree
     };
-
-    println!("AAB");
 
     CurveCircuitParameters {
         base_field_rns_params: RnsParameters::<E, Fq>::new_optimal(cs, base_field_limb_size),

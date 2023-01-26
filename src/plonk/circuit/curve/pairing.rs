@@ -792,41 +792,41 @@ impl<E: Engine> PairingParams<
     // G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
 
     // implementaiion of sparse multiplication by element c = [c0, c1, 0, 0, c4, 0]
-    fn mul_by_line_function_eval<'a, CS: ConstraintSystem<E>>(
-        cs: &mut CS,
-        full_elem: &Fp12<'a, E, <Bls12 as Engine>::Fq, Bls12Extension12Params>,
-        x: LineFunctionEvaluation<'a, E, <Bls12 as Engine>::Fq, BLS12Extension2Params>
-    ) -> Result<Fp12<'a, E, <Bls12 as Engine>::Fq, Bls12Extension12Params>, SynthesisError> {
-        let z: Vec<Fp2<E, <Bls12 as Engine>::Fq, <BLS12Extension6Params as Extension6Params<<Bls12 as Engine>::Fq>>::Ex2>> = {
-            full_elem.get_base_field_coordinates().chunks(2).map(|ch| {
-                Fp2::from_coordinates(ch[0].clone(), ch[1].clone())
-            }).collect()
-        };
-        let params = full_elem.get_params();
+    // fn mul_by_line_function_eval<'a, CS: ConstraintSystem<E>>(
+    //     cs: &mut CS,
+    //     full_elem: &Fp12<'a, E, <Bls12 as Engine>::Fq, Bls12Extension12Params>,
+    //     x: LineFunctionEvaluation<'a, E, <Bls12 as Engine>::Fq, BLS12Extension2Params>
+    // ) -> Result<Fp12<'a, E, <Bls12 as Engine>::Fq, Bls12Extension12Params>, SynthesisError> {
+    //     let z: Vec<Fp2<E, <Bls12 as Engine>::Fq, <BLS12Extension6Params as Extension6Params<<Bls12 as Engine>::Fq>>::Ex2>> = {
+    //         full_elem.get_base_field_coordinates().chunks(2).map(|ch| {
+    //             Fp2::from_coordinates(ch[0].clone(), ch[1].clone())
+    //         }).collect()
+    //     };
+    //     let params = full_elem.get_params();
 
-        let fp6_sparse_elem = Fp6::from_coordinates(x.c3.clone(), x.c4.clone(), Fp2::zero(params));
-        let b = Self::mul_by_sparse_01(cs, &full_elem.c1, &fp6_sparse_elem)?;
+    //     let fp6_sparse_elem = Fp6::from_coordinates(x.c3.clone(), x.c4.clone(), Fp2::zero(params));
+    //     let b = Self::mul_by_sparse_01(cs, &full_elem.c1, &fp6_sparse_elem)?;
 
-        let tmp = Fp2::from(x.c0.clone()).add(cs, &x.c3)?;
-        let fp6_sparse_elem = Fp6::from_coordinates(tmp, x.c4.clone(), Fp2::zero(params));
-        let fp6_full_elem = full_elem.c0.add(cs, &full_elem.c1)?;
-        let e = Self::mul_by_sparse_01(cs, &fp6_full_elem, &fp6_sparse_elem)?;
+    //     let tmp = Fp2::from(x.c0.clone()).add(cs, &x.c3)?;
+    //     let fp6_sparse_elem = Fp6::from_coordinates(tmp, x.c4.clone(), Fp2::zero(params));
+    //     let fp6_full_elem = full_elem.c0.add(cs, &full_elem.c1)?;
+    //     let e = Self::mul_by_sparse_01(cs, &fp6_full_elem, &fp6_sparse_elem)?;
 
-        let a0 = z[0].mul_by_base_field(cs, &x.c0)?;
-        let a1 = z[1].mul_by_base_field(cs, &x.c0)?;
-        let a2 = z[2].mul_by_base_field(cs, &x.c0)?;
-        let a = Fp6::from_coordinates(a0, a1, a2);
+    //     let a0 = z[0].mul_by_base_field(cs, &x.c0)?;
+    //     let a1 = z[1].mul_by_base_field(cs, &x.c0)?;
+    //     let a2 = z[2].mul_by_base_field(cs, &x.c0)?;
+    //     let a = Fp6::from_coordinates(a0, a1, a2);
         
-        let mut chain = Fp6Chain::new();
-        chain.add_pos_term(&e).add_neg_term(&a).add_neg_term(&b);
-        let t1 = Fp6::collapse_chain(cs, chain)?;
+    //     let mut chain = Fp6Chain::new();
+    //     chain.add_pos_term(&e).add_neg_term(&a).add_neg_term(&b);
+    //     let t1 = Fp6::collapse_chain(cs, chain)?;
        
-        let mut t0 = Fp12::<'a, E, <Bls12 as Engine>::Fq, Bls12Extension12Params>::fp6_mul_subroutine(cs, &b)?;
-        t0 = t0.add(cs, &a)?;
+    //     let mut t0 = Fp12::<'a, E, <Bls12 as Engine>::Fq, Bls12Extension12Params>::fp6_mul_subroutine(cs, &b)?;
+    //     t0 = t0.add(cs, &a)?;
        
-        let res = Fp12::from_coordinates(t0, t1);
-        Ok(res)
-    }
+    //     let res = Fp12::from_coordinates(t0, t1);
+    //     Ok(res)
+    // }
 
     fn miller_loop_postprocess<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS,

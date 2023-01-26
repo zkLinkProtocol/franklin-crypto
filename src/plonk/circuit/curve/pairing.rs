@@ -747,8 +747,16 @@ impl<E: Engine> PairingParams<
         ];
         &ARR
 
-        // let res = Self::get_x_ternary_decomposition().iter().map(|x| (*x as i8)).collect::<Vec<_>>();
-        // &res
+        // use std::convert::TryInto;
+
+        // let res: [i8; 63] = Self::get_x_ternary_decomposition()
+        //     .iter()
+        //     .map(|x| (*x as i8))
+        //     .collect::<Vec<_>>()
+        //     .try_into()
+        //     .unwrap();
+
+        // &res.to_owned()
     } 
 
     fn get_hard_part_generator() -> crate::bellman::pairing::bls12_381::Fq12 {
@@ -767,7 +775,59 @@ impl<E: Engine> PairingParams<
     ) -> Result<Boolean, SynthesisError> {
         Ok(Boolean::constant(false))
     }
-    
+
+
+    // E, 
+    // F:   <Bls12 as Engine>::Fq, 
+    // G1:  <Bls12 as Engine>::G1Affine, 
+    // G2:  <Bls12 as Engine>::G2Affine, 
+    // T12: Bls12Extension12Params, 
+    // T6:  BLS12Extension6Params, 
+    // T2:  BLS12Extension2Params
+
+    //     <
+    //     E: Engine, F: PrimeField, G1, G2, T12, T6, T2
+    // >  
+    // where T12: Extension12Params<F, Ex6 = T6>, T6: Extension6Params<F, Ex2 = T2>, T2: Extension2Params<F>, 
+    // G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
+
+    // implementaiion of sparse multiplication by element c = [c0, c1, 0, 0, c4, 0]
+    fn mul_by_line_function_eval<'a, CS: ConstraintSystem<E>>(
+        cs: &mut CS,
+        full_elem: &Fp12<'a, E, <Bls12 as Engine>::Fq, Bls12Extension12Params>,
+        x: LineFunctionEvaluation<'a, E, <Bls12 as Engine>::Fq, BLS12Extension2Params>
+    ) -> Result<Fp12<'a, E, <Bls12 as Engine>::Fq, Bls12Extension12Params>, SynthesisError> {
+        let z: Vec<Fp2<E, <Bls12 as Engine>::Fq, <BLS12Extension6Params as Extension6Params<<Bls12 as Engine>::Fq>>::Ex2>> = {
+            full_elem.get_base_field_coordinates().chunks(2).map(|ch| {
+                Fp2::from_coordinates(ch[0].clone(), ch[1].clone())
+            }).collect()
+        };
+        let params = full_elem.get_params();
+
+        let fp6_sparse_elem = Fp6::from_coordinates(x.c3.clone(), x.c4.clone(), Fp2::zero(params));
+        let b = Self::mul_by_sparse_01(cs, &full_elem.c1, &fp6_sparse_elem)?;
+
+        let tmp = Fp2::from(x.c0.clone()).add(cs, &x.c3)?;
+        let fp6_sparse_elem = Fp6::from_coordinates(tmp, x.c4.clone(), Fp2::zero(params));
+        let fp6_full_elem = full_elem.c0.add(cs, &full_elem.c1)?;
+        let e = Self::mul_by_sparse_01(cs, &fp6_full_elem, &fp6_sparse_elem)?;
+
+        let a0 = z[0].mul_by_base_field(cs, &x.c0)?;
+        let a1 = z[1].mul_by_base_field(cs, &x.c0)?;
+        let a2 = z[2].mul_by_base_field(cs, &x.c0)?;
+        let a = Fp6::from_coordinates(a0, a1, a2);
+        
+        let mut chain = Fp6Chain::new();
+        chain.add_pos_term(&e).add_neg_term(&a).add_neg_term(&b);
+        let t1 = Fp6::collapse_chain(cs, chain)?;
+       
+        let mut t0 = Fp12::<'a, E, <Bls12 as Engine>::Fq, Bls12Extension12Params>::fp6_mul_subroutine(cs, &b)?;
+        t0 = t0.add(cs, &a)?;
+       
+        let res = Fp12::from_coordinates(t0, t1);
+        Ok(res)
+    }
+
     fn miller_loop_postprocess<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS,
         p: &AffinePoint<'a, E, <Bls12 as Engine>::G1Affine, BLS12Extension2Params>,
@@ -1010,6 +1070,7 @@ mod test {
         g1_is_const: bool, g2_is_const: bool, limb_size: usize, is_safe_version: bool, 
         hard_part_exp_method: Bls12HardPartMethod
     ) {
+        // init cs and params
         let mut cs = TrivialAssembly::<
             Bls12, Width4WithCustomGates, SelectorOptimizedWidth4MainGateWithDNext
         >::new();
@@ -1017,11 +1078,15 @@ mod test {
         let circuit_params = generate_optimal_circuit_params_for_bls12::<Bls12, _>(&mut cs, limb_size, limb_size);
         let pairing_params = Bls12PairingParams::<Bls12>::new(hard_part_exp_method);
 
+        // generte points for pairing
         let mut rng = rand::thread_rng();
         let p_wit: <Bls12 as Engine>::G1Affine = rng.gen();
         let q_wit: <Bls12 as Engine>::G2Affine = rng.gen();
+
+        // Compute pairing out of circuit
         let mut res_wit = Bls12::pairing(p_wit, q_wit);
 
+        // Compute pairing in circuit
         let (q_wit_x, q_wit_y) = bellman::CurveAffine::as_xy(&q_wit); 
         let mut p = if g1_is_const {
             AffinePoint::constant(p_wit, &circuit_params)
@@ -1051,10 +1116,13 @@ mod test {
         } else {
             println!("num of gates: {}", total_num_of_gates);
         }
-        
+
+
+        // Check results
         let mut actual_pairing_res = Fp12::alloc(
             &mut cs, Some(res_wit), &circuit_params.base_field_rns_params
         ).unwrap();
+
         Fp12::enforce_equal(&mut cs, &mut res, &mut actual_pairing_res).unwrap();
         Boolean::enforce_equal(&mut cs, &any_exception, &Boolean::Constant(false)).unwrap();
 

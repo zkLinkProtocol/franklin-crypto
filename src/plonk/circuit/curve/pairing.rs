@@ -43,12 +43,12 @@ G2: GenericCurveAffine<Base = T2::Witness>
 }
 
 pub enum LineFunctionEvaluation<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> {
-    MTwist{
+    DTwist{
         c0: FieldElement<'a, E, F>,
         c3: Fp2<'a, E, F, T>,
         c4: Fp2<'a, E, F, T>,
     },
-    DTwist{
+    MTwist{
         c0: Fp2<'a, E, F, T>,
         c1: Fp2<'a, E, F, T>,
         c4: FieldElement<'a, E, F>,
@@ -77,14 +77,14 @@ impl<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> LineFunctionEvaluatio
 
         if twist_type() {
 
-            Ok(LineFunctionEvaluation::MTwist {
+            Ok(LineFunctionEvaluation::DTwist {
                 c0: p.y.clone(),
                 c3: t0,
                 c4: t1
             })
         } else {
 
-            Ok(LineFunctionEvaluation::DTwist {
+            Ok(LineFunctionEvaluation::MTwist {
                 c0: Fp2::from(p.y.clone()),
                 c1: t1,
                 c4: t0.c0
@@ -228,12 +228,12 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
     }
 
     fn convert_line_function_eval_into_fp12<'a>(x: LineFunctionEvaluation<'a, E, F, T2>) -> Fp12<'a, E, F, T12> {
-        if let LineFunctionEvaluation::MTwist{ c0, c3, c4} = x {
+        if let LineFunctionEvaluation::DTwist{ c0, c3, c4} = x {
             let zero = Fp2::zero(&c0.representation_params); 
             let fp6_x = Fp6::from_coordinates(Fp2::from(c0), zero.clone(), zero.clone());
             let fp6_y = Fp6::from_coordinates(c3, c4, zero);
             Fp12::from_coordinates(fp6_x, fp6_y)
-        } else if let LineFunctionEvaluation::DTwist{ c0, c1, c4} = x {
+        } else if let LineFunctionEvaluation::MTwist{ c0, c1, c4} = x {
             let zero = Fp2::zero(&c4.representation_params); 
             let fp6_x = Fp6::from_coordinates(c0, c1, zero.clone());
             let fp6_y = Fp6::from_coordinates(zero.clone(), Fp2::from(c4), zero.clone());
@@ -289,7 +289,7 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
         x: LineFunctionEvaluation<'a, E, F, T2>
     ) -> Result<Fp12<'a, E, F, T12>, SynthesisError> {
         match x {
-            LineFunctionEvaluation::MTwist { c0, c3, c4 } => {
+            LineFunctionEvaluation::DTwist { c0, c3, c4 } => {
                 let z: Vec<Fp2<E, F, <T12::Ex6 as Extension6Params<F>>::Ex2>> = {
                     full_elem.get_base_field_coordinates().chunks(2).map(|ch| {
                         Fp2::from_coordinates(ch[0].clone(), ch[1].clone())
@@ -320,7 +320,7 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
                 let res = Fp12::from_coordinates(t0, t1);
                 Ok(res)
             },
-            LineFunctionEvaluation::DTwist { c0, c1, c4 } => {
+            LineFunctionEvaluation::MTwist { c0, c1, c4 } => {
                 let params = full_elem.get_params();
 
                 let x = Fp12::from_coordinates(

@@ -42,11 +42,17 @@ G2: GenericCurveAffine<Base = T2::Witness>
     pub twisted_point_init_doubled: TwistedCurvePoint<'a, E, G2, F, T2>
 }
 
-
-pub struct LineFunctionEvaluation<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> {
-    c0: FieldElement<'a, E, F>,
-    c3: Fp2<'a, E, F, T>,
-    c4: Fp2<'a, E, F, T>,
+pub enum LineFunctionEvaluation<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> {
+    MTwist{
+        c0: FieldElement<'a, E, F>,
+        c3: Fp2<'a, E, F, T>,
+        c4: Fp2<'a, E, F, T>,
+    },
+    DTwist{
+        c0: Fp2<'a, E, F, T>,
+        c1: Fp2<'a, E, F, T>,
+        c4: FieldElement<'a, E, F>,
+    }
 }
 
 impl<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> LineFunctionEvaluation<'a, E, F, T> {
@@ -65,12 +71,20 @@ impl<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> LineFunctionEvaluatio
         let mut t0 = lambda.mul_by_base_field(cs, &p.x)?;
         t0 = t0.negate(cs)?;
 
-        // line_function := [yp, 0, 0, - lambda * xp, t, 0]
-        Ok(LineFunctionEvaluation {
-            c0: p.y.clone(),
-            c3: t0,
-            c4: t1
-        })
+
+        fn twist_type() -> bool {
+            todo!()
+        }
+
+        if twist_type() {
+            Ok(LineFunctionEvaluation::MTwist {
+                c0: p.y.clone(),
+                c3: t0,
+                c4: t1
+            })
+        } else {
+            todo!()
+        }
     }
 }
 
@@ -97,7 +111,7 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
     fn double_and_eval<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS,
         q: &mut TwistedCurvePoint<'a, E, G2, F, T2>, 
-        p: &AffinePoint<'a, E, G1, T2>
+        p: &AffinePoint<'a, E, G1, T2>,
     ) -> Result<LineFunctionEvaluation<'a, E, F, T2>, SynthesisError> {
         let (doubled_q, lambda) = q.double_and_return_slope(cs)?;
         *q = doubled_q;
@@ -110,7 +124,7 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
         cs: &mut CS,
         q: &mut TwistedCurvePoint<'a, E, G2, F, T2>, 
         r: &TwistedCurvePoint<'a, E, G2, F, T2>,
-        p: &AffinePoint<'a, E, G1, T2>
+        p: &AffinePoint<'a, E, G1, T2>,
     ) -> Result<LineFunctionEvaluation<'a, E, F, T2>, SynthesisError> {
         let (new_q, lambda) = q.add_unequal_unchecked_and_return_slope(cs, r)?;
         *q = new_q;
@@ -209,11 +223,19 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
     }
 
     fn convert_line_function_eval_into_fp12<'a>(x: LineFunctionEvaluation<'a, E, F, T2>) -> Fp12<'a, E, F, T12> {
-        let LineFunctionEvaluation { c0, c3, c4} = x;
-        let zero = Fp2::zero(&c0.representation_params); 
-        let fp6_x = Fp6::from_coordinates(Fp2::from(c0), zero.clone(), zero.clone());
-        let fp6_y = Fp6::from_coordinates(c3, c4, zero);
-        Fp12::from_coordinates(fp6_x, fp6_y)
+        if let LineFunctionEvaluation::MTwist{ c0, c3, c4} = x {
+            let zero = Fp2::zero(&c0.representation_params); 
+            let fp6_x = Fp6::from_coordinates(Fp2::from(c0), zero.clone(), zero.clone());
+            let fp6_y = Fp6::from_coordinates(c3, c4, zero);
+            Fp12::from_coordinates(fp6_x, fp6_y)
+        } else if let LineFunctionEvaluation::DTwist{ c0, c1, c4} = x {
+            let zero = Fp2::zero(&c4.representation_params); 
+            let fp6_x = Fp6::from_coordinates(c0, c1, zero.clone());
+            let fp6_y = Fp6::from_coordinates(zero.clone(), Fp2::from(c4), zero.clone());
+            Fp12::from_coordinates(fp6_x, fp6_y)
+        } else {
+            unreachable!()
+        }
     }
 
     fn mul_by_sparse_01<'a, CS: ConstraintSystem<E>>(
@@ -261,35 +283,51 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
         full_elem: &Fp12<'a, E, F, T12>,
         x: LineFunctionEvaluation<'a, E, F, T2>
     ) -> Result<Fp12<'a, E, F, T12>, SynthesisError> {
-        let z: Vec<Fp2<E, F, <T12::Ex6 as Extension6Params<F>>::Ex2>> = {
-            full_elem.get_base_field_coordinates().chunks(2).map(|ch| {
-                Fp2::from_coordinates(ch[0].clone(), ch[1].clone())
-            }).collect()
-        };
-        let params = full_elem.get_params();
-
-        let fp6_sparse_elem = Fp6::from_coordinates(x.c3.clone(), x.c4.clone(), Fp2::zero(params));
-        let b = Self::mul_by_sparse_01(cs, &full_elem.c1, &fp6_sparse_elem)?;
-
-        let tmp = Fp2::from(x.c0.clone()).add(cs, &x.c3)?;
-        let fp6_sparse_elem = Fp6::from_coordinates(tmp, x.c4.clone(), Fp2::zero(params));
-        let fp6_full_elem = full_elem.c0.add(cs, &full_elem.c1)?;
-        let e = Self::mul_by_sparse_01(cs, &fp6_full_elem, &fp6_sparse_elem)?;
-
-        let a0 = z[0].mul_by_base_field(cs, &x.c0)?;
-        let a1 = z[1].mul_by_base_field(cs, &x.c0)?;
-        let a2 = z[2].mul_by_base_field(cs, &x.c0)?;
-        let a = Fp6::from_coordinates(a0, a1, a2);
+        match x {
+            LineFunctionEvaluation::MTwist { c0, c3, c4 } => {
+                let z: Vec<Fp2<E, F, <T12::Ex6 as Extension6Params<F>>::Ex2>> = {
+                    full_elem.get_base_field_coordinates().chunks(2).map(|ch| {
+                        Fp2::from_coordinates(ch[0].clone(), ch[1].clone())
+                    }).collect()
+                };
+                let params = full_elem.get_params();
         
-        let mut chain = Fp6Chain::new();
-        chain.add_pos_term(&e).add_neg_term(&a).add_neg_term(&b);
-        let t1 = Fp6::collapse_chain(cs, chain)?;
-       
-        let mut t0 = Fp12::<'a, E, F, T12>::fp6_mul_subroutine(cs, &b)?;
-        t0 = t0.add(cs, &a)?;
-       
-        let res = Fp12::from_coordinates(t0, t1);
-        Ok(res)
+                let fp6_sparse_elem = Fp6::from_coordinates(c3.clone(), c4.clone(), Fp2::zero(params));
+                let b = Self::mul_by_sparse_01(cs, &full_elem.c1, &fp6_sparse_elem)?;
+        
+                let tmp = Fp2::from(c0.clone()).add(cs, &c3)?;
+                let fp6_sparse_elem = Fp6::from_coordinates(tmp, c4.clone(), Fp2::zero(params));
+                let fp6_full_elem = full_elem.c0.add(cs, &full_elem.c1)?;
+                let e = Self::mul_by_sparse_01(cs, &fp6_full_elem, &fp6_sparse_elem)?;
+        
+                let a0 = z[0].mul_by_base_field(cs, &c0)?;
+                let a1 = z[1].mul_by_base_field(cs, &c0)?;
+                let a2 = z[2].mul_by_base_field(cs, &c0)?;
+                let a = Fp6::from_coordinates(a0, a1, a2);
+                
+                let mut chain = Fp6Chain::new();
+                chain.add_pos_term(&e).add_neg_term(&a).add_neg_term(&b);
+                let t1 = Fp6::collapse_chain(cs, chain)?;
+            
+                let mut t0 = Fp12::<'a, E, F, T12>::fp6_mul_subroutine(cs, &b)?;
+                t0 = t0.add(cs, &a)?;
+            
+                let res = Fp12::from_coordinates(t0, t1);
+                Ok(res)
+            },
+            LineFunctionEvaluation::DTwist { c0, c1, c4 } => {
+                let params = full_elem.get_params();
+
+                let x = Fp12::from_coordinates(
+                    Fp6::from_coordinates(c0.clone(), c1.clone(), Fp2::zero(params)),
+                    Fp6::from_coordinates(Fp2::zero(params), Fp2::from(c4.clone()), Fp2::zero(params))
+                );
+
+
+                Fp12::mul(cs, &x, &full_elem)
+            }
+        }
+        
     }
 
     fn miller_loop_postprocess<'a, CS: ConstraintSystem<E>>(

@@ -64,6 +64,10 @@ impl<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> LineFunctionEvaluatio
         p: &AffinePoint<'a, E, G1, T>,
         lambda: &Fp2<'a, E, F, T>, 
     ) -> Result<Self, SynthesisError> {
+        fn twist_type() -> bool {
+            false
+        }
+
         let mut chain = Fp2Chain::new();
         chain.add_pos_term(&q.y);
         let t1 = Fp2::mul_with_chain(cs, &lambda, &q.x, chain)?;
@@ -71,19 +75,20 @@ impl<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> LineFunctionEvaluatio
         let mut t0 = lambda.mul_by_base_field(cs, &p.x)?;
         t0 = t0.negate(cs)?;
 
-
-        fn twist_type() -> bool {
-            todo!()
-        }
-
         if twist_type() {
+
             Ok(LineFunctionEvaluation::MTwist {
                 c0: p.y.clone(),
                 c3: t0,
                 c4: t1
             })
         } else {
-            todo!()
+
+            Ok(LineFunctionEvaluation::DTwist {
+                c0: Fp2::from(p.y.clone()),
+                c1: t1,
+                c4: t0.c0
+            })
         }
     }
 }
@@ -277,7 +282,7 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
         Ok(res)
     }
 
-    // implementaiion of sparse multiplication by element c = [c0, 0, 0, c3, c4, 0]
+    // implementaiion of sparse multiplication by element c = [c0, 0, 0, c3, c4, 0] and c = [c0, c1, 0, 0, c4, 0]
     fn mul_by_line_function_eval<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS,
         full_elem: &Fp12<'a, E, F, T12>,

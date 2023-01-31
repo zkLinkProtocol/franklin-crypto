@@ -63,7 +63,7 @@ impl Extension6Params<Bls12Fq> for BLS12Extension6Params {
     type Ex2 = BLS12Extension2Params;
     type Witness = crate::bellman::pairing::bls12_381::Fq6;
 
-    const NON_RESIDUE: (u64, u64) = (1, 1); // ????
+    const NON_RESIDUE: (u64, u64) = (1, 1); 
     const FROBENIUS_COEFFS_C1: [Bls12Fq2; 6] = BLS12_FROBENIUS_COEFF_FQ6_C1;
     const FROBENIUS_COEFFS_C2: [Bls12Fq2; 6] = BLS12_FROBENIUS_COEFF_FQ6_C2;
     const FROBENIUS_COEFFS_FQ12_C1: [Bls12Fq2; 12] = BLS12_FROBENIUS_COEFF_FQ12_C1;

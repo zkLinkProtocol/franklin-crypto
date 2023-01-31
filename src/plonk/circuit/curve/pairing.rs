@@ -69,11 +69,11 @@ impl<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> LineFunctionEvaluatio
         }
 
         let mut chain = Fp2Chain::new();
-        chain.add_pos_term(&q.y);
-        let t1 = Fp2::mul_with_chain(cs, &lambda, &q.x, chain)?;
+        chain.add_pos_term(&q.y);       // y_Q
+        let t1 = Fp2::mul_with_chain(cs, &lambda, &q.x, chain)?;   // lambda * x_Q - y_Q
 
-        let mut t0 = lambda.mul_by_base_field(cs, &p.x)?;
-        t0 = t0.negate(cs)?;
+        let mut t0 = lambda.mul_by_base_field(cs, &p.x)?;      // lambda * x_P
+        t0 = t0.negate(cs)?;      //  - lambda * x_P
 
         if twist_type() {
 
@@ -85,9 +85,9 @@ impl<'a, E: Engine, F: PrimeField, T: Extension2Params<F>> LineFunctionEvaluatio
         } else {
 
             Ok(LineFunctionEvaluation::MTwist {
-                c0: Fp2::from(p.y.clone()),
-                c1: t1,
-                c4: t0.c0
+                c0: t1,
+                c1: t0,
+                c4: p.y.clone()
             })
         }
     }
@@ -282,7 +282,7 @@ G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
         Ok(res)
     }
 
-    // implementaiion of sparse multiplication by element c = [c0, 0, 0, c3, c4, 0] and c = [c0, c1, 0, 0, c4, 0]
+    // implementaiion of sparse multiplication by element c = [c0, 0, 0, c3, c4, 0] and c = [c0, c1, 0, 0, c4, 0] second one is for bls12
     fn mul_by_line_function_eval<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS,
         full_elem: &Fp12<'a, E, F, T12>,
@@ -725,7 +725,7 @@ impl<E: Engine> Bls12PairingParams<E> {
 
 
         let ops_chain = vec![
-           /*0*/ Ops::Conj(f, f),  /*1*/ Ops::Square(t0, f), /*2*/ Ops::ExpByX(t1, f), Ops::Conj(t1, t1), /*3*/Ops::Conj(t2, f), /*4*/ Ops::Mul(t1, t1, t2),
+           /*0*/ Ops::Conj(f, f), /*1*/ Ops::Square(t0, f), /*2*/ Ops::ExpByX(t1, f), Ops::Conj(t1, t1), /*3*/Ops::Conj(t2, f), /*4*/ Ops::Mul(t1, t1, t2),
            /*5*/ Ops::ExpByX(t2, t1), Ops::Conj(t2, t2), /*6*/ Ops::Conj(t1, t1), /*7*/Ops::Mul(t1, t1, t2), /*8*/ Ops::ExpByX(t2, t1), Ops::Conj(t2, t2), 
            /*9*/ Ops::Frob(t1, t1, 1), /*10*/Ops::Mul(t1, t1, t2), /*11*/Ops::Mul(f, f, t0), /*12*/ Ops::ExpByX(t0, t1), Ops::Conj(t0, t0),
            /*13*/ Ops::ExpByX(t2, t0), Ops::Conj(t2, t2), /*14*/ Ops::Frob(t0, t1, 2), /*15*/Ops::Conj(t1, t1), /*16*/Ops::Mul(t1, t1, t2),
@@ -787,7 +787,7 @@ impl<E: Engine> PairingParams<
             1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-        ];
+        ]; 
         &ARR
 
         // use std::convert::TryInto;
@@ -819,58 +819,6 @@ impl<E: Engine> PairingParams<
         Ok(Boolean::constant(false))
     }
 
-
-    // E, 
-    // F:   <Bls12 as Engine>::Fq, 
-    // G1:  <Bls12 as Engine>::G1Affine, 
-    // G2:  <Bls12 as Engine>::G2Affine, 
-    // T12: Bls12Extension12Params, 
-    // T6:  BLS12Extension6Params, 
-    // T2:  BLS12Extension2Params
-
-    //     <
-    //     E: Engine, F: PrimeField, G1, G2, T12, T6, T2
-    // >  
-    // where T12: Extension12Params<F, Ex6 = T6>, T6: Extension6Params<F, Ex2 = T2>, T2: Extension2Params<F>, 
-    // G1: GenericCurveAffine<Base = F>, G2: GenericCurveAffine<Base = T2::Witness>
-
-    // implementaiion of sparse multiplication by element c = [c0, c1, 0, 0, c4, 0]
-    // fn mul_by_line_function_eval<'a, CS: ConstraintSystem<E>>(
-    //     cs: &mut CS,
-    //     full_elem: &Fp12<'a, E, <Bls12 as Engine>::Fq, Bls12Extension12Params>,
-    //     x: LineFunctionEvaluation<'a, E, <Bls12 as Engine>::Fq, BLS12Extension2Params>
-    // ) -> Result<Fp12<'a, E, <Bls12 as Engine>::Fq, Bls12Extension12Params>, SynthesisError> {
-    //     let z: Vec<Fp2<E, <Bls12 as Engine>::Fq, <BLS12Extension6Params as Extension6Params<<Bls12 as Engine>::Fq>>::Ex2>> = {
-    //         full_elem.get_base_field_coordinates().chunks(2).map(|ch| {
-    //             Fp2::from_coordinates(ch[0].clone(), ch[1].clone())
-    //         }).collect()
-    //     };
-    //     let params = full_elem.get_params();
-
-    //     let fp6_sparse_elem = Fp6::from_coordinates(x.c3.clone(), x.c4.clone(), Fp2::zero(params));
-    //     let b = Self::mul_by_sparse_01(cs, &full_elem.c1, &fp6_sparse_elem)?;
-
-    //     let tmp = Fp2::from(x.c0.clone()).add(cs, &x.c3)?;
-    //     let fp6_sparse_elem = Fp6::from_coordinates(tmp, x.c4.clone(), Fp2::zero(params));
-    //     let fp6_full_elem = full_elem.c0.add(cs, &full_elem.c1)?;
-    //     let e = Self::mul_by_sparse_01(cs, &fp6_full_elem, &fp6_sparse_elem)?;
-
-    //     let a0 = z[0].mul_by_base_field(cs, &x.c0)?;
-    //     let a1 = z[1].mul_by_base_field(cs, &x.c0)?;
-    //     let a2 = z[2].mul_by_base_field(cs, &x.c0)?;
-    //     let a = Fp6::from_coordinates(a0, a1, a2);
-        
-    //     let mut chain = Fp6Chain::new();
-    //     chain.add_pos_term(&e).add_neg_term(&a).add_neg_term(&b);
-    //     let t1 = Fp6::collapse_chain(cs, chain)?;
-       
-    //     let mut t0 = Fp12::<'a, E, <Bls12 as Engine>::Fq, Bls12Extension12Params>::fp6_mul_subroutine(cs, &b)?;
-    //     t0 = t0.add(cs, &a)?;
-       
-    //     let res = Fp12::from_coordinates(t0, t1);
-    //     Ok(res)
-    // }
-
     fn miller_loop_postprocess<'a, CS: ConstraintSystem<E>>(
         cs: &mut CS,
         p: &AffinePoint<'a, E, <Bls12 as Engine>::G1Affine, BLS12Extension2Params>,
@@ -884,6 +832,47 @@ impl<E: Engine> PairingParams<
 
         Ok((miller_loop_result.fp12_acc , Boolean::constant(false)))
     }
+    fn miller_loop<'a, CS: ConstraintSystem<E>>(
+        cs: &mut CS, 
+        p: &AffinePoint<'a, E, <Bls12 as Engine>::G1Affine, BLS12Extension2Params>,
+        q: &TwistedCurvePoint<'a, E, <Bls12 as Engine>::G2Affine, <Bls12 as Engine>::Fq, BLS12Extension2Params>,
+    ) -> Result< MillerLoopResult<
+    'a, E, <Bls12 as Engine>::Fq, <Bls12 as Engine>::G2Affine, Bls12Extension12Params, 
+    BLS12Extension6Params, BLS12Extension2Params
+>, SynthesisError> {
+        // we should enforce that addition and doubling in Jacobian coordinates are exception free
+        let params = &p.circuit_params.base_field_rns_params;
+        let mut f = Fp12::one(params);
+        let mut t = q.clone();
+        let mut q_doubled = q.clone();
+
+        let iter = Self::get_miller_loop_scalar_decomposition().into_iter().skip(1).identify_first_last();
+        for (is_first, _is_last, bit) in iter {
+            let line_eval = Self::double_and_eval(cs, &mut t, &p)?;
+
+            f = Self::mul_by_line_function_eval(cs, &f, line_eval)?;
+            let mut to_add = q.clone();
+            if *bit == -1 {
+                to_add = to_add.negate(cs)?;
+            }
+            if *bit == 1 || *bit == -1 {
+                let line_eval = Self::add_and_eval(cs, &mut t, &to_add, &p)?;
+                f = Self::mul_by_line_function_eval(cs, &f, line_eval)?;
+            }
+
+            f = f.square(cs)?;
+        }
+
+        let line_eval = Self::double_and_eval(cs, &mut t, &p)?;
+        f = Self::mul_by_line_function_eval(cs, &f, line_eval)?;
+
+        Ok(MillerLoopResult {
+            fp12_acc: f, 
+            twisted_point_acc: t,
+            twisted_point_init_doubled: q_doubled
+        })
+    }
+
 }
 
 

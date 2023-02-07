@@ -13,6 +13,7 @@ use crate::plonk::circuit::hashes_with_tables::utils::IdentifyFirstLast;
 use crate::plonk::circuit::boolean::Boolean;
 use rand::{Rng, SeedableRng};
 use rand::chacha::ChaChaRng;
+use bellman::bls12_381::fq::XI_TO_Q_MINUS_1_OVER_2_;
 
 use crate::bellman::pairing::bn256::Fq12 as Bn256Fq12;
 
@@ -848,8 +849,42 @@ impl<E: Engine> PairingParams<
         >, 
         is_safe_version: bool,
     ) -> Result<(Fp12<'a, E, <Bls12 as Engine>::Fq, Bls12Extension12Params>, Boolean), SynthesisError> {
+        let MillerLoopResult { 
+            fp12_acc, twisted_point_acc, twisted_point_init_doubled 
+        } = miller_loop_result;
+        let mut t = twisted_point_acc;
+        let mut r_pt = t.clone();
+        let params = q.x.get_params();
 
-        Ok((miller_loop_result.fp12_acc , Boolean::constant(false)))
+
+        // The twist isomorphism is (x', y') -> (xω², yω³). If we consider just
+	    // x for a moment, then after applying the Frobenius, we have x̄ω^(2p)
+	    // where x̄ is the conjugate of x. If we are going to apply the inverse
+	    // isomorphism we need a value with a single coefficient of ω² so we
+	    // rewrite this as x̄ω^(2p-2)ω². ξ⁶ = ω and, due to the construction of
+	    // p, 2p-2 is a multiple of six. Therefore we can rewrite as
+	    // x̄ξ^((p-1)/3)ω² and applying the inverse isomorphism eliminates the ω².
+	    // A similar argument can be made for the y value.
+        let mut q_frob = q.clone();
+        q_frob.x.c1 = q_frob.x.c1.negate(cs)?;
+        let cnst = <Bls12Extension12Params as Extension12Params<<Bls12 as Engine>::Fq>>::Ex6::FROBENIUS_COEFFS_C1[1];
+        q_frob.x = q_frob.x.mul(cs, &Fp2::constant(cnst.inverse().unwrap(), params))?;
+        q_frob.y.c1 = q_frob.y.c1.negate(cs)?;
+        q_frob.y = q_frob.y.mul(cs, &Fp2::constant(XI_TO_Q_MINUS_1_OVER_2_.inverse().unwrap(), params))?;
+      
+
+        let q2_subgroup_exception = if is_safe_version {
+            
+
+            let mut r_pt_negated = r_pt.negate(cs)?;
+            // println!("                      {:?}", r_pt_negated);
+            // println!("                          {:?}", q_frob);
+            TwistedCurvePoint::equals(cs, &mut r_pt_negated, &mut q_frob)?.not()
+        } else {
+            Boolean::constant(false)
+        };
+
+        Ok((fp12_acc , q2_subgroup_exception))
     }
 
 }

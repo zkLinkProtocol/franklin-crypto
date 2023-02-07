@@ -373,6 +373,9 @@ where T: Extension2Params<F, Witness = G::Base>
     {
         let x_check = Fp2::equals(cs, &mut this.x, &mut other.x)?;
         let y_check = Fp2::equals(cs, &mut this.y, &mut other.y)?;
+        println!("                          {:?}", y_check);
+        println!("                      {:?}", this.y);
+        println!("                          {:?}", other.y);
         let equals = Boolean::and(cs, &x_check, &y_check)?;
         
         Ok(equals)

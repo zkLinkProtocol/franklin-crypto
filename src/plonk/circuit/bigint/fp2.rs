@@ -35,7 +35,7 @@ pub trait Extension2Params<F: PrimeField>: Clone {
     fn convert_from_structured_witness(val: Self::Witness) -> (F, F);
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Bn256Extension2Params {}
 impl Extension2Params<Bn256Fq> for Bn256Extension2Params {
     type Witness = Bn256Fq2;
@@ -47,7 +47,7 @@ impl Extension2Params<Bn256Fq> for Bn256Extension2Params {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BLS12Extension2Params {}
 impl Extension2Params<Bls12Fq> for BLS12Extension2Params {
     type Witness = Bls12Fq2;

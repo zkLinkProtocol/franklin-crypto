@@ -856,15 +856,6 @@ impl<E: Engine> PairingParams<
         let mut r_pt = t.clone();
         let params = q.x.get_params();
 
-
-        // The twist isomorphism is (x', y') -> (xω², yω³). If we consider just
-	    // x for a moment, then after applying the Frobenius, we have x̄ω^(2p)
-	    // where x̄ is the conjugate of x. If we are going to apply the inverse
-	    // isomorphism we need a value with a single coefficient of ω² so we
-	    // rewrite this as x̄ω^(2p-2)ω². ξ⁶ = ω and, due to the construction of
-	    // p, 2p-2 is a multiple of six. Therefore we can rewrite as
-	    // x̄ξ^((p-1)/3)ω² and applying the inverse isomorphism eliminates the ω².
-	    // A similar argument can be made for the y value.
         let mut q_frob = q.clone();
         q_frob.x.c1 = q_frob.x.c1.negate(cs)?;
         let cnst = <Bls12Extension12Params as Extension12Params<<Bls12 as Engine>::Fq>>::Ex6::FROBENIUS_COEFFS_C1[1];

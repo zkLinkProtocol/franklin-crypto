@@ -8,7 +8,7 @@ use bellman::pairing::Engine;
 use bellman::{ConstraintSystem, LinearCombination, Namespace, SynthesisError};
 use circuit::boolean;
 use circuit::Assignment;
-use std::ops::{Add, Sub};
+use std::ops::{Add, Sub, Mul, Div};
 
 #[derive(Clone)]
 pub struct Expression<E: Engine> {
@@ -19,8 +19,8 @@ pub struct Expression<E: Engine> {
 impl<E: Engine> Expression<E> {
     pub fn new(value: Option<E::Fr>, lc: LinearCombination<E>) -> Expression<E> {
         Expression {
-            value: value,
-            lc: lc,
+            value,
+            lc,
         }
     }
     pub fn constant<CS: ConstraintSystem<E>>(value: E::Fr) -> Expression<E> {
@@ -69,7 +69,7 @@ impl<E: Engine> Expression<E> {
         mut cs: CS,
         a: EX1,
         b: EX2,
-    ) -> Result<boolean::AllocatedBit, SynthesisError>
+    ) -> Result<AllocatedBit, SynthesisError>
     where
         E: Engine,
         CS: ConstraintSystem<E>,
@@ -85,7 +85,7 @@ impl<E: Engine> Expression<E> {
             _ => None,
         };
 
-        let r = boolean::AllocatedBit::alloc(cs.namespace(|| "r"), r_value)?;
+        let r = AllocatedBit::alloc(cs.namespace(|| "r"), r_value)?;
 
         // Let `delta = a - b`
 
@@ -212,9 +212,6 @@ impl<E: Engine> Expression<E> {
         let a: Expression<E> = a.into();
         let b: Expression<E> = b.into();
 
-        let a = a.into_number(cs.namespace(|| "pack A"))?;
-        let b = b.into_number(cs.namespace(|| "pack B"))?;
-
         let c = AllocatedNum::alloc(cs.namespace(|| "conditional select result"), || {
             if *condition.get_value().get()? {
                 Ok(*a.get_value().get()?)
@@ -225,12 +222,11 @@ impl<E: Engine> Expression<E> {
 
         // a * condition + b*(1-condition) = c ->
         // a * condition - b*condition = c - b
-
         cs.enforce(
             || "conditional select constraint",
-            |zero| zero + a.get_variable() - b.get_variable(),
+            |_| a.lc() - &b.lc(),
             |_| condition.lc(CS::one(), E::Fr::one()),
-            |zero| zero + c.get_variable() - b.get_variable(),
+            |zero| zero + c.get_variable() - &b.lc(),
         );
 
         Ok(c)

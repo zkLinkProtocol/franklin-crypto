@@ -398,7 +398,7 @@ impl<E: JubjubEngine> EdwardsPoint<E> {
         power.sub_assign(&E::Fr::one());
         power.mul_assign(&one_half); // now power=(p-1)/2 wher p is a characteristic of field
 
-        let f_legendre_symbol = f.pow(
+        let f_legendre_symbol = f.pow_constant(
             cs.namespace(|| "f to the power of (p-1) divide by 2"),
             &power,
         )?; //Euler's criteria

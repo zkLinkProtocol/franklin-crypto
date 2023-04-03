@@ -15,22 +15,13 @@ pub fn parse_with_exponent_le<E: Engine, CS: ConstraintSystem<E>>(
     exponent_base: u64
 ) -> Result<AllocatedNum<E>, SynthesisError>
 {
-    assert!(bits.len() == exponent_length + mantissa_length);
+    assert_eq!(bits.len(), exponent_length + mantissa_length);
 
-    let one_allocated = AllocatedNum::alloc(
-        cs.namespace(|| "allocate one"),
-        || Ok(E::Fr::one())
-    )?;
+    let one_allocated = AllocatedNum::one::<CS>();
+    let mut exponent_result = AllocatedNum::one::<CS>();
+    let exponent_base_value = E::Fr::from_repr(exponent_base.into()).unwrap();
 
-    let mut exponent_result = AllocatedNum::alloc(
-        cs.namespace(|| "allocate exponent result"),
-        || Ok(E::Fr::one())
-    )?;
-
-    let exponent_base_string = exponent_base.to_string();
-    let exponent_base_value = E::Fr::from_str(&exponent_base_string.clone()).unwrap();
-
-    let mut exponent_base = AllocatedNum::alloc(
+    let mut exponent_base = AllocatedNum::alloc_constant(
         cs.namespace(|| "allocate exponent base"), 
         || Ok(exponent_base_value)
     )?;
@@ -50,14 +41,9 @@ pub fn parse_with_exponent_le<E: Engine, CS: ConstraintSystem<E>>(
             &multiplier
         )?;
 
-        exponent_base = exponent_base.clone().square(
+        exponent_base = exponent_base.square(
             cs.namespace(|| format!("make exponent base {}", i))
         )?;
-
-        // exponent_base = exponent_base.mul(
-        //     cs.namespace(|| format!("make exponent base {}", i)), 
-        //     &exponent_base.clone()
-        // )?;
     }
 
     let mut mantissa_result = Num::<E>::zero();
@@ -70,38 +56,9 @@ pub fn parse_with_exponent_le<E: Engine, CS: ConstraintSystem<E>>(
         mantissa_base.double();
     }
 
-    let mantissa = AllocatedNum::alloc(
-        cs.namespace(|| "allocating mantissa"),
-        || Ok(*mantissa_result.get_value().get()?)
-    )?;
-
-    mantissa.mul(
-        cs.namespace(|| "calculate floating point result"),
-        &exponent_result
-    )
-
-    // return 
-
-    // let mut result = mantissa_result.get_value().get()?.clone();
-
-    // let exponent_value = exponent_result.get_value().get()?.clone();
-
-    // result.mul_assign(&exponent_value);
-
-    // let result_allocated = AllocatedNum::alloc(
-    //     cs.namespace(|| "float point parsing result"),
-    //     || Ok(result)
-    // )?;
-
-    // // num * 1 = input
-    // cs.enforce(
-    //     || "float point result constraint",
-    //     |lc| lc + exponent_result.get_variable(),
-    //     |_| mantissa_result.lc(E::Fr::one()),
-    //     |lc| lc + result_allocated.get_variable()
-    // );
-
-    // Ok(result_allocated)
+    mantissa_result
+        .into_allocated_num(cs.namespace(|| "allocating mantissa"))?
+        .mul(cs.namespace(|| "calculate floating point result"), &exponent_result)
 }
 
 pub fn convert_to_float(
@@ -262,18 +219,25 @@ fn test_parsing() {
 
     // let bits: Vec<bool> = vec![true, true, true, true, true, true];
 
-    let circuit_bits = bits.iter().enumerate()
-                            .map(|(i, &b)| {
-                                Boolean::from(
-                                    AllocatedBit::alloc(
-                                    cs.namespace(|| format!("bit {}", i)),
-                                    Some(b)
-                                    ).unwrap()
-                                )
-                            })
-                            .collect::<Vec<_>>();
+    let circuit_bits = bits.iter()
+        .enumerate()
+        .map(|(i, &b)| {
+            Boolean::from(
+                AllocatedBit::alloc(
+                cs.namespace(|| format!("bit {}", i)),
+                Some(b)
+                ).unwrap()
+            )
+        })
+        .collect::<Vec<_>>();
 
-    let exp_result = parse_with_exponent_le(cs.namespace(|| "parse"), &circuit_bits, 5, 1, 10).unwrap();
+    let exp_result = parse_with_exponent_le(
+        cs.namespace(|| "parse"),
+        &circuit_bits,
+        5,
+        1,
+        10
+    ).unwrap();
 
     print!("{}\n", exp_result.get_value().unwrap().into_repr());
     assert!(cs.is_satisfied());

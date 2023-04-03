@@ -16,22 +16,23 @@ plonk = ["bellman/plonk"]
  
 [dependencies]
 rand = "0.4"
-digest = "0.9"
+digest = "0.7"
 byteorder = "1"
 serde = "1.0.80"
 serde_derive = "1.0.80"
 tiny-keccak = "1.4.2"
 bit-vec = "0.6"
-sha2 = "0.9"
-hmac = "0.11"
+sha2 = "0.8.0"
+hmac = "0.7.1"
 num-bigint = "0.3"
 num-integer = "0.1"
 num-traits = "0.2"
 itertools = "0.9"
 splitmut = "0.2"
 blake2 = "0.9"
+regex = "0.2"
 
-bellman = { package = "bellman_ce", git = "https://github.com/matter-labs/bellman", default_features = false, branch = "beta" }
+bellman = { package = "bellman_ce", git = "https://github.com/zkLinkProtocol/bellman.git", default_features = false, branch = "beta" }
 blake2-rfc_bellman_edition = "0.0.1"
 poseidon_hash = {git = "https://github.com/shamatar/poseidon_hash.git"}
 

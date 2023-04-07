@@ -341,7 +341,6 @@ impl<E: Engine> AllocatedNum<E> {
             },
         )?;
 
-        // Constrain: a * b = ab
         cs.enforce(
             || "addition constraint",
             |zero| zero + self.variable + other.variable,
@@ -355,7 +354,7 @@ impl<E: Engine> AllocatedNum<E> {
         })
     }
 
-    pub fn add_constant<CS>(&self, mut cs: CS, constant: E::Fr) -> Result<LinearCombination<E>, SynthesisError>
+    pub fn add_constant<CS>(&self, mut cs: CS, constant: E::Fr) -> Result<AllocatedNum<E>, SynthesisError>
     where
         CS: ConstraintSystem<E>,
     {
@@ -370,10 +369,20 @@ impl<E: Engine> AllocatedNum<E> {
                 value = Some(tmp);
 
                 Ok(tmp)
-            },
+            }
         )?;
 
-        Ok(LinearCombination::zero() + self.variable + (constant, CS::one()))
+        cs.enforce(
+            || "addition constraint",
+            |zero| zero + self.variable + (constant, CS::one()),
+            |zero| zero + CS::one(),
+            |zero| zero + var
+        );
+
+        Ok(AllocatedNum {
+            value,
+            variable: var
+        })
     }
 
     pub fn sub<CS>(&self, mut cs: CS, other: &Self) -> Result<Self, SynthesisError>
@@ -394,7 +403,6 @@ impl<E: Engine> AllocatedNum<E> {
             },
         )?;
 
-        // Constrain: a * b = ab
         cs.enforce(
             || "addition constraint",
             |zero| zero + self.variable - other.variable,
@@ -479,7 +487,6 @@ impl<E: Engine> AllocatedNum<E> {
             },
         )?;
 
-        // Constrain: a * b = ab
         cs.enforce(
             || "multiplication constraint",
             |zero| zero + self.variable,
@@ -514,7 +521,6 @@ impl<E: Engine> AllocatedNum<E> {
             },
         )?;
 
-        // Constrain: a * a^-1 = 1
         cs.enforce(
             || "inv multiplication constraint",
             |zero| zero + var_inv,
@@ -549,7 +555,6 @@ impl<E: Engine> AllocatedNum<E> {
             },
         )?;
 
-        // Constrain: a * a = aa
         cs.enforce(
             || "squaring constraint",
             |zero| zero + self.variable,

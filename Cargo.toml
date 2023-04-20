@@ -13,7 +13,8 @@ crate-type = ["lib", "staticlib"]
 default = []
 multicore = ["bellman/multicore"]
 plonk = ["bellman/plonk"]
- 
+gpu = ["bellman/gpu"]
+
 [dependencies]
 rand = "0.4"
 digest = "0.7"

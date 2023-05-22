@@ -327,8 +327,8 @@ pub fn rescue_hash<E: RescueEngine, CS>(
 
     let mut result = vec![];
 
-    for (i, num) in state[..output_len].iter().enumerate() {
-        let allocated = num.clone().into_allocated_num(
+    for (i, num) in state.into_iter().take(output_len).enumerate() {
+        let allocated = num.into_allocated_num(
             cs.namespace(|| format!("collapse output word {}", i)),
         )?;
 
@@ -352,11 +352,10 @@ pub fn rescue_mimc_over_lcs<E: RescueEngine, CS>(
     assert_eq!(input.len(), state_len); 
 
     let mut state: Vec<Num<E>> = Vec::with_capacity(input.len());
-    for (_i, (c, &constant)) in input.iter().cloned()
-                        .zip(params.round_constants(0).iter())
-                        .enumerate()
+    for (c, &constant) in input.iter()
+        .zip(params.round_constants(0).iter())
     {
-        let with_constant = c.add_constant(
+        let with_constant = c.clone().add_constant(
             CS::one(),
             constant
         );

@@ -8,7 +8,7 @@ use circuit::expression::Expression;
 
 /// Represents a variable in the constraint system which is guaranteed
 /// to be either zero or one.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AllocatedBit {
     variable: Variable,
     value: Option<bool>,
@@ -447,7 +447,7 @@ pub fn field_into_allocated_bits_le_fixed<E: Engine, CS: ConstraintSystem<E>, F:
 
 /// This is a boolean value which may be either a constant or
 /// an interpretation of an `AllocatedBit`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Boolean {
     /// Existential view of the boolean variable
     Is(AllocatedBit),
@@ -566,6 +566,80 @@ impl Boolean {
     /// Construct a boolean from a known constant
     pub fn constant(b: bool) -> Self {
         Boolean::Constant(b)
+    }
+
+    /// if condition is true, return x, or return y.
+    pub fn conditionally_select<E: Engine, CS: ConstraintSystem<E>>(
+        mut cs: CS,
+        x: &Boolean,
+        y: &Boolean,
+        condition: &Boolean
+    ) -> Result<Self, SynthesisError> {
+        match condition {
+            Boolean::Constant(true) => Ok(x.clone()),
+            Boolean::Constant(false) => Ok(y.clone()),
+            cond @ Boolean::Not(_) => Self::conditionally_select(cs.namespace(||"not condition"),  y, x, &cond.not()),
+            cond @ Boolean::Is(_) => match (x, y) {
+                (x, &Boolean::Constant(false)) => Boolean::and(
+                    cs.namespace(||"x and cond"),
+                    cond,
+                    x
+                ),
+                (&Boolean::Constant(false), x) => Boolean::and(
+                    cs.namespace(||"x and !cond"),
+                    &cond.not(),
+                    x
+                ),
+                (&Boolean::Constant(true), x) => Ok(Boolean::and(
+                    cs.namespace(||"x or cond"),
+                    &cond.not(),
+                    &x.not()
+                )?.not()),
+                (x, &Boolean::Constant(true)) => Ok(Boolean::and(
+                    cs.namespace(||"x or cond"),
+                    &cond,
+                    &x.not()
+                )?.not()),
+                (a, b) => {
+                    let result  = Boolean::from(AllocatedBit::alloc(
+                    cs.namespace(||"condition"),
+                    {
+                        let cond = *cond.get_value().get()?;
+                        Some(if cond {
+                            *a.get_value().get()?
+                        } else {
+                            *b.get_value().get()?
+                        })
+                    })?);
+                    // a = self; b = other; c = cond;
+                    //
+                    // r = c * a + (1  - c) * b
+                    // r = b + c * (a - b)
+                    // c * (a - b) = r - b
+                    //
+                    // If a, b, cond are all boolean, so is r.
+                    //
+                    // self | other | cond | result
+                    // -----|-------|----------------
+                    //   0  |   0   |   1  |    0
+                    //   0  |   1   |   1  |    0
+                    //   1  |   0   |   1  |    1
+                    //   1  |   1   |   1  |    1
+                    //   0  |   0   |   0  |    0
+                    //   0  |   1   |   0  |    1
+                    //   1  |   0   |   0  |    0
+                    //   1  |   1   |   0  |    1
+                    cs.enforce(
+                        || "condition select",
+                        |_lc| cond.lc(CS::one(), E::Fr::one()),
+                        |_lc| a.lc(CS::one(), E::Fr::one()) - &b.lc(CS::one(), E::Fr::one()),
+                        |_lc| result.lc(CS::one(), E::Fr::one()) - &b.lc(CS::one(), E::Fr::one()),
+                    );
+
+                    Ok(result)
+                }
+            }
+        }
     }
 
     /// Return a negated interpretation of this boolean.
@@ -861,6 +935,7 @@ impl From<AllocatedBit> for Boolean {
 
 #[cfg(test)]
 mod test {
+    use std::ops::Not;
     use super::{field_into_allocated_bits_le, u64_into_boolean_vec_le, AllocatedBit, Boolean};
     use bellman::pairing::bls12_381::{Bls12, Fr};
     use bellman::pairing::ff::{Field, PrimeField};
@@ -1403,6 +1478,90 @@ mod test {
                     }
 
                     _ => panic!("this should never be encountered"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_boolean_conditional_select() {
+        let variants = [
+            OperandType::True,
+            OperandType::False,
+            OperandType::AllocatedTrue,
+            OperandType::AllocatedFalse,
+            OperandType::NegatedAllocatedTrue,
+            OperandType::NegatedAllocatedFalse,
+        ];
+
+        for (index1, first_operand) in variants.iter().cloned().enumerate() {
+            for (index2, second_operand) in variants.iter().cloned().enumerate() {
+                for (index3, condition_operand) in variants.iter().cloned().enumerate() {
+                    let mut cs = TestConstraintSystem::<Bls12>::new();
+
+                    let a;
+                    let b;
+                    let condition;
+
+                    {
+                        let mut dyn_construct = |operand, name| {
+                            let cs = cs.namespace(|| name);
+
+                            match operand {
+                                OperandType::True => Boolean::constant(true),
+                                OperandType::False => Boolean::constant(false),
+                                OperandType::AllocatedTrue => {
+                                    Boolean::from(AllocatedBit::alloc(cs, Some(true)).unwrap())
+                                }
+                                OperandType::AllocatedFalse => {
+                                    Boolean::from(AllocatedBit::alloc(cs, Some(false)).unwrap())
+                                }
+                                OperandType::NegatedAllocatedTrue => {
+                                    Boolean::from(AllocatedBit::alloc(cs, Some(true)).unwrap()).not()
+                                }
+                                OperandType::NegatedAllocatedFalse => {
+                                    Boolean::from(AllocatedBit::alloc(cs, Some(false)).unwrap()).not()
+                                }
+                            }
+                        };
+
+                        a = dyn_construct(first_operand, "a");
+                        b = dyn_construct(second_operand, "b");
+                        condition = dyn_construct(condition_operand, "condition_operand");
+                    }
+
+                    println!("condition: {:?}", condition);
+                    let c = Boolean::conditionally_select(&mut cs, &a, &b, &condition).unwrap();
+
+                    assert!(cs.is_satisfied());
+
+                    println!("operand: {:?} {:?} {:?} => {:?}", first_operand, second_operand, condition_operand, c.get_value());
+                    match c {
+                        Boolean::Is(c) => match condition_operand {
+                            OperandType::True | OperandType::AllocatedTrue | OperandType::NegatedAllocatedFalse => {
+                                assert_eq!(c.get_value(), a.get_value(), "allocated");
+                            }
+                            OperandType::False | OperandType::AllocatedFalse | OperandType::NegatedAllocatedTrue => {
+                                assert_eq!(c.get_value(), b.get_value(), "allocated");
+                            }
+                        },
+                        Boolean::Constant(c) => match condition_operand {
+                            OperandType::True | OperandType::AllocatedTrue | OperandType::NegatedAllocatedFalse => {
+                                assert_eq!(Some(c), a.get_value(), "constant");
+                            }
+                            OperandType::False | OperandType::AllocatedFalse | OperandType::NegatedAllocatedTrue => {
+                                assert_eq!(Some(c), b.get_value(), "constant");
+                            }
+                        },
+                        Boolean::Not(c) => match condition_operand {
+                            OperandType::True | OperandType::AllocatedTrue | OperandType::NegatedAllocatedFalse => {
+                                assert_eq!(c.get_value().map(Not::not), a.get_value(), "allocated not");
+                            }
+                            OperandType::False | OperandType::AllocatedFalse | OperandType::NegatedAllocatedTrue => {
+                                assert_eq!(c.get_value().map(Not::not), b.get_value(), "allocated not");
+                            }
+                        }
+                    }
                 }
             }
         }

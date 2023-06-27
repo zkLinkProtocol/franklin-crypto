@@ -654,37 +654,43 @@ impl<E: Engine> AllocatedNum<E> {
     where
         CS: ConstraintSystem<E>,
     {
-        let c = Self::alloc(cs.namespace(|| "conditional reversal result 1"), || {
-            if *condition.get_value().get()? {
-                Ok(*b.value.get()?)
-            } else {
-                Ok(*a.value.get()?)
+        match condition {
+            Boolean::Constant(true) => Ok((b.clone(), a.clone())),
+            Boolean::Constant(false) => Ok((a.clone(), b.clone())),
+            _ => {
+                let c = Self::alloc(cs.namespace(|| "conditional reversal result 1"), || {
+                    if *condition.get_value().get()? {
+                        Ok(*b.value.get()?)
+                    } else {
+                        Ok(*a.value.get()?)
+                    }
+                })?;
+
+                cs.enforce(
+                    || "first conditional reversal",
+                    |zero| zero + a.variable - b.variable,
+                    |_| condition.lc(CS::one(), E::Fr::one()),
+                    |zero| zero + a.variable - c.variable,
+                );
+
+                let d = Self::alloc(cs.namespace(|| "conditional reversal result 2"), || {
+                    if *condition.get_value().get()? {
+                        Ok(*a.value.get()?)
+                    } else {
+                        Ok(*b.value.get()?)
+                    }
+                })?;
+
+                cs.enforce(
+                    || "second conditional reversal",
+                    |zero| zero + b.variable - a.variable,
+                    |_| condition.lc(CS::one(), E::Fr::one()),
+                    |zero| zero + b.variable - d.variable,
+                );
+
+                Ok((c, d))
             }
-        })?;
-
-        cs.enforce(
-            || "first conditional reversal",
-            |zero| zero + a.variable - b.variable,
-            |_| condition.lc(CS::one(), E::Fr::one()),
-            |zero| zero + a.variable - c.variable,
-        );
-
-        let d = Self::alloc(cs.namespace(|| "conditional reversal result 2"), || {
-            if *condition.get_value().get()? {
-                Ok(*a.value.get()?)
-            } else {
-                Ok(*b.value.get()?)
-            }
-        })?;
-
-        cs.enforce(
-            || "second conditional reversal",
-            |zero| zero + b.variable - a.variable,
-            |_| condition.lc(CS::one(), E::Fr::one()),
-            |zero| zero + b.variable - d.variable,
-        );
-
-        Ok((c, d))
+        }
     }
 
     /// Takes two allocated numbers (a, b) and returns

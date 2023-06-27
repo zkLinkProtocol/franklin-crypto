@@ -416,27 +416,6 @@ impl<E: Engine> AllocatedNum<E> {
         })
     }
 
-    pub fn sub_constant<CS>(&self, mut cs: CS, constant: E::Fr) -> Result<LinearCombination<E>, SynthesisError>
-    where
-        CS: ConstraintSystem<E>,
-    {
-        let mut value = None;
-
-        let var = cs.alloc(
-            || "sub num",
-            || {
-                let mut tmp = *self.value.get()?;
-                tmp.sub_assign(&constant);
-
-                value = Some(tmp);
-
-                Ok(tmp)
-            },
-        )?;
-
-        Ok(LinearCombination::zero() + self.variable - (constant, CS::one()))
-    }
-
     pub fn mul<CS>(&self, mut cs: CS, other: &Self) -> Result<Self, SynthesisError>
     where
         CS: ConstraintSystem<E>,

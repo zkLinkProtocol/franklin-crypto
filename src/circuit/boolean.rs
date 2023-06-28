@@ -336,6 +336,27 @@ pub fn u64_into_boolean_vec_le<E: Engine, CS: ConstraintSystem<E>>(
     Ok(bits)
 }
 
+pub fn u128_into_constant_boolean_vec_le(value: u128, length: usize) -> Vec<Boolean> {
+    assert!(value < 2u128.pow(length as u32));
+    let mut values = Vec::with_capacity(length);
+    for i in 0..length {
+        values.push(value >> i & 1 == 1);
+    }
+
+    let bits = values
+        .into_iter()
+        .map(Boolean::constant)
+        .collect::<Vec<_>>();
+
+    bits
+}
+
+pub fn u128_into_constant_boolean_vec_be(value: u128, length: usize) -> Vec<Boolean> {
+    let mut boolean_vec = u128_into_constant_boolean_vec_le(value, length);
+    boolean_vec.reverse();
+    boolean_vec
+}
+
 // changes an order of the bits to transform bits in LSB first order into
 // LE bytes. Takes 8 bit chunks and reverses them
 pub fn le_bits_into_le_bytes(bits: Vec<Boolean>) -> Vec<Boolean> {

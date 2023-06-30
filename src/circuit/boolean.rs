@@ -625,12 +625,11 @@ impl Boolean {
                     let result  = Boolean::from(AllocatedBit::alloc(
                     cs.namespace(||"condition"),
                     {
-                        let cond = *cond.get_value().get()?;
-                        Some(if cond {
-                            *a.get_value().get()?
+                        if let (Some(a), Some(b), Some(cond)) = (a.get_value(), b.get_value(), cond.get_value()) {
+                            Some(if cond { a } else { b })
                         } else {
-                            *b.get_value().get()?
-                        })
+                            None
+                        }
                     })?);
                     // a = self; b = other; c = cond;
                     //

@@ -727,6 +727,54 @@ impl<E: Engine> AllocatedNum<E> {
         Ok(c)
     }
 
+    /// Enforces that self == other if `should_enforce is true`.
+    ///
+    /// This requires one constraint.
+    pub fn conditional_enforce_equal<CS: ConstraintSystem<E>>(
+        &self,
+        mut cs: CS,
+        other: &Self,
+        should_enforce: &Boolean,
+    ) -> Result<(), SynthesisError> {
+        cs.enforce(
+            || "conditional enforce equal",
+            |zero| zero + self.variable - other.variable,
+            |_| should_enforce.lc(CS::one(), E::Fr::one()),
+            |zero| zero,
+        );
+        Ok(())
+    }
+
+    /// Enforces that self != other if `should_enforce is true`.
+    ///
+    /// This requires one constraint.
+    pub fn conditional_enforce_not_equal<CS: ConstraintSystem<E>>(
+        &self,
+        mut cs: CS,
+        other: &Self,
+        should_enforce: &Boolean,
+    ) -> Result<(), SynthesisError> {
+        let multiplier = Self::alloc(
+            cs.namespace(|| "conditional select result"),
+            || if *should_enforce.get_value().get()? {
+                let mut value = *self.value.get()?;
+                value.sub_assign(other.value.get()?);
+                Ok(value.inverse().unwrap_or(E::Fr::zero()))
+            } else {
+                Ok(E::Fr::zero())
+            }
+        )?;
+        println!("4");
+
+        cs.enforce(
+            || "conditional enforce not equal",
+            |zero| zero + self.variable - other.variable,
+            |zero| zero + multiplier.variable,
+            |_| should_enforce.lc(CS::one(), E::Fr::one()),
+        );
+        Ok(())
+    }
+
     /// Takes two allocated numbers (a, b) and returns
     /// allocated boolean variable with value `true`
     /// if the `a` and `b` are equal, `false` otherwise.
@@ -1212,6 +1260,74 @@ mod test {
 
         assert_eq!(not_eq.get_value().unwrap(), false);
         assert_eq!(eq.get_value().unwrap(), true);
+    }
+
+    #[test]
+    fn test_num_enforce_equals_or_not() {
+        let mut cs = TestConstraintSystem::<Bls12>::new();
+
+        let a =
+            AllocatedNum::alloc(cs.namespace(|| "a"), || Ok(Fr::from_str("10").unwrap())).unwrap();
+        let b =
+            AllocatedNum::alloc(cs.namespace(|| "b"), || Ok(Fr::from_str("12").unwrap())).unwrap();
+        let c =
+            AllocatedNum::alloc(cs.namespace(|| "c"), || Ok(Fr::from_str("10").unwrap())).unwrap();
+
+        a.conditional_enforce_equal(
+            cs.namespace(|| "enforce eq: a == c"),
+            &c,
+            &Boolean::constant(true)
+        ).unwrap();
+        a.conditional_enforce_equal(
+            cs.namespace(|| "not enforce eq"),
+            &b,
+            &Boolean::constant(false)
+        ).unwrap();
+        a.conditional_enforce_not_equal(
+            cs.namespace(|| "enforce not_eq: a != b"),
+            &b,
+            &Boolean::constant(true)
+        ).unwrap();
+        a.conditional_enforce_not_equal(
+            cs.namespace(|| "not enforce not_eq"),
+            &c,
+            &Boolean::constant(false)
+        ).unwrap();
+
+        assert!(cs.is_satisfied());
+        assert_eq!(cs.num_constraints(), 4);
+    }
+
+    #[test]
+    fn test_not_satisfied_num_enforce_equals() {
+        let a_and_b = [
+            (10u32, 10),
+            (10, 12)
+        ];
+        for (a, b) in a_and_b {
+            let eq = a == b;
+            let mut cs = TestConstraintSystem::<Bls12>::new();
+            let a =
+                AllocatedNum::alloc(cs.namespace(|| "a"), || Ok(Fr::from_str(&a.to_string()).unwrap())).unwrap();
+            let b =
+                AllocatedNum::alloc(cs.namespace(|| "b"), || Ok(Fr::from_str(&b.to_string()).unwrap())).unwrap();
+
+            if eq {
+                a.conditional_enforce_not_equal(
+                    cs.namespace(|| "enforce not eq: a != b"),
+                    &b,
+                    &Boolean::constant(true),
+                ).unwrap();
+            } else {
+                a.conditional_enforce_equal(
+                    cs.namespace(|| "enforce eq: a == b"),
+                    &b,
+                    &Boolean::constant(true),
+                ).unwrap();
+            }
+
+            assert!(!cs.is_satisfied());
+        }
     }
 
     #[test]

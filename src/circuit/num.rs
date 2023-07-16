@@ -764,7 +764,6 @@ impl<E: Engine> AllocatedNum<E> {
                 Ok(E::Fr::zero())
             }
         )?;
-        println!("4");
 
         cs.enforce(
             || "conditional enforce not equal",

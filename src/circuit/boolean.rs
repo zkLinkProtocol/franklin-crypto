@@ -662,6 +662,146 @@ impl Boolean {
         }
     }
 
+    fn conditional_enforce_equal<E: Engine, CS: ConstraintSystem<E>>(
+        &self,
+        mut cs: CS,
+        other: &Self,
+        should_enforce: &Boolean,
+    ) -> Result<(), SynthesisError> {
+        use self::Boolean::*;
+        let one = CS::one();
+        let difference = match (self, other) {
+            // 1 == 1; 0 == 0
+            (Constant(true), Constant(true)) | (Constant(false), Constant(false)) => return Ok(()),
+            // false != true
+            (Constant(_), Constant(_)) => return Err(SynthesisError::AssignmentMissing),
+            // 1 - a
+            (Constant(true), Is(a)) | (Is(a), Constant(true)) => LinearCombination::zero() + one - a.get_variable(),
+            // a - 0 = a
+            (Constant(false), Is(a)) | (Is(a), Constant(false)) => LinearCombination::zero() + a.get_variable(),
+            // 1 - !a = 1 - (1 - a) = a
+            (Constant(true), Not(a)) | (Not(a), Constant(true)) => LinearCombination::zero() + a.get_variable(),
+            // !a - 0 = !a = 1 - a
+            (Constant(false), Not(a)) | (Not(a), Constant(false)) => LinearCombination::zero() + one - a.get_variable(),
+            // b - a,
+            (Is(a), Is(b)) => LinearCombination::zero() + b.get_variable() - a.get_variable(),
+            // !b - a = (1 - b) - a
+            (Is(a), Not(b)) | (Not(b), Is(a)) => LinearCombination::zero() + one - b.get_variable() - a.get_variable(),
+            // !b - !a = (1 - b) - (1 - a) = a - b,
+            (Not(a), Not(b)) => LinearCombination::zero() + a.get_variable() - b.get_variable(),
+        };
+
+        if !matches!(should_enforce, Constant(false)) {
+            cs.enforce(
+                || "conditionally enforce equal",
+                |lc| lc + &difference,
+                |_| should_enforce.lc(one, E::Fr::one()),
+                |lc| lc
+            );
+        }
+        Ok(())
+    }
+
+    fn conditional_enforce_not_equal<E: Engine, CS: ConstraintSystem<E>>(
+        &self,
+        mut cs: CS,
+        other: &Self,
+        should_enforce: &Boolean,
+    ) -> Result<(), SynthesisError> {
+        if matches!(should_enforce, Constant(false)) { return Ok(()) }
+
+        use self::Boolean::*;
+        let one = CS::one();
+        let difference = match (self, other) {
+            // 1 != 0; 0 != 1
+            (Constant(true), Constant(false)) | (Constant(false), Constant(true)) => return Ok(()),
+            // false == false and true == true
+            (Constant(_), Constant(_)) => return Err(SynthesisError::AssignmentMissing),
+            // 1 - a
+            (Constant(true), Is(a)) | (Is(a), Constant(true)) => LinearCombination::zero() + one - a.get_variable(),
+            // a - 0 = a
+            (Constant(false), Is(a)) | (Is(a), Constant(false)) => LinearCombination::zero() + a.get_variable(),
+            // 1 - !a = 1 - (1 - a) = a
+            (Constant(true), Not(a)) | (Not(a), Constant(true)) => LinearCombination::zero() + a.get_variable(),
+            // !a - 0 = !a = 1 - a
+            (Constant(false), Not(a)) | (Not(a), Constant(false)) => LinearCombination::zero() + one - a.get_variable(),
+            // b - a,
+            (Is(a), Is(b)) => {
+                let multiplier = cs.alloc(
+                    || "conditional select result",
+                    || if *should_enforce.get_value().get()? {
+                        let mut diff = if *b.get_value().get()? { E::Fr::one() } else { E::Fr::zero() };
+                        let a = if *a.get_value().get()? { E::Fr::one() } else { E::Fr::zero() };
+                        diff.sub_assign(&a);
+                        Ok(diff.inverse().unwrap_or(E::Fr::zero()))
+                    } else {
+                        Ok(E::Fr::zero())
+                    }
+                )?;
+
+                cs.enforce(
+                    || "conditionally enforce not equal",
+                    |_| LinearCombination::zero() + b.get_variable() - a.get_variable(),
+                    |lc| lc + multiplier,
+                    |_| should_enforce.lc(one, E::Fr::one()),
+                );
+                return Ok(())
+            },
+            // !b - a = (1 - b) - a
+            (Is(a), Not(b)) | (Not(b), Is(a)) => {
+                let multiplier = cs.alloc(
+                    || "conditional select result",
+                    || if *should_enforce.get_value().get()? {
+                        let mut diff = if *b.get_value().get()? { E::Fr::zero() } else { E::Fr::one() };
+                        let a = if *a.get_value().get()? { E::Fr::one() } else { E::Fr::zero() };
+                        diff.sub_assign(&a);
+                        Ok(diff.inverse().unwrap_or(E::Fr::zero()))
+                    } else {
+                        Ok(E::Fr::zero())
+                    }
+                )?;
+
+                cs.enforce(
+                    || "conditionally enforce not equal",
+                    |_| LinearCombination::zero() + one - b.get_variable() - a.get_variable(),
+                    |lc| lc + multiplier,
+                    |_| should_enforce.lc(one, E::Fr::one()),
+                );
+                return Ok(())
+            },
+            // !b - !a = (1 - b) - (1 - a) = a - b,
+            (Not(a), Not(b)) => {
+                let multiplier = cs.alloc(
+                    || "conditional select result",
+                    || if *should_enforce.get_value().get()? {
+                        let mut diff = if *a.get_value().get()? { E::Fr::one() } else { E::Fr::zero() };
+                        let b = if *b.get_value().get()? { E::Fr::one() } else { E::Fr::zero() };
+                        diff.sub_assign(&b);
+                        Ok(diff.inverse().unwrap_or(E::Fr::zero()))
+                    } else {
+                        Ok(E::Fr::zero())
+                    }
+                )?;
+
+                cs.enforce(
+                    || "conditionally enforce not equal",
+                    |_| LinearCombination::zero() + a.get_variable() - b.get_variable(),
+                    |lc| lc + multiplier,
+                    |_| should_enforce.lc(one, E::Fr::one()),
+                );
+                return Ok(())
+            },
+        };
+
+        cs.enforce(
+            || "conditionally enforce not equal",
+            |_| difference,
+            |_| should_enforce.lc(one, E::Fr::one()),
+            |_| should_enforce.lc(one, E::Fr::one()),
+        );
+        Ok(())
+    }
+
     /// Return a negated interpretation of this boolean.
     pub fn not(&self) -> Self {
         match self {
@@ -959,7 +1099,7 @@ mod test {
     use super::{field_into_allocated_bits_le, u64_into_boolean_vec_le, AllocatedBit, Boolean};
     use bellman::pairing::bls12_381::{Bls12, Fr};
     use bellman::pairing::ff::{Field, PrimeField};
-    use bellman::ConstraintSystem;
+    use bellman::{ConstraintSystem, SynthesisError};
     use circuit::test::*;
 
     #[test]
@@ -1260,7 +1400,7 @@ mod test {
         }
     }
 
-    #[derive(Copy, Clone, Debug)]
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     enum OperandType {
         True,
         False,
@@ -1580,6 +1720,102 @@ mod test {
                             OperandType::False | OperandType::AllocatedFalse | OperandType::NegatedAllocatedTrue => {
                                 assert_eq!(c.get_value().map(Not::not), b.get_value(), "allocated not");
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_boolean_conditional_enforce() {
+        let variants = [
+            OperandType::True,
+            OperandType::False,
+            OperandType::AllocatedTrue,
+            OperandType::AllocatedFalse,
+            OperandType::NegatedAllocatedTrue,
+            OperandType::NegatedAllocatedFalse,
+        ];
+
+        for (index1, first_operand) in variants.iter().cloned().enumerate() {
+            for (index2, second_operand) in variants.iter().cloned().enumerate() {
+                for (index2, should_enforce_operand) in variants.iter().cloned().enumerate() {
+                    let mut dyn_construct = |operand, name, mut cs: &mut TestConstraintSystem<Bls12>| {
+                        let cs = cs.namespace(|| name);
+
+                        match operand {
+                            OperandType::True => Boolean::constant(true),
+                            OperandType::False => Boolean::constant(false),
+                            OperandType::AllocatedTrue => {
+                                Boolean::from(AllocatedBit::alloc(cs, Some(true)).unwrap())
+                            }
+                            OperandType::AllocatedFalse => {
+                                Boolean::from(AllocatedBit::alloc(cs, Some(false)).unwrap())
+                            }
+                            OperandType::NegatedAllocatedTrue => {
+                                Boolean::from(AllocatedBit::alloc(cs, Some(true)).unwrap()).not()
+                            }
+                            OperandType::NegatedAllocatedFalse => {
+                                Boolean::from(AllocatedBit::alloc(cs, Some(false)).unwrap()).not()
+                            }
+                        }
+                    };
+                    // test enforce equal
+                    let mut cs = TestConstraintSystem::<Bls12>::new();
+                    let a = dyn_construct(first_operand, "a", &mut cs);
+                    let b = dyn_construct(second_operand, "b", &mut cs);
+                    let should_enforce = dyn_construct(should_enforce_operand, "should_enforce", &mut cs);
+
+                    let err = a.conditional_enforce_equal(&mut cs, &b, &should_enforce);
+
+                    println!("Testing: {:?} enforce {:?} == {:?} ", should_enforce_operand, first_operand, second_operand);
+                    if first_operand.is_constant()
+                        && second_operand.is_constant() && first_operand != second_operand {
+                        assert!(matches!(err, Err(SynthesisError::AssignmentMissing)));
+                    } else {
+                        if should_enforce_operand.val() {
+                            assert!(err.is_ok());
+                            if dbg!(first_operand.val()) == dbg!(second_operand.val()) {
+                                assert!(cs.is_satisfied());
+                            } else {
+                                assert!(!cs.is_satisfied());
+                            }
+                        } else {
+                            assert!(cs.is_satisfied());
+                        }
+                    }
+                    println!("test enforce equal successfully");
+
+                    // test enforce not equal
+                    cs = TestConstraintSystem::<Bls12>::new();
+                    let a = dyn_construct(first_operand, "a", &mut cs);
+                    let b = dyn_construct(second_operand, "b", &mut cs);
+                    let condition = dyn_construct(should_enforce_operand, "condition_operand", &mut cs);
+
+                    let err = a.conditional_enforce_not_equal(&mut cs, &b, &should_enforce);
+
+                    println!("Testing: {:?} enforce {:?} != {:?} ", should_enforce_operand, first_operand, second_operand);
+                    if should_enforce_operand.is_constant() && should_enforce_operand.val() == false {
+                        println!("test not enforce successfully");
+                        continue;
+                    }
+                    if first_operand.is_constant() && second_operand.is_constant() && first_operand == second_operand {
+                        assert!(matches!(err, Err(SynthesisError::AssignmentMissing)));
+                        println!("test enforce not equal return AssignmentMissing");
+                    } else {
+                        if should_enforce_operand.val() {
+                            assert!(err.is_ok());
+                            if dbg!(first_operand.val()) != dbg!(second_operand.val()){
+                                assert!(cs.is_satisfied());
+                                println!("test enforce not equal successfully");
+                            } else {
+                                assert!(!cs.is_satisfied());
+                                println!("test enforce not satisfied not equal successfully");
+                            }
+                        } else {
+                            assert!(cs.is_satisfied());
+                            println!("test not enforce not equal successfully");
                         }
                     }
                 }

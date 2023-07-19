@@ -662,7 +662,7 @@ impl Boolean {
         }
     }
 
-    fn conditional_enforce_equal<E: Engine, CS: ConstraintSystem<E>>(
+    pub fn conditional_enforce_equal<E: Engine, CS: ConstraintSystem<E>>(
         &self,
         mut cs: CS,
         other: &Self,
@@ -702,7 +702,7 @@ impl Boolean {
         Ok(())
     }
 
-    fn conditional_enforce_not_equal<E: Engine, CS: ConstraintSystem<E>>(
+    pub fn conditional_enforce_not_equal<E: Engine, CS: ConstraintSystem<E>>(
         &self,
         mut cs: CS,
         other: &Self,

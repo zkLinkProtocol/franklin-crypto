@@ -9,6 +9,7 @@ use super::Assignment;
 use super::boolean::{self, AllocatedBit, Boolean};
 
 use std::ops::{Add, Sub};
+use circuit::expression::Expression;
 
 pub struct AllocatedNum<E: Engine> {
     value: Option<E::Fr>,
@@ -730,15 +731,16 @@ impl<E: Engine> AllocatedNum<E> {
     /// Enforces that self == other if `should_enforce is true`.
     ///
     /// This requires one constraint.
-    pub fn conditional_enforce_equal<CS: ConstraintSystem<E>>(
+    pub fn conditional_enforce_equal<CS: ConstraintSystem<E>, EX: Into<Expression<E>>>(
         &self,
         mut cs: CS,
-        other: &Self,
+        other: EX,
         should_enforce: &Boolean,
     ) -> Result<(), SynthesisError> {
+        let other: Expression<E> = other.into();
         cs.enforce(
             || "conditional enforce equal",
-            |zero| zero + self.variable - other.variable,
+            |zero| zero + &other.lc() - self.variable,
             |_| should_enforce.lc(CS::one(), E::Fr::one()),
             |zero| zero,
         );
@@ -748,17 +750,18 @@ impl<E: Engine> AllocatedNum<E> {
     /// Enforces that self != other if `should_enforce is true`.
     ///
     /// This requires one constraint.
-    pub fn conditional_enforce_not_equal<CS: ConstraintSystem<E>>(
+    pub fn conditional_enforce_not_equal<CS: ConstraintSystem<E>, EX: Into<Expression<E>>>(
         &self,
         mut cs: CS,
-        other: &Self,
+        other: EX,
         should_enforce: &Boolean,
     ) -> Result<(), SynthesisError> {
+        let other: Expression<E> = other.into();
         let multiplier = Self::alloc(
             cs.namespace(|| "conditional select result"),
             || if *should_enforce.get_value().get()? {
-                let mut value = *self.value.get()?;
-                value.sub_assign(other.value.get()?);
+                let mut value = *other.get_value().get()?;
+                value.sub_assign(self.value.get()?);
                 Ok(value.inverse().unwrap_or(E::Fr::zero()))
             } else {
                 Ok(E::Fr::zero())
@@ -767,7 +770,7 @@ impl<E: Engine> AllocatedNum<E> {
 
         cs.enforce(
             || "conditional enforce not equal",
-            |zero| zero + self.variable - other.variable,
+            |zero| zero + &other.lc() - self.variable,
             |zero| zero + multiplier.variable,
             |_| should_enforce.lc(CS::one(), E::Fr::one()),
         );

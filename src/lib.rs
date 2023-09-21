@@ -9,7 +9,7 @@ extern crate hmac;
 extern crate rand;
 extern crate sha2;
 extern crate tiny_keccak;
-//extern crate poseidon_hash;
+// extern crate poseidon_hash;
 extern crate num_bigint;
 extern crate num_integer;
 extern crate num_traits;
@@ -43,6 +43,7 @@ pub mod primitives;
 pub mod redbabyjubjub;
 pub mod redjubjub;
 pub mod rescue;
+pub mod poseidon;
 pub mod util;
 
 #[cfg(feature = "plonk")]

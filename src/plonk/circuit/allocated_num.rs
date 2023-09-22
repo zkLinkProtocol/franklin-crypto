@@ -72,6 +72,21 @@ impl<E: Engine> std::fmt::Display for Num<E> {
 }
 
 impl<E: Engine> Num<E> {
+    pub fn zero() -> Self {
+        Num::Constant(E::Fr::zero())
+    }
+
+    pub fn alloc<CS: ConstraintSystem<E>>(
+        cs: &mut CS,
+        witness: Option<E::Fr>
+    ) -> Result<Self, SynthesisError> {
+        let new = Num::Variable(
+            AllocatedNum::alloc(cs, || Ok(*witness.get()?))?
+        );
+
+        Ok(new)
+    }
+
     pub fn get_value(&self) -> Option<E::Fr> {
         match self {
             Num::Variable(v) => v.get_value(),

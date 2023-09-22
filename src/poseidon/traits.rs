@@ -29,6 +29,16 @@ pub enum Step {
 pub enum Sbox {
     Alpha(u64),
     AlphaInverse(Vec<u64>, u64),
+    AddChain(Vec<Step>, u64),
+}
+
+impl From<addchain::Step> for Step {
+    fn from(value: addchain::Step) -> Self {
+        match value {
+            addchain::Step::Add { left, right } => Step::Add { left, right },
+            addchain::Step::Double { index } => Step::Double { index },
+        }
+    }
 }
 
 impl std::fmt::Debug for Sbox {
@@ -36,6 +46,7 @@ impl std::fmt::Debug for Sbox {
         match self {
             Self::Alpha(alpha) => write!(f, "sbox x^{}", alpha),
             Self::AlphaInverse(vec, alpha) => write!(f, "inverse sbox [u64; {}] for x^{}", vec.len(), alpha),
+            Self::AddChain(_, alpha) => write!(f, "add chain inverse sbox for x^{}", alpha),
         }
     }
 }

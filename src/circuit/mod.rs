@@ -21,6 +21,10 @@ pub mod as_waksman;
 pub mod expression;
 // pub mod shark_mimc;
 pub mod rescue;
+pub mod poseidon;
+pub mod sponge;
+mod sbox;
+mod matrix;
 
 pub mod sapling;
 pub mod sprout;

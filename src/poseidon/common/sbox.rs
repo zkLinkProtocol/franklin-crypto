@@ -11,6 +11,7 @@ pub(crate) fn sbox<E: Engine>(power: &Sbox, state: &mut [E::Fr]) {
     match power {
         Sbox::Alpha(alpha) => sbox_alpha::<E>(alpha, state),
         Sbox::AlphaInverse(alpha_inv, _) => sbox_alpha_inv::<E>(alpha_inv, state),
+        Sbox::AddChain(chain, _) => sbox_alpha_inv_via_add_chain::<E>(chain, state),
     }
 }
 
@@ -47,7 +48,7 @@ pub(crate) fn sbox_alpha_inv<E: Engine>(alpha_inv: &[u64], state: &mut [E::Fr]) 
     }
 }
 
-fn add_chain_pow_smallvec<F: crate::bellman::pairing::ff::PrimeField>(
+pub fn add_chain_pow_smallvec<F: crate::bellman::pairing::ff::PrimeField>(
     base: F,
     add_chain: &[crate::poseidon::traits::Step],
     scratch_space: &mut smallvec::SmallVec<[F; 512]>,
@@ -94,7 +95,7 @@ pub(crate) fn sbox_alpha_inv_via_add_chain<E: Engine>(chain: &[crate::traits::St
     state.par_iter_mut()
         .for_each(|el| {
             let mut scratch = smallvec::SmallVec::<[E::Fr; 512]>::new();
-            *el = crate::add_chain_pow_smallvec(*el, chain, &mut scratch);
+            *el = add_chain_pow_smallvec(*el, chain, &mut scratch);
         });
 }
 
@@ -120,5 +121,5 @@ pub(crate) fn sbox_alpha_inv_via_add_chain<E: Engine>(chain: &[crate::traits::St
 #[cfg(feature = "futures")]
 pub(crate) fn sbox_alpha_inv_via_add_chain_fut<E: Engine>(el: E::Fr, chain: &'static [crate::traits::Step]) -> E::Fr {
     let mut scratch = smallvec::SmallVec::<[E::Fr; 512]>::new();
-    crate::add_chain_pow_smallvec(el, chain, &mut scratch)
+    add_chain_pow_smallvec(el, chain, &mut scratch)
 }

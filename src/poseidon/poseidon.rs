@@ -116,13 +116,14 @@ fn test_poseidon_hash() {
     for i in 0..3 {
         inputs[i] = Fr::rand(&mut rng);
     }
-    let mut hash = poseidon_hash::<Bn256, 3>(&inputs);
-    println!("Poseidon hash partial round 56 result: {:?}", hash[0]);
+    let params = PoseidonParams::<Bn256, 2, 3>::default();
+    let hash = generic_hash(&params, &inputs, None);
+    println!("Poseidon hash partial round 56 result: {:?}", hash);
     
     let params = PoseidonParams::<Bn256, 2, 3>::preset1();
-    hash = generic_hash(&params, &inputs, None);
-    println!("Poseidon hash partial round 33 result: {:?}", hash[0]);
+    let hash = generic_hash(&params, &inputs, None);
+    println!("Poseidon hash partial round 33 result: {:?}", hash);
     let params = PoseidonParams::<Bn256, 2, 3>::preset2();
-    hash = generic_hash(&params, &inputs, None);
-    println!("Poseidon hash partial round 83 result: {:?}", hash[0]);
+    let hash = generic_hash(&params, &inputs, None);
+    println!("Poseidon hash partial round 83 result: {:?}", hash);
 }

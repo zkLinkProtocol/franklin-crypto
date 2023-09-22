@@ -10,10 +10,10 @@ version = "0.0.5"
 crate-type = ["lib", "staticlib"]
 
 [features]
-default = []
+default = ["plonk"]
 multicore = ["bellman/multicore"]
 plonk = ["bellman/plonk"]
- 
+
 [dependencies]
 rand = "0.4"
 digest = "0.7"
@@ -30,14 +30,14 @@ num-traits = "0.2"
 itertools = "0.9"
 splitmut = "0.2"
 blake2 = "0.10"
-regex = "0.2"
+regex = "1"
+addchain = "0.2"
 smallvec = "1.10"
 arrayvec = "0.7"
 
-bellman = { path = "../bellman", package="bellman_ce" }
-# bellman = { package = "bellman_ce", git = "https://github.com/zkLinkProtocol/bellman.git", default_features = false, branch = "beta" }
+bellman = { package = "bellman_ce", git = "https://github.com/zkLinkProtocol/bellman.git", default_features = false, branch = "beta" }
 blake2-rfc_bellman_edition = "0.0.1"
-poseidon_hash = {git = "https://github.com/shamatar/poseidon_hash.git"}
+# poseidon_hash = {git = "https://github.com/shamatar/poseidon_hash.git"}
 
 blake2s_simd = { version = "0.5" }
 hex = "0.4"

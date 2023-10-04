@@ -1,3 +1,4 @@
+use std::fmt::{Debug, Formatter, Write};
 use bellman::pairing::Engine;
 
 use bellman::pairing::ff::{BitIterator, Field, PrimeField, PrimeFieldRepr};
@@ -8,9 +9,10 @@ use super::Assignment;
 
 use super::boolean::{self, AllocatedBit, Boolean};
 
-use std::ops::{Add, Sub};
+use std::ops::{Add, AddAssign, Sub};
 use circuit::expression::Expression;
 
+#[derive(Debug)]
 pub struct AllocatedNum<E: Engine> {
     value: Option<E::Fr>,
     variable: Variable,
@@ -923,6 +925,14 @@ pub struct Num<E: Engine> {
     lc: LinearCombination<E>,
 }
 
+impl<E: Engine> Debug for Num<E> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Num")
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
 impl<E: Engine> From<AllocatedNum<E>> for Num<E> {
     fn from(num: AllocatedNum<E>) -> Num<E> {
         Num {
@@ -1035,6 +1045,20 @@ impl<E: Engine> Num<E> {
         }
     }
 
+    pub fn add_assign_constant(&mut self, one: Variable, coeff: E::Fr) {
+        let newval = match self.value {
+            Some(mut curval) => {
+                curval.add_assign(&coeff);
+
+                Some(curval)
+            }
+            _ => None,
+        };
+
+        self.value = newval;
+        self.lc.as_mut().push((one, coeff));
+    }
+
     pub fn into_allocated_num<CS: ConstraintSystem<E>>(
         self,
         mut cs: CS,
@@ -1070,6 +1094,33 @@ impl<E: Engine> Num<E> {
 
         var
     }
+
+    pub fn add_assign_scaled(
+        &mut self,
+        other: &Self,
+        scale: E::Fr
+    ) {
+        let mut other_scaled = other.clone();
+        other_scaled.scale(&scale);
+
+        self.add_assign(&other_scaled);
+    }
+
+    pub fn scale(&mut self, coeff: &E::Fr) {
+        if coeff.is_zero() {
+            self.lc.as_mut().truncate(0);
+            self.value = Some(E::Fr::zero());
+            return;
+        }
+
+        if let Some(ref mut val) = self.value.as_mut() {
+            val.mul_assign(&coeff);
+        }
+
+        for (_, c) in self.lc.as_mut().iter_mut() {
+            c.mul_assign(&coeff);
+        }
+    }
 }
 
 impl<E: Engine> Add<&Num<E>> for Num<E> {
@@ -1090,6 +1141,23 @@ impl<E: Engine> Add<&Num<E>> for Num<E> {
             value: newval,
             lc: self.lc + &other.lc,
         }
+    }
+}
+
+impl<E: Engine> AddAssign<&Num<E>> for Num<E> {
+    fn add_assign(&mut self, other: &Num<E>) {
+        let newval = match (self.value, other.value) {
+            (Some(mut curval), Some(val)) => {
+                let tmp = val;
+                curval.add_assign(&tmp);
+
+                Some(curval)
+            }
+            _ => None,
+        };
+
+        self.value = newval;
+        self.lc.as_mut().extend_from_slice(other.lc.as_ref());
     }
 }
 

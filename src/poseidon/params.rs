@@ -146,10 +146,7 @@ pub(crate) fn poseidon_light_params<E: Engine, const RATE: usize, const WIDTH: u
     );
 
     const SUBDIM: usize = 2; // TODO:
-    assert!(
-        WIDTH - SUBDIM == 1,
-        "only dim 2 and dim 3 matrixes are allowed for now."
-    );
+    assert_eq!(WIDTH - SUBDIM, 1, "only dim 2 and dim 3 matrixes are allowed for now.");
     let optimized_matrixes =
         compute_optimized_matrixes::<E, WIDTH, SUBDIM>(params.partial_rounds, &params.mds_matrix);
     (params, alpha, optimized_constants, optimized_matrixes)

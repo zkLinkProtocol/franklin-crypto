@@ -451,6 +451,40 @@ impl<E: Engine> AllocatedNum<E> {
         })
     }
 
+    pub fn mul_boolean<CS>(&self, mut cs: CS, other: &AllocatedBit) -> Result<Self, SynthesisError>
+    where
+        CS: ConstraintSystem<E>,
+    {
+        let mut value = None;
+
+        let var = cs.alloc(
+            || "product num",
+            || {
+                let tmp = if other.get_value().grab()? {
+                    *self.value.get()?
+                } else {
+                    E::Fr::zero()
+                };
+
+                value = Some(tmp);
+
+                Ok(tmp)
+            },
+        )?;
+
+        cs.enforce(
+            || "multiplication constraint",
+            |zero| zero + self.variable,
+            |zero| zero + other.get_variable(),
+            |zero| zero + var,
+        );
+
+        Ok(AllocatedNum {
+            value,
+            variable: var,
+        })
+    }
+
     pub fn mul_constant<CS>(&self, mut cs: CS, constant: E::Fr) -> Result<Self, SynthesisError>
     where
         CS: ConstraintSystem<E>,

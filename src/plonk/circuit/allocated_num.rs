@@ -710,6 +710,20 @@ impl<E: Engine> Num<E> {
         }
     }
 
+    pub fn square<CS: ConstraintSystem<E>>(
+        &self,
+        cs: &mut CS,
+    ) -> Result<Self, SynthesisError> {
+        match self {
+            Num::Variable(num) => num.square(cs).map(Num::Variable),
+            Num::Constant(num) => {
+                let mut num = *num;
+                num.square();
+                Ok(Num::Constant(num))
+            },
+        }
+    }
+
     // compute coeff_ab * A * B + coeff_c * C
     pub fn fma_with_coefficients<CS: ConstraintSystem<E>>(
         cs: &mut CS, a: &Self, b: &Self, c: &Self, ab_coeff: E::Fr, c_coeff: E::Fr

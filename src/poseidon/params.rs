@@ -57,7 +57,7 @@ impl<E: Engine, const RATE: usize, const WIDTH: usize> PoseidonParams<E, RATE, W
 
 impl<E: Engine, const RATE: usize, const WIDTH: usize> Default for PoseidonParams<E, RATE, WIDTH> {
     fn default() -> Self {
-        PoseidonParams::new(80, 8, 56)
+        PoseidonParams::new(80, 8, 33)
     }
 }
 

@@ -125,9 +125,9 @@ mod test {
         // create a Sha256 object
         let mut hasher = Sha256::new();
         // write input message
-        hasher.update(&input[0..55]);
+        hasher.input(&input[0..55]);
         // read hash digest and consume hasher
-        let output = hasher.finalize();
+        let output = hasher.result();
 
         let mut input_fr_arr = Vec::with_capacity(16);
         let mut output_fr_arr = [Fr::zero(); 8];
@@ -178,9 +178,9 @@ mod test {
         // create a Sha256 object
         let mut hasher = Sha256::new();
         // write input message
-        hasher.update(&input[0..(64 * (NUM_OF_BLOCKS-1) + 55)]);
+        hasher.input(&input[0..(64 * (NUM_OF_BLOCKS-1) + 55)]);
         // read hash digest and consume hasher
-        let output = hasher.finalize();
+        let output = hasher.result();
 
         let mut input_fr_arr = Vec::with_capacity(16 * NUM_OF_BLOCKS);
         let mut output_fr_arr = [Fr::zero(); 8];
@@ -231,9 +231,9 @@ mod test {
         // create a Sha256 object
         let mut hasher = Sha256::new();
         // write input message
-        hasher.update(&input[0..(64 * (NUM_OF_BLOCKS-1) + 55)]);
+        hasher.input(&input[0..(64 * (NUM_OF_BLOCKS-1) + 55)]);
         // read hash digest and consume hasher
-        let output = hasher.finalize();
+        let output = hasher.result();
 
         let mut input_fr_arr = Vec::with_capacity(16 * NUM_OF_BLOCKS);
         let mut output_fr_arr = [Fr::zero(); 8];
@@ -279,9 +279,9 @@ mod test {
         // create a Sha256 object
         let mut hasher = Sha256::new();
         // write input message
-        hasher.update(&input[..]);
+        hasher.input(&input[..]);
         // read hash digest and consume hasher
-        let output = hasher.finalize();
+        let output = hasher.result();
 
         let mut input_fr_arr : Vec<<Bn256 as ScalarEngine>::Fr> = Vec::with_capacity(NUM_OF_BYTES);
         let mut output_fr_arr = [Fr::zero(); 8];
@@ -329,9 +329,9 @@ mod test {
         // create a Sha256 object
         let mut hasher = Sha256::new();
         // write input message
-        hasher.update(&input[0..(64 * (NUM_OF_BLOCKS-1) + 55)]);
+        hasher.input(&input[0..(64 * (NUM_OF_BLOCKS-1) + 55)]);
         // read hash digest and consume hasher
-        let output = hasher.finalize();
+        let output = hasher.result();
 
         let mut input_fr_arr = Vec::with_capacity(16 * NUM_OF_BLOCKS);
         let mut output_fr_arr = [Fr::zero(); 8];

@@ -1,52 +1,8 @@
-use crate::bellman::pairing::{
-    Engine,
-};
-
-use crate::bellman::pairing::ff::{
-    Field,
-    PrimeField,
-    PrimeFieldRepr,
-    BitIterator
-};
-
-use crate::bellman::{
-    SynthesisError,
-};
-
-use crate::bellman::plonk::better_better_cs::cs::{
-    Variable, 
-    ConstraintSystem,
-    ArithmeticTerm,
-    MainGateTerm,
-    Width4MainGateWithDNext,
-    MainGate,
-    GateInternal,
-    Gate,
-    LinearCombinationOfTerms,
-    PolynomialMultiplicativeTerm,
-    PolynomialInConstraint,
-    TimeDilation,
-    Coefficient,
-};
-
-
-use crate::plonk::circuit::Assignment;
-
-use super::allocated_num::{
-    AllocatedNum
-};
-
-use super::linear_combination::{
-    LinearCombination
-};
-
-use super::boolean::{
-    AllocatedBit,
-    Boolean
-};
-
-use super::multieq::MultiEq;
 use super::uint32::UInt32;
+use super::multieq::MultiEq;
+use super::boolean::Boolean;
+use bellman::{ConstraintSystem, SynthesisError};
+use bellman::pairing::Engine;
 
 const ROUND_CONSTANTS: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -65,7 +21,7 @@ const IV: [u32; 8] = [
 ];
 
 pub fn sha256_block_no_padding<E, CS>(
-    cs: &mut CS,
+    mut cs: CS,
     input: &[Boolean]
 ) -> Result<Vec<Boolean>, SynthesisError>
     where E: Engine, CS: ConstraintSystem<E>
@@ -73,7 +29,7 @@ pub fn sha256_block_no_padding<E, CS>(
     assert_eq!(input.len(), 512);
 
     Ok(sha256_compression_function(
-        cs,
+        &mut cs,
         &input,
         &get_sha256_iv()
     )?
@@ -83,7 +39,7 @@ pub fn sha256_block_no_padding<E, CS>(
 }
 
 pub fn sha256<E, CS>(
-    cs: &mut CS,
+    mut cs: CS,
     input: &[Boolean]
 ) -> Result<Vec<Boolean>, SynthesisError>
     where E: Engine, CS: ConstraintSystem<E>
@@ -105,9 +61,9 @@ pub fn sha256<E, CS>(
     assert!(padded.len() % 512 == 0);
 
     let mut cur = get_sha256_iv();
-    for (_i, block) in padded.chunks(512).enumerate() {
+    for (i, block) in padded.chunks(512).enumerate() {
         cur = sha256_compression_function(
-            cs,
+            cs.namespace(|| format!("block {}", i)),
             block,
             &cur
         )?;
@@ -123,7 +79,7 @@ pub fn get_sha256_iv() -> Vec<UInt32> {
 }
 
 pub fn sha256_compression_function<E, CS>(
-    cs: &mut CS,
+    cs: CS,
     input: &[Boolean],
     current_hash_value: &[UInt32]
 ) -> Result<Vec<UInt32>, SynthesisError>
@@ -141,32 +97,32 @@ pub fn sha256_compression_function<E, CS>(
     let mut cs = MultiEq::new(cs);
 
     for i in 16..64 {
-        let cs = cs.as_cs();
+        let cs = &mut cs.namespace(|| format!("w extension {}", i));
 
         // s0 := (w[i-15] rightrotate 7) xor (w[i-15] rightrotate 18) xor (w[i-15] rightshift 3)
         let mut s0 = w[i-15].rotr(7);
         s0 = s0.xor(
-            cs,
+            cs.namespace(|| "first xor for s0"),
             &w[i-15].rotr(18)
         )?;
         s0 = s0.xor(
-            cs,
+            cs.namespace(|| "second xor for s0"),
             &w[i-15].shr(3)
         )?;
 
         // s1 := (w[i-2] rightrotate 17) xor (w[i-2] rightrotate 19) xor (w[i-2] rightshift 10)
         let mut s1 = w[i-2].rotr(17);
         s1 = s1.xor(
-            cs,
+            cs.namespace(|| "first xor for s1"),
             &w[i-2].rotr(19)
         )?;
         s1 = s1.xor(
-            cs,
+            cs.namespace(|| "second xor for s1"),
             &w[i-2].shr(10)
         )?;
 
         let tmp = UInt32::addmany(
-            cs,
+            cs.namespace(|| "computation of w[i]"),
             &[w[i-16].clone(), s0, w[i-7].clone(), s1]
         )?;
 
@@ -182,13 +138,14 @@ pub fn sha256_compression_function<E, CS>(
     }
 
     impl Maybe {
-        fn compute<E, CS>(
+        fn compute<E, CS, M>(
             self,
-            cs: &mut CS,
+            cs: M,
             others: &[UInt32]
         ) -> Result<UInt32, SynthesisError>
             where E: Engine,
-                  CS: ConstraintSystem<E>
+                  CS: ConstraintSystem<E>,
+                  M: ConstraintSystem<E, Root=MultiEq<E, CS>>
         {
             Ok(match self {
                 Maybe::Concrete(ref v) => {
@@ -215,22 +172,23 @@ pub fn sha256_compression_function<E, CS>(
     let mut h = current_hash_value[7].clone();
 
     for i in 0..64 {
-        let cs = cs.as_cs();
+        let cs = &mut cs.namespace(|| format!("compression round {}", i));
+
         // S1 := (e rightrotate 6) xor (e rightrotate 11) xor (e rightrotate 25)
-        let new_e = e.compute(cs, &[])?;
+        let new_e = e.compute(cs.namespace(|| "deferred e computation"), &[])?;
         let mut s1 = new_e.rotr(6);
         s1 = s1.xor(
-            cs,
+            cs.namespace(|| "first xor for s1"),
             &new_e.rotr(11)
         )?;
         s1 = s1.xor(
-            cs,
+            cs.namespace(|| "second xor for s1"),
             &new_e.rotr(25)
         )?;
 
         // ch := (e and f) xor ((not e) and g)
         let ch = UInt32::sha256_ch(
-            cs,
+            cs.namespace(|| "ch"),
             &new_e,
             &f,
             &g
@@ -246,20 +204,20 @@ pub fn sha256_compression_function<E, CS>(
         ];
 
         // S0 := (a rightrotate 2) xor (a rightrotate 13) xor (a rightrotate 22)
-        let new_a = a.compute(cs, &[])?;
+        let new_a = a.compute(cs.namespace(|| "deferred a computation"), &[])?;
         let mut s0 = new_a.rotr(2);
         s0 = s0.xor(
-            cs,
+            cs.namespace(|| "first xor for s0"),
             &new_a.rotr(13)
         )?;
         s0 = s0.xor(
-            cs,
+            cs.namespace(|| "second xor for s0"),
             &new_a.rotr(22)
         )?;
 
         // maj := (a and b) xor (a and c) xor (b and c)
         let maj = UInt32::sha256_maj(
-            cs,
+            cs.namespace(|| "maj"),
             &new_a,
             &b,
             &c
@@ -301,45 +259,43 @@ pub fn sha256_compression_function<E, CS>(
         h7 := h7 + h
     */
 
-    let cs = cs.as_cs();
-
     let h0 = a.compute(
-        cs,
+        cs.namespace(|| "deferred h0 computation"),
         &[current_hash_value[0].clone()]
     )?;
 
     let h1 = UInt32::addmany(
-        cs,
+        cs.namespace(|| "new h1"),
         &[current_hash_value[1].clone(), b]
     )?;
 
     let h2 = UInt32::addmany(
-        cs,
+        cs.namespace(|| "new h2"),
         &[current_hash_value[2].clone(), c]
     )?;
 
     let h3 = UInt32::addmany(
-        cs,
+        cs.namespace(|| "new h3"),
         &[current_hash_value[3].clone(), d]
     )?;
 
     let h4 = e.compute(
-        cs,
+        cs.namespace(|| "deferred h4 computation"),
         &[current_hash_value[4].clone()]
     )?;
 
     let h5 = UInt32::addmany(
-        cs,
+        cs.namespace(|| "new h5"),
         &[current_hash_value[5].clone(), f]
     )?;
 
     let h6 = UInt32::addmany(
-        cs,
+        cs.namespace(|| "new h6"),
         &[current_hash_value[6].clone(), g]
     )?;
 
     let h7 = UInt32::addmany(
-        cs,
+        cs.namespace(|| "new h7"),
         &[current_hash_value[7].clone(), h]
     )?;
 
@@ -349,19 +305,16 @@ pub fn sha256_compression_function<E, CS>(
 #[cfg(test)]
 mod test {
     use super::*;
+    use circuit::boolean::AllocatedBit;
+    use bellman::pairing::bls12_381::Bls12;
+    use circuit::test::TestConstraintSystem;
     use rand::{XorShiftRng, SeedableRng, Rng};
-
-    use bellman::pairing::bn256::{Bn256, Fr};
-    use bellman::pairing::ff::{Field, PrimeField};
-    // use ::circuit::test::*;
-
-    use crate::bellman::plonk::better_better_cs::cs::*;
 
     #[test]
     fn test_blank_hash() {
         let iv = get_sha256_iv();
 
-        let mut cs = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
+        let mut cs = TestConstraintSystem::<Bls12>::new();
         let mut input_bits: Vec<_> = (0..512).map(|_| Boolean::Constant(false)).collect();
         input_bits[0] = Boolean::Constant(true);
         let out = sha256_compression_function(
@@ -372,18 +325,18 @@ mod test {
         let out_bits: Vec<_> = out.into_iter().flat_map(|e| e.into_bits_be()).collect();
 
         assert!(cs.is_satisfied());
-        assert_eq!(cs.n(), 0);
+        assert_eq!(cs.num_constraints(), 0);
 
-        // let expected = hex!("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        let expected = hex!("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 
-        // let mut out = out_bits.into_iter();
-        // for b in expected.iter() {
-        //     for i in (0..8).rev() {
-        //         let c = out.next().unwrap().get_value().unwrap();
+        let mut out = out_bits.into_iter();
+        for b in expected.iter() {
+            for i in (0..8).rev() {
+                let c = out.next().unwrap().get_value().unwrap();
 
-        //         assert_eq!(c, (b >> i) & 1u8 == 1u8);
-        //     }
-        // }
+                assert_eq!(c, (b >> i) & 1u8 == 1u8);
+            }
+        }
     }
 
     #[test]
@@ -392,24 +345,24 @@ mod test {
 
         let iv = get_sha256_iv();
 
-        let mut cs = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
-        let input_bits: Vec<_> = (0..512).map(|_i| {
+        let mut cs = TestConstraintSystem::<Bls12>::new();
+        let input_bits: Vec<_> = (0..512).map(|i| {
             Boolean::from(
                 AllocatedBit::alloc(
-                    &mut cs,
+                    cs.namespace(|| format!("input bit {}", i)),
                     Some(rng.gen())
                 ).unwrap()
             )
         }).collect();
 
         sha256_compression_function(
-            &mut cs,
+            cs.namespace(|| "sha256"),
             &input_bits,
             &iv
         ).unwrap();
 
         assert!(cs.is_satisfied());
-        assert_eq!(cs.n() - 512, 25840);
+        assert_eq!(cs.num_constraints() - 512, 25840);
     }
 
     #[test]
@@ -426,12 +379,12 @@ mod test {
             let result = h.result();
             let hash_result = result.as_slice();
 
-            let mut cs = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();
+            let mut cs = TestConstraintSystem::<Bls12>::new();
             let mut input_bits = vec![];
 
-            for (_byte_i, input_byte) in data.into_iter().enumerate() {
+            for (byte_i, input_byte) in data.into_iter().enumerate() {
                 for bit_i in (0..8).rev() {
-                    let cs = &mut cs;
+                    let cs = cs.namespace(|| format!("input bit {} {}", byte_i, bit_i));
 
                     input_bits.push(AllocatedBit::alloc(cs, Some((input_byte >> bit_i) & 1u8 == 1u8)).unwrap().into());
                 }

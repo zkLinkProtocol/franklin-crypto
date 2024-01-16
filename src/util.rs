@@ -24,10 +24,10 @@ pub fn hash_to_scalar_s<E: JubjubEngine>(persona: &[u8], a: &[u8], b: &[u8]) -> 
 
 pub fn sha256_hash_to_scalar<E: JubjubEngine>(persona: &[u8], a: &[u8], b: &[u8]) -> E::Fs {
     let mut hasher = Sha256::new();
-    hasher.update(persona);
-    hasher.update(a);
-    hasher.update(b);
-    let result = hasher.finalize();
+    hasher.input(persona);
+    hasher.input(a);
+    hasher.input(b);
+    let result = hasher.result();
     E::Fs::to_uniform_32(result.as_slice())
 }
 

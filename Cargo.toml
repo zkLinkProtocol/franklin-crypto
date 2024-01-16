@@ -34,12 +34,12 @@ serde = {version = "1", features = ["derive"]}
 num-derive = "0.2"
 indexmap = "1.9"
 
-# bellman = { package = "bellman_ce", path = "../../bellman/plonk" }
+# bellman = { package = "bellman_ce", path = "../bellman" }
 bellman = { package = "bellman_ce", git = "https://github.com/zkLinkProtocol/bellman", default_features = false, branch = "dev" }
 blake2 = "0.10"
 regex = "1"
 addchain = "0.2"
-smallvec = "1.10"
+smallvec = "1.12"
 arrayvec = "0.7"
 
 blake2-rfc_bellman_edition = "0.0.1"

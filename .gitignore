@@ -2,4 +2,4 @@
 **/*.rs.bk
 Cargo.lock
 .idea
-.vscode
+/bbc_recursive_vk.sol

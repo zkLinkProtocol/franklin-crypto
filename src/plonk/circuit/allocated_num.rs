@@ -111,7 +111,7 @@ impl<E: Engine> Num<E> {
 
         Ok(new)
     }
-    
+
     pub fn get_value(&self) -> Option<E::Fr> {
         match self {
             Num::Variable(v) => v.get_value(),

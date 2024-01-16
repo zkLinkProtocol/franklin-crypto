@@ -6,7 +6,8 @@ use super::group_hash::GroupHasher;
 use rand::{Rand, Rng};
 
 pub mod bn256;
-//pub mod rescue_transcript;
+#[cfg(feature = "plonk")]
+pub mod rescue_transcript;
 
 pub trait SBox<E: Engine>: Sized + Clone + std::fmt::Debug {
     fn apply(&self, elements: &mut [E::Fr]);
@@ -123,11 +124,11 @@ impl<E: Engine>SBox<E> for InversionSBox<E> {
     }
 }
 
-use crate::plonk::circuit::rescue::PlonkCsSBox;
+use crate::circuit::rescue::CsSBox;
 
 pub trait RescueHashParams<E: Engine>: RescueParamsInternal<E> {
-    type SBox0: PlonkCsSBox<E>;
-    type SBox1: PlonkCsSBox<E>;
+    type SBox0: CsSBox<E>;
+    type SBox1: CsSBox<E>;
     fn capacity(&self) -> u32;
     fn rate(&self) -> u32;
     fn state_width(&self) -> u32 {

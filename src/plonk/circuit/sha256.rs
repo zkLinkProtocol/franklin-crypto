@@ -422,8 +422,8 @@ mod test {
         {
             let mut h = Sha256::new();
             let data: Vec<u8> = (0..input_len).map(|_| rng.gen()).collect();
-            h.update(&data);
-            let result = h.finalize();
+            h.input(&data);
+            let result = h.result();
             let hash_result = result.as_slice();
 
             let mut cs = TrivialAssembly::<Bn256, PlonkCsWidth4WithNextStepParams, Width4MainGateWithDNext>::new();

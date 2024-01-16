@@ -1,7 +1,11 @@
 pub mod affine_point_wrapper;
-pub mod data_structs;
+pub mod bbc_recursive_test;
 pub mod channel;
+pub mod data_structs;
 pub mod helper_functions;
-pub mod verifying_circuit;
+pub mod new_data_structs;
+mod new_test;
+pub mod new_verifying_circuit;
 pub mod test;
 pub mod utils;
+pub mod verifying_circuit;

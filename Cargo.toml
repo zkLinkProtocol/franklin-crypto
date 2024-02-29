@@ -14,6 +14,7 @@ default = ["multicore", "plonk"]
 multicore = ["bellman/multicore"]
 plonk = ["bellman/plonk"]
 allocator = ["bellman/allocator"]
+cuda = ["bellman/cuda"]
  
 [dependencies]
 rand = "0.4"
@@ -35,7 +36,7 @@ num-derive = "0.2"
 indexmap = "1.9"
 
 # bellman = { package = "bellman_ce", path = "../bellman" }
-bellman = { package = "bellman_ce", git = "https://github.com/zkLinkProtocol/bellman", default_features = false, branch = "dev" }
+bellman = { package = "bellman_ce", git = "https://github.com/zkLinkProtocol/bellman", default_features = false, branch = "gpu_dev" }
 blake2 = "0.10"
 regex = "1"
 addchain = "0.2"

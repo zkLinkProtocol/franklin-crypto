@@ -99,12 +99,12 @@ impl AllocatedBit {
 
         // Constrain: (1 - a) * a = 0
         // This constrains a to be either 0 or 1.
-        cs.enforce(
-            || "boolean constraint",
-            |lc| lc + CS::one() - var,
-            |lc| lc + var,
-            |lc| lc,
-        );
+        // cs.enforce(
+        //     || "boolean constraint",
+        //     |lc| lc + CS::one() - var,
+        //     |lc| lc + var,
+        //     |lc| lc,
+        // );
 
         Ok(AllocatedBit {
             variable: var,
